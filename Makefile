@@ -18,3 +18,8 @@ build-dcpd:
 .PHONY: clean
 clean:
 	rm ${OUT_DIR}/dcpd
+
+
+.PHONY: lint
+lint:
+	${GOLANGCI_LINT} run
