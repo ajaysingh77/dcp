@@ -8,7 +8,7 @@ You will need:
 - Go 1.19 or newer
 - `golangci-lint`
 
-Supported operating systems are Linux and MacOS; Windows is not supported at this time. 
+Supported operating systems for development are Linux and MacOS; Windows is not supported at this time. 
 
 ## Running `dcpd`
 
