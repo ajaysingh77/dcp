@@ -10,6 +10,9 @@ import (
 	"github.com/spf13/pflag"
 	serverbuilder "github.com/tilt-dev/tilt-apiserver/pkg/server/builder"
 	runtimelog "sigs.k8s.io/controller-runtime/pkg/log"
+
+	// Well-known types
+	stdtypes_apiv1 "github.com/usvc-dev/stdtypes/api/v1"
 )
 
 const (
@@ -51,7 +54,8 @@ func (s *ApiServer) Run(ctx context.Context) error {
 		s.runCompleted = true
 	}()
 
-	builder := serverbuilder.NewServerBuilder()
+	builder := serverbuilder.NewServerBuilder().
+		WithResourceMemoryStorage(&stdtypes_apiv1.Executable{}, "data")
 	options, err := builder.ToServerOptions()
 	if err != nil {
 		err = fmt.Errorf("unable to create API server options: %w", err)

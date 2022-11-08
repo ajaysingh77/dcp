@@ -8,7 +8,15 @@ You will need:
 - Go 1.19 or newer
 - `golangci-lint`
 
-Supported operating systems for development are Linux and MacOS; Windows is not supported at this time. 
+Supported operating systems for development are Linux and MacOS; Windows is not supported at this time.
+
+Also, until `usvc-dev` project becomes public (no plans for that currently), the Go module system needs to be told that repositories under this project are private and global proxies/checksums should not be used for them:
+
+```shell
+go env -w 'GOPRIVATE=github.com/usvc-dev/*'
+```
+
+Form more information see [Go private modules documentation](https://go.dev/ref/mod#private-modules).
 
 ## Running `dcpd`
 
