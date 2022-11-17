@@ -11,8 +11,8 @@ import (
 	serverbuilder "github.com/tilt-dev/tilt-apiserver/pkg/server/builder"
 	runtimelog "sigs.k8s.io/controller-runtime/pkg/log"
 
-	// Well-known types
 	stdtypes_apiv1 "github.com/usvc-dev/stdtypes/api/v1"
+	stdtypes_openapi "github.com/usvc-dev/stdtypes/pkg/generated/openapi"
 )
 
 const (
@@ -54,8 +54,13 @@ func (s *ApiServer) Run(ctx context.Context) error {
 		s.runCompleted = true
 	}()
 
+	// The two constants below are just metadata for Swagger UI
+	const openApiConfigrationName = "DCP"
+	const openApiConfigurationVersion = "1.0.0" // TODO: use DCP executable version
 	builder := serverbuilder.NewServerBuilder().
-		WithResourceMemoryStorage(&stdtypes_apiv1.Executable{}, "data")
+		WithResourceMemoryStorage(&stdtypes_apiv1.Executable{}, "data").
+		WithOpenAPIDefinitions(openApiConfigrationName, openApiConfigurationVersion, stdtypes_openapi.GetOpenAPIDefinitions)
+
 	options, err := builder.ToServerOptions()
 	if err != nil {
 		err = fmt.Errorf("unable to create API server options: %w", err)

@@ -1,0 +1,11 @@
+apiVersion: usvc-dev.developer.microsoft.com/v1
+kind: Executable
+metadata:
+  name: one-second
+spec:
+  executable: "/usr/bin/env"
+  workingDirectory: $HOME
+  args:
+    - bash
+    - "-c"
+    - "sleep 1; exit 17"
