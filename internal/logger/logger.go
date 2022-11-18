@@ -1,17 +1,44 @@
 package logger
 
 import (
+	"os"
+
 	"github.com/go-logr/logr"
 	zapr "github.com/go-logr/zapr"
+	"github.com/spf13/pflag"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	kubezap "sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
 
 // Create a logger, returning a flush function and error
-func NewLogger(opts ...kubezap.Opts) (logr.Logger, func()) {
-	zapLogger := kubezap.NewRaw(opts...)
+func NewLogger() (logr.Logger, func()) {
+	opts := []kubezap.Opts{}
+
+	fs := pflag.NewFlagSet("DCP logger", pflag.ContinueOnError)
+	fs.ParseErrorsWhitelist.UnknownFlags = true
+	AddLevelFlag(fs, func(le zapcore.LevelEnabler) {
+		opts = append(opts, func(o *kubezap.Options) {
+			o.Level = le
+		})
+	})
+
+	var zapLogger *zap.Logger
+	err := fs.Parse(os.Args[1:])
+	if err == nil {
+		zapLogger = kubezap.NewRaw(opts...)
+	} else {
+		// If we cannot parse the level, we will just take the defaults
+		zapLogger = kubezap.NewRaw()
+	}
 	flushFn := func() {
 		_ = zapLogger.Sync() // Best effort
 	}
 	logger := zapr.NewLogger(zapLogger)
 	return logger, flushFn
+}
+
+func AddLevelFlag(fs *pflag.FlagSet, onLevelEnablerAvailabe func(zapcore.LevelEnabler)) {
+	levelVal := NewLevelFlagValue(onLevelEnablerAvailabe)
+	fs.Var(&levelVal, "v", "Logging verbosity level. Can be one of 'debug', 'info', or 'error', or any positive integer corresponding to increasing levels of debug verbosity")
 }

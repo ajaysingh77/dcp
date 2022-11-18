@@ -68,9 +68,9 @@ func (s *ApiServer) Run(ctx context.Context) error {
 		return err
 	}
 
-	// Run the API server
-	fs := pflag.NewFlagSet("dcpd", pflag.ContinueOnError)
-	fs.AddGoFlagSet(flag.CommandLine)
+	fs := pflag.NewFlagSet("DCP API server", pflag.ContinueOnError)
+	fs.ParseErrorsWhitelist.UnknownFlags = true
+	fs.AddGoFlagSet(flag.CommandLine) // Adds flags defined by standard K8s packages, which put them in flag.CommandLine flag set.
 	options.ServingOptions.AddFlags(fs)
 	err = fs.Parse(os.Args[1:])
 	if err != nil {

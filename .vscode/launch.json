@@ -10,7 +10,8 @@
             "args": [
                 "--secure-port=9562", 
                 "--token=outdoor-salad",
-                "--kubeconfig", "${workspaceFolder}/kubeconfig"
+                "--kubeconfig", "${workspaceFolder}/kubeconfig",
+                "--v=1"
             ],
         },
     ]
