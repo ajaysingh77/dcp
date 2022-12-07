@@ -6,9 +6,9 @@ require (
 	github.com/go-logr/logr v1.2.3
 	github.com/go-logr/zapr v1.2.3
 	github.com/spf13/pflag v1.0.5
-	github.com/stretchr/testify v1.7.0
+	github.com/stretchr/testify v1.8.1
 	github.com/tilt-dev/tilt-apiserver v0.7.0
-	github.com/usvc-dev/stdtypes v0.1.8
+	github.com/usvc-dev/stdtypes v0.1.9
 	go.uber.org/zap v1.21.0
 	k8s.io/apimachinery v0.25.0
 	k8s.io/apiserver v0.25.0

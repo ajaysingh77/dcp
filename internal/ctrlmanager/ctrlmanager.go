@@ -72,11 +72,7 @@ func (m *CtrlManager) Run(ctx context.Context) error {
 		return err
 	}
 
-	exCtrl := stdcontrollers.ExecutableReconciler{
-		Client:          mgr.GetClient(),
-		Log:             log,
-		ProcessExecutor: process.NewOSExecutor(),
-	}
+	exCtrl := stdcontrollers.NewExecutableReconciler(mgr.GetClient(), log, process.NewOSExecutor())
 	if err = exCtrl.SetupWithManager(mgr); err != nil {
 		log.Error(err, "unable to set up Executable controller")
 		return err
