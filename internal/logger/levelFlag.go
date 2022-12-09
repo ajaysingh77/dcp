@@ -40,7 +40,7 @@ func (lfv *levelFlagValue) Set(flagValue string) error {
 		}
 
 		if logLevel > 0 {
-			intLevel := -1 * logLevel
+			intLevel := -1 * logLevel // Zap has the levels backwards
 			lfv.onLevelEnablerAvailable(zap.NewAtomicLevelAt(zapcore.Level(int8(intLevel))))
 		} else {
 			return fmt.Errorf("invalid log level \"%s\"", flagValue)

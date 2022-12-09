@@ -4,14 +4,15 @@ import (
 	"os"
 
 	"github.com/go-logr/logr"
-	zapr "github.com/go-logr/zapr"
+	"github.com/go-logr/zapr"
 	"github.com/spf13/pflag"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	kubezap "sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
 
-// Create a logger, returning a flush function and error
+// Create a logger and return it together with a function to flush the output buffers.
+// The logger also understands the "-v" logging verbosity level parameter.
 func NewLogger() (logr.Logger, func()) {
 	opts := []kubezap.Opts{}
 
