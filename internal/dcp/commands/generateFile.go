@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/usvc-dev/apiserver/internal/osutil"
+	"github.com/usvc-dev/apiserver/internal/password"
 )
 
 type generateFileFlagData struct {
@@ -17,9 +18,18 @@ type generateFileFlagData struct {
 	overwrite bool
 }
 
-var generateFileFlags generateFileFlagData
+type passwordData struct {
+	password    string
+	composition password.PasswordComposition
+}
+type passwordSet map[string]passwordData
+
+var (
+	generateFileFlags generateFileFlagData
+)
 
 const (
+	// Flag names
 	inputFlag       = "input"
 	inputFlagShort  = "i"
 	outputFlag      = "output"
@@ -36,20 +46,22 @@ func NewGenerateFileCommand() *cobra.Command {
 Use this command to process a template and save the resulting output to a file, for example:
 
     dcp generate-file --input local.env.template --output local.env
-	
+
 If --input parameter is missing, the template content will be read from standard input.
 If --output parameter is missing, the resulting content will be written to standard output.
 
 The template file uses Go text templates syntax: https://pkg.go.dev/text/template
 Additional functions that can be used inside the template are:
 
-  randomPassword lowerCase upperCase digits symbols
-	Parameters:
-	  lowerCase is the number of lowercase letters in the password
-	  upperCase is the number of uppercase letters in the password
-	  digits is the number of digits (0-9) in the password
-	  symbols is the number of symbol characters in the password
-	Default values for parameters are 8, 8, 4, and 0.`,
+  randomPassword id
+  randomPasswordExt id lowerCase upperCase digits symbols
+  Parameters:
+    id is the "password identifier"; using the same identifier in different parts of a template will result in the same random password;
+    lowerCase is the number of lowercase letters in the password;
+    upperCase is the number of uppercase letters in the password;
+    digits is the number of digits (0-9) in the password;
+    symbols is the number of symbol characters in the password.
+  Default values for parameters (for the "randomPassword" function variant) are 8, 8, 4, and 0.`,
 
 		RunE: generateFile,
 		Args: cobra.NoArgs,
@@ -93,12 +105,10 @@ func generateFile(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("template file could not be read: %w", err)
 	}
 
-	t, err := template.New("content").Parse(string(contentBytes))
+	t, err := template.New("content").Funcs(getDcpFuncMap()).Parse(string(contentBytes))
 	if err != nil {
 		return fmt.Errorf("the template could not be parsed: %w", err)
 	}
-
-	// TODO: add randomPassword function to the template context
 
 	err = t.Execute(output, nil)
 	if err != nil {
@@ -144,4 +154,70 @@ func openOrCreateOutputFile(fileName string, newFilePerm os.FileMode) (*os.File,
 	}
 
 	return output, nil
+}
+
+func getDcpFuncMap() template.FuncMap {
+	var ps passwordSet = make(map[string]passwordData)
+
+	funcs := template.FuncMap{
+		"randomPassword": func(id string) (string, error) {
+			return ps.randomPassword(id)
+		},
+		"randomPasswordEx": func(id string, lowercase, uppercase, digits, symbols uint) (string, error) {
+			return ps.randomPasswordExt(id, lowercase, uppercase, digits, symbols)
+		},
+	}
+
+	return funcs
+}
+
+const mustMatchComposition = true
+const acceptAnyCompostion = false
+
+var defaultComposition = password.PasswordComposition{
+	NumLowercase: 8,
+	NumUppercase: 8,
+	NumDigits:    4,
+	NumSymbols:   0,
+}
+
+func (ps *passwordSet) randomPassword(id string) (string, error) {
+	return ps.randomPasswordImpl(id, defaultComposition, acceptAnyCompostion)
+}
+
+func (ps *passwordSet) randomPasswordExt(id string, lowercase, uppercase, digits, symbols uint) (string, error) {
+	cmp := password.PasswordComposition{
+		NumLowercase: lowercase,
+		NumUppercase: uppercase,
+		NumDigits:    digits,
+		NumSymbols:   symbols,
+	}
+
+	return ps.randomPasswordImpl(id, cmp, mustMatchComposition)
+}
+
+func (ps *passwordSet) randomPasswordImpl(id string, cmp password.PasswordComposition, compositionMustMatch bool) (string, error) {
+	if id == "" {
+		return "", fmt.Errorf("password ID must not be empty")
+	}
+
+	pwdData, found := (*ps)[id]
+	if !found {
+		pwd, err := password.Generate(cmp)
+		if err != nil {
+			return "", err
+		} else {
+			(*ps)[id] = passwordData{
+				password:    pwd,
+				composition: cmp,
+			}
+			return pwd, nil
+		}
+	} else {
+		if compositionMustMatch && cmp != pwdData.composition {
+			return "", fmt.Errorf("password '%s' is used more than once, but with different password composition", id)
+		} else {
+			return pwdData.password, nil
+		}
+	}
 }

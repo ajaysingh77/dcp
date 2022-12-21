@@ -5,16 +5,16 @@ go 1.19
 require (
 	github.com/go-logr/logr v1.2.3
 	github.com/go-logr/zapr v1.2.3
+	github.com/spf13/cobra v1.6.1
 	github.com/spf13/pflag v1.0.5
 	github.com/stretchr/testify v1.8.1
 	github.com/tilt-dev/tilt-apiserver v0.7.0
-	github.com/usvc-dev/stdtypes v0.1.9
+	github.com/usvc-dev/stdtypes v0.1.10
 	go.uber.org/zap v1.21.0
 	k8s.io/apimachinery v0.25.0
 	k8s.io/apiserver v0.25.0
 	k8s.io/client-go v0.25.0
 	sigs.k8s.io/controller-runtime v0.13.0
-	github.com/spf13/cobra v1.6.1
 )
 
 require (
