@@ -1,0 +1,23 @@
+# A sample database container--to instante run
+#
+# MSSQL_SA_PASSWORD=somepassword gomplate -f msssql.yaml | kubectl --kubeconfig ./kubeconfig apply -f -
+#
+apiVersion: usvc-dev.developer.microsoft.com/v1
+kind: Container
+metadata:
+  name: db
+spec:
+  image: mcr.microsoft.com/mssql/server:2022-latest 
+  volumeMounts:
+    - type: volume
+      source: sql-data
+      target: /data/db
+  ports:
+    - hostPort: 1433
+      containerPort: 1433
+  env:
+    - name: ACCEPT_EULA
+      value: "Y"
+    - name: MSSQL_SA_PASSWORD
+      value: {{ .Env.MSSQL_SA_PASSWORD }}
+  restartPolicy: unless-stopped

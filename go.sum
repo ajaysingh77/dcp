@@ -252,6 +252,8 @@ github.com/sirupsen/logrus v1.2.0/go.mod h1:LxeOpSwHxABJmUn/MG1IvRgCAasNZTLOkJPx
 github.com/sirupsen/logrus v1.4.2/go.mod h1:tLMulIdttU9McNUspp0xgXVQah82FyeX6MwdIuYE2rE=
 github.com/sirupsen/logrus v1.6.0/go.mod h1:7uNnSEd1DgxDLC74fIahvMZmmYsHGZGEOFrfsX/uA88=
 github.com/sirupsen/logrus v1.8.1 h1:dJKuHgqk1NNQlqoA6BTlM1Wf9DOH3NBjQyu0h9+AZZE=
+github.com/smallnest/chanx v1.1.1-0.20221229115046-2c313971bc4b h1:K4JjfV4+5h2o3Lw3AGRbdqXPMcd65XgdooFmM+wqP2A=
+github.com/smallnest/chanx v1.1.1-0.20221229115046-2c313971bc4b/go.mod h1:+4nWMF0+CqEcU74SnX2NxaGqZ8zX4pcQ8Jcs77DbX5A=
 github.com/soheilhy/cmux v0.1.5 h1:jjzc5WVemNEDTLwv9tlmemhC73tI08BNOIGwBOo10Js=
 github.com/spaolacci/murmur3 v0.0.0-20180118202830-f09979ecbc72/go.mod h1:JwIasOWyU6f++ZhiEuf87xNszmSA2myDM2Kzu9HwQUA=
 github.com/spf13/afero v1.2.2/go.mod h1:9ZxEEn6pIJ8Rxe320qSDBk6AsU0r9pR7Q4OcevTdifk=
@@ -278,8 +280,16 @@ github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o
 github.com/tilt-dev/tilt-apiserver v0.7.0 h1:mJtJ9VJwV2vRhR/p6Q5Ie5C35B1mpUggR8yC7nMkgE4=
 github.com/tilt-dev/tilt-apiserver v0.7.0/go.mod h1:lLroVFhXpkdkGxC31N/KqmIMZiROlXzXFCGRcr5K5J8=
 github.com/tmc/grpc-websocket-proxy v0.0.0-20201229170055-e5319fda7802 h1:uruHq4dN7GR16kFc5fp3d1RIYzJW5onx8Ybykw2YQFA=
-github.com/usvc-dev/stdtypes v0.1.11 h1:XkVCLyXx4i0i6oWn3P4TvS+y6ZKN533Kyl7I288GOpc=
-github.com/usvc-dev/stdtypes v0.1.11/go.mod h1:0YpT4XDLzoTQ1F5XoJnRA7qXoiIr4r1Ei2eA3LkIrWc=
+github.com/usvc-dev/stdtypes v0.2.0 h1:EJPW64HRc6LSmcBpAS32TuCX0Odrw5RBnk8M8rUa3tc=
+github.com/usvc-dev/stdtypes v0.2.0/go.mod h1:qNmRhNGgVsm7Mer+pj4LHvSnKr3YKZsAWdloQW0OjCo=
+github.com/usvc-dev/stdtypes v0.2.1 h1:laH1L3ecBdkgoUYNI0MNHg/oM+58xDj/jhgsupjyzOc=
+github.com/usvc-dev/stdtypes v0.2.1/go.mod h1:qNmRhNGgVsm7Mer+pj4LHvSnKr3YKZsAWdloQW0OjCo=
+github.com/usvc-dev/stdtypes v0.2.2 h1:Lm7+iV3radW5YmYwbKrk4wxk1QJDisG5/Z8IbwgnUnk=
+github.com/usvc-dev/stdtypes v0.2.2/go.mod h1:qNmRhNGgVsm7Mer+pj4LHvSnKr3YKZsAWdloQW0OjCo=
+github.com/usvc-dev/stdtypes v0.2.3 h1:27HlFgp5o6kpa7aeov1CBb4rkiS8rCYPKJZjqeNXfDY=
+github.com/usvc-dev/stdtypes v0.2.3/go.mod h1:qNmRhNGgVsm7Mer+pj4LHvSnKr3YKZsAWdloQW0OjCo=
+github.com/usvc-dev/stdtypes v0.2.4 h1:hw2/F2fNaZRwq1Hv8JozXUgybHVrWR0eWS76jvnfQAo=
+github.com/usvc-dev/stdtypes v0.2.4/go.mod h1:qNmRhNGgVsm7Mer+pj4LHvSnKr3YKZsAWdloQW0OjCo=
 github.com/xeipuuv/gojsonpointer v0.0.0-20180127040702-4e3ac2762d5f/go.mod h1:N2zxlSyiKSe5eX1tZViRH5QA0qijqEDrYZiPEAiq3wU=
 github.com/xeipuuv/gojsonreference v0.0.0-20180127040603-bd5ef7bd5415/go.mod h1:GwrjFmJcFw6At/Gs6z4yjiIwzuJ1/+UwLxMQDVQXShQ=
 github.com/xeipuuv/gojsonschema v1.2.0/go.mod h1:anYRn/JVcOK2ZgGU+IjEV4nwlhoK5sQluxsYJ78Id3Y=

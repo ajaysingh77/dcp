@@ -17,6 +17,7 @@ import (
 
 const (
 	msgApiServerStartupFailed = "API server could not be started"
+	dataFolderPath            = "data" // Not really used for in-memory storage, but needs to be consistent between CRDs.
 )
 
 type ApiServer struct {
@@ -58,7 +59,9 @@ func (s *ApiServer) Run(ctx context.Context) error {
 	const openApiConfigrationName = "DCP"
 	const openApiConfigurationVersion = "1.0.0" // TODO: use DCP executable version
 	builder := serverbuilder.NewServerBuilder().
-		WithResourceMemoryStorage(&stdtypes_apiv1.Executable{}, "data").
+		WithResourceMemoryStorage(&stdtypes_apiv1.Executable{}, dataFolderPath).
+		WithResourceMemoryStorage(&stdtypes_apiv1.Container{}, dataFolderPath).
+		WithResourceMemoryStorage(&stdtypes_apiv1.ContainerVolume{}, dataFolderPath).
 		WithOpenAPIDefinitions(openApiConfigrationName, openApiConfigurationVersion, stdtypes_openapi.GetOpenAPIDefinitions)
 
 	options, err := builder.ToServerOptions()

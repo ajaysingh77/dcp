@@ -12,6 +12,7 @@ import (
 
 	stdtypes_apiv1 "github.com/usvc-dev/stdtypes/api/v1"
 	stdcontrollers "github.com/usvc-dev/stdtypes/controllers"
+	"github.com/usvc-dev/stdtypes/pkg/docker"
 	"github.com/usvc-dev/stdtypes/pkg/process"
 )
 
@@ -72,9 +73,37 @@ func (m *CtrlManager) Run(ctx context.Context) error {
 		return err
 	}
 
-	exCtrl := stdcontrollers.NewExecutableReconciler(mgr.GetClient(), log, process.NewOSExecutor())
+	processExecutor := process.NewOSExecutor()
+	containerOrchestrator := docker.NewDockerCliOrchestrator(log.WithName("DockerOrchestrator"), processExecutor)
+
+	exCtrl := stdcontrollers.NewExecutableReconciler(
+		mgr.GetClient(),
+		log.WithName("ExecutableReconciler"),
+		processExecutor,
+	)
 	if err = exCtrl.SetupWithManager(mgr); err != nil {
 		log.Error(err, "unable to set up Executable controller")
+		return err
+	}
+
+	containerCtrl := stdcontrollers.NewContainerReconciler(
+		ctx,
+		mgr.GetClient(),
+		log.WithName("ContainerReconciler"),
+		containerOrchestrator,
+	)
+	if err = containerCtrl.SetupWithManager(mgr); err != nil {
+		log.Error(err, "unable to set up Container controller")
+		return err
+	}
+
+	volumeCtrl := stdcontrollers.NewVolumeReconciler(
+		mgr.GetClient(),
+		log.WithName("VolumeReconciler"),
+		containerOrchestrator,
+	)
+	if err = volumeCtrl.SetupWithManager(mgr); err != nil {
+		log.Error(err, "unable to set up ContainerVolume controller")
 		return err
 	}
 
