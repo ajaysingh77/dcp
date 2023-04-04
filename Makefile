@@ -57,12 +57,12 @@ build: build-dcpd build-dcp ## Builds all binaries (DCP CLI and DCP API server)
 
 .PHONY: build-dcpd
 build-dcpd: $(DCPD_BINARY) ## Builds DCP API server binary (dcpd)
-$(DCPD_BINARY): $(OUTPUT_BIN) $(GO_SOURCES)
+$(DCPD_BINARY): $(GO_SOURCES) | $(OUTPUT_BIN) 
 	go build -o $(DCPD_BINARY) ./cmd/dcpd
 
 .PHONY: build-dcp
 build-dcp: $(DCP_BINARY) ## Builds DCP CLI binary
-$(DCP_BINARY): ${OUTPUT_BIN} $(GO_SOURCES)
+$(DCP_BINARY): $(GO_SOURCES) | ${OUTPUT_BIN}
 	go build -o $(DCP_BINARY) ./cmd/dcp
 
 .PHONY: clean
@@ -102,5 +102,5 @@ $(TOOL_BIN):
 
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT)
-$(GOLANGCI_LINT): $(TOOL_BIN)
+$(GOLANGCI_LINT): | $(TOOL_BIN)
 	[[ -s $(TOOL_BIN)/golangci-lint ]] || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(TOOL_BIN) $(GOLANGCI_LINT_VERSION)
