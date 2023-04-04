@@ -8,7 +8,7 @@ This repository contains core components of Developer Control Plane tool:
 
 ## Development environment setup
 You will need:
-- Go 1.19 or newer
+- Go 1.20 or newer
 - `make` tool (`make` version 3.81 or newer)
 
 Supported operating systems for development are Linux and MacOS; Windows is not supported at this time.
