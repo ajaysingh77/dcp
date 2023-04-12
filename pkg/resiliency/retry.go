@@ -24,7 +24,7 @@ func RetryGet[T any](ctx context.Context, timeout time.Duration, factory func() 
 
 	switch {
 	case err != nil && errors.Is(err, context.DeadlineExceeded):
-		// Inform the caller about the timeout AND the last attemt error.
+		// Inform the caller about the timeout AND the last attempt error.
 		return *new(T), errors.Join(lastAttemptErr, err)
 	case err != nil:
 		return *new(T), err
