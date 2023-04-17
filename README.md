@@ -39,7 +39,7 @@ To start DCP API server run
 
 ```shell
 make build
-sudo -E make install
+make install
 ~/.dcp/ext/dcpd -v=debug
 ```
 
@@ -56,6 +56,18 @@ To shut down the DCP API server just press Ctrl+c in the terminal.
 
 A debugging configuration named `dcpd launch` is provided to run dcpd under the debugger. You can F5 it in vs code normally, nothing extra is required other than VS Code Go extension. You might want to change the current working directory though, so that relative paths to executables are resolved properly.
 
+## Making DCP available from $PATH
+
+To make `dcp` CLI available from command line, run `sudo -E make link-dcp-to-local-bin`. This is a one-time operation that will create a link from `/usr/local/bin/dcp` to `~/.dcp/dcp` executable. Not recommended for machines shared by many people :-) but handy for a development box.
+
+## Debugging DCP CLI
+
+A couple of debugging configurations are provided in `.vscode/launch.json`:
+
+- `dcp start-apiserver` will run the API server and controllers
+- `dcp up todo-csharp-sql-swa-func` will do `dcp up` on the ToDo CSharp SQL Azure sample application.
+
+You can use these configurations as a starting point to create your own configurations for specific scenarios. Check out [VS Code Go debugging wiki](https://github.com/golang/vscode-go/wiki/debugging) for more information.
 
 ## Troubleshooting tips
 
