@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/usvc-dev/apiserver/pkg/extensions"
-	"github.com/usvc-dev/stdtypes/pkg/process"
-	"github.com/usvc-dev/stdtypes/pkg/slices"
+	"github.com/microsoft/usvc-apiserver/pkg/extensions"
+	"github.com/microsoft/usvc-stdtypes/pkg/process"
+	"github.com/microsoft/usvc-stdtypes/pkg/slices"
 )
 
 type DcpExtension struct {

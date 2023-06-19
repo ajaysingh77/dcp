@@ -17,7 +17,7 @@ Supported operating systems for development are Linux and MacOS; Windows is not 
 Until `usvc-dev` project becomes public (no plans for that currently), the Go module system needs to be told that repositories under this project are private and global proxies/checksums should not be used for them:
 
 ```shell
-go env -w 'GOPRIVATE=github.com/usvc-dev/*'
+go env -w 'GOPRIVATE=github.com/microsoft/usvc-*'
 ```
 
 This setting applies to your Go installation (is shared between all repositories cloned onto your development machine). For more information see [Go private modules documentation](https://go.dev/ref/mod#private-modules).

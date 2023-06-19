@@ -1,4 +1,4 @@
-module github.com/usvc-dev/apiserver
+module github.com/microsoft/usvc-apiserver
 
 go 1.20
 
@@ -6,11 +6,11 @@ require (
 	github.com/cenkalti/backoff/v4 v4.2.0
 	github.com/go-logr/logr v1.2.3
 	github.com/go-logr/zapr v1.2.3
+	github.com/microsoft/usvc-stdtypes v0.4.17
 	github.com/spf13/cobra v1.6.1
 	github.com/spf13/pflag v1.0.5
 	github.com/stretchr/testify v1.8.1
 	github.com/tilt-dev/tilt-apiserver v0.8.0
-	github.com/usvc-dev/stdtypes v0.4.16
 	go.uber.org/zap v1.24.0
 	k8s.io/apimachinery v0.26.1
 	k8s.io/apiserver v0.26.1

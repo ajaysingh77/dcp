@@ -6,7 +6,7 @@ import (
 
 	kubeapiserver "k8s.io/apiserver/pkg/server"
 
-	"github.com/usvc-dev/apiserver/internal/dcpd/commands"
+	"github.com/microsoft/usvc-apiserver/internal/dcpd/commands"
 )
 
 const (

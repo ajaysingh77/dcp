@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/cobra"
 	ctrlruntime "sigs.k8s.io/controller-runtime"
 
-	"github.com/usvc-dev/apiserver/pkg/logger"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
 var (

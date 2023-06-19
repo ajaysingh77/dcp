@@ -3,7 +3,7 @@ package commands
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/usvc-dev/apiserver/pkg/extensions"
+	"github.com/microsoft/usvc-apiserver/pkg/extensions"
 )
 
 const StandardApiServerID = "dcpd"

@@ -8,10 +8,10 @@ import (
 	"github.com/spf13/cobra"
 	ctrlruntime "sigs.k8s.io/controller-runtime"
 
-	"github.com/usvc-dev/apiserver/internal/apiserver"
-	"github.com/usvc-dev/apiserver/pkg/extensions"
-	"github.com/usvc-dev/apiserver/pkg/kubeconfig"
-	"github.com/usvc-dev/apiserver/pkg/logger"
+	"github.com/microsoft/usvc-apiserver/internal/apiserver"
+	"github.com/microsoft/usvc-apiserver/pkg/extensions"
+	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
 var (

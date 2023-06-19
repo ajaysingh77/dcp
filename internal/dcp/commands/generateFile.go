@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/usvc-dev/apiserver/internal/osutil"
-	"github.com/usvc-dev/apiserver/internal/password"
+	"github.com/microsoft/usvc-apiserver/internal/osutil"
+	"github.com/microsoft/usvc-apiserver/internal/password"
 )
 
 type generateFileFlagData struct {

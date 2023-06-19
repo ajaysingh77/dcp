@@ -12,13 +12,13 @@ import (
 	kubeapiserver "k8s.io/apiserver/pkg/server"
 	runtimelog "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/usvc-dev/apiserver/internal/appmgmt"
-	"github.com/usvc-dev/apiserver/internal/dcp/bootstrap"
-	"github.com/usvc-dev/apiserver/pkg/extensions"
-	"github.com/usvc-dev/apiserver/pkg/kubeconfig"
-	"github.com/usvc-dev/apiserver/pkg/logger"
-	"github.com/usvc-dev/stdtypes/pkg/maps"
-	"github.com/usvc-dev/stdtypes/pkg/slices"
+	"github.com/microsoft/usvc-apiserver/internal/appmgmt"
+	"github.com/microsoft/usvc-apiserver/internal/dcp/bootstrap"
+	"github.com/microsoft/usvc-apiserver/pkg/extensions"
+	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
+	"github.com/microsoft/usvc-stdtypes/pkg/maps"
+	"github.com/microsoft/usvc-stdtypes/pkg/slices"
 )
 
 type upFlagData struct {

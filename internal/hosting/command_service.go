@@ -7,8 +7,8 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/usvc-dev/apiserver/pkg/io"
-	"github.com/usvc-dev/stdtypes/pkg/process"
+	"github.com/microsoft/usvc-apiserver/pkg/io"
+	"github.com/microsoft/usvc-stdtypes/pkg/process"
 )
 
 type CommandServiceRunOptions uint32

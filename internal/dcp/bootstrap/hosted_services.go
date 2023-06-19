@@ -5,8 +5,8 @@ import (
 	"os/exec"
 	"syscall"
 
-	"github.com/usvc-dev/apiserver/internal/hosting"
-	"github.com/usvc-dev/stdtypes/pkg/process"
+	"github.com/microsoft/usvc-apiserver/internal/hosting"
+	"github.com/microsoft/usvc-stdtypes/pkg/process"
 )
 
 func NewDcpExtensionService(appRootDir string, ext DcpExtension, command string, invocationFlags []string) (*hosting.CommandService, error) {

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/usvc-dev/apiserver/internal/dcp/commands"
+	"github.com/microsoft/usvc-apiserver/internal/dcp/commands"
 )
 
 const (

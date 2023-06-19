@@ -7,9 +7,9 @@ import (
 
 	"github.com/go-logr/logr"
 
-	"github.com/usvc-dev/apiserver/internal/hosting"
-	"github.com/usvc-dev/apiserver/pkg/extensions"
-	"github.com/usvc-dev/stdtypes/pkg/slices"
+	"github.com/microsoft/usvc-apiserver/internal/hosting"
+	"github.com/microsoft/usvc-apiserver/pkg/extensions"
+	"github.com/microsoft/usvc-stdtypes/pkg/slices"
 )
 
 type DcpRunEventHandlers struct {
