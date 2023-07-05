@@ -4,10 +4,6 @@ ifneq (3.81,$(firstword $(sort $(MAKE_VERSION) 3.81)))
     $(error This Makefile requires make version 3.81 or newer. You have make version $(MAKE_VERSION))
 endif
 
-# Setting SHELL to bash allows bash commands to be executed by recipes.
-# Options are set to exit when a recipe line exits non-zero or a piped command fails.
-SHELL = /usr/bin/env bash -o pipefail
-
 # Detect the operating system, and configure shell and shell commands.
 ifeq ($(OS),Windows_NT)
     detected_OS := Windows
