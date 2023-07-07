@@ -45,7 +45,7 @@ TOOL_BIN ?= $(repo_dir)/.toolbin
 GOLANGCI_LINT ?= $(TOOL_BIN)/golangci-lint$(exe_suffix)
 
 # Tool Versions
-GOLANGCI_LINT_VERSION ?= v1.51.2
+GOLANGCI_LINT_VERSION ?= v1.53.3
 
 # Disable C interop https://dave.cheney.net/2016/01/18/cgo-is-not-go
 export CGO_ENABLED=0
