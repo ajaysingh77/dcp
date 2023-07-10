@@ -69,7 +69,6 @@ func waitAllDeleted(ctx context.Context, client client.Client, kinds []commonapi
 	}
 
 	const pollImmediately = true // Don't wait before polling for the first time
-
 	err := wait.PollUntilContextCancel(ctx, 1*time.Second, pollImmediately, allDeleted)
 	if err != nil {
 		return fmt.Errorf("Could not ensure that all application assets were deleted: %w", err)
