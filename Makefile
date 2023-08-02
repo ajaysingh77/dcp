@@ -149,17 +149,6 @@ else
 	[[ -s $(OPENAPI_GEN) ]] || GOBIN=$(TOOL_BIN) go install k8s.io/code-generator/cmd/openapi-gen@$(CODE_GENERATOR_VERSION)
 endif
 
-.PHONY: golangci-lint
-ifeq ($(detected_OS),Windows)
-# golangci-lint does not have pwsh-compatible install script, so the user must install it manually
-golangci-lint:
-	@ try { golangci-lint --version } catch { throw "golangci-lint tool is missing. See https://golangci-lint.run/usage/install/#local-installation for installation instructions." }
-else
-golangci-lint: $(GOLANGCI_LINT)
-$(GOLANGCI_LINT): | $(TOOL_BIN)
-	[[ -s $(GOLANGCI_LINT) ]] || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(TOOL_BIN) $(GOLANGCI_LINT_VERSION)
-endif
-
 # delay-tool is used for process package testing
 .PHONY: delay-tool
 delay-tool: $(DELAY_TOOL)
