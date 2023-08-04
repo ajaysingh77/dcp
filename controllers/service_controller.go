@@ -195,8 +195,6 @@ func (r *ServiceReconciler) ensureServiceConfigFile(serviceName string, endpoint
 		return err
 	}
 
-	// if endpoints.Items == nil || len(endpoints.Items) == 0 {
-
 	proxyConfig := proxyConfig{
 		Http: httpConfig{
 			Routers: map[string]routerConfig{
@@ -209,7 +207,7 @@ func (r *ServiceReconciler) ensureServiceConfigFile(serviceName string, endpoint
 			Services: map[string]serviceConfig{
 				serviceName: {
 					LoadBalancer: loadBalancerConfig{
-						Servers: slices.Map[apiv1.Endpoint, serverConfig](endpoints.Items, func(endpoint apiv1.Endpoint) serverConfig {
+						Servers: slices.Map[apiv1.Endpoint, serverConfig](endpoints.Items, func(endpoint apiv1.Endpoint) serverConfig { // TODO: if there are no endpoints, send to a black hole address
 							return serverConfig{
 								URL: endpoint.Status.Url,
 							}
