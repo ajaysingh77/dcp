@@ -1,0 +1,8 @@
+apiVersion: usvc-dev.developer.microsoft.com/v1
+kind: Endpoint
+metadata:
+  name: myendpoint
+spec:
+  service: mysvc
+status:
+  url: http://localhost:5000

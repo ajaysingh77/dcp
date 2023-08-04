@@ -1,0 +1,5 @@
+apiVersion: usvc-dev.developer.microsoft.com/v1
+kind: Service
+metadata:
+  name: mysvc
+spec:
