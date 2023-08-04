@@ -194,7 +194,32 @@ func (r *ServiceReconciler) ensureServiceConfigFile(serviceName string, endpoint
 		return err
 	}
 
-	return writeObjectYamlToFile(svcConfigFilePath, struct{ foo string }{foo: "bar"})
+	// if endpoints.Items == nil || len(endpoints.Items) == 0 {
+
+	proxyConfig := proxyConfig{
+		Http: httpConfig{
+			Routers: map[string]routerConfig{
+				serviceName: {
+					EntryPoints: []string{"http"},
+					Service:     serviceName,
+					Rule:        fmt.Sprintf("Host(`%s.localhost`)", serviceName),
+				},
+			},
+			Services: map[string]serviceConfig{
+				serviceName: {
+					LoadBalancer: loadBalancerConfig{
+						Servers: []serverConfig{
+							{
+								URL: "http://localhost:1234",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	return writeObjectYamlToFile(svcConfigFilePath, proxyConfig)
 }
 
 func (r *ServiceReconciler) deleteServiceConfigFile(name string) error {
@@ -253,4 +278,50 @@ func writeObjectYamlToFile(fileName string, data interface{}) error {
 	}
 
 	return os.WriteFile(fileName, yamlContent, 0644)
+}
+
+// Sample of the YAML to write for a single service
+
+// ## DYNAMIC CONFIGURATION
+// http:
+//   routers:
+//     weatherRouter:
+//       entryPoints:
+//         - http
+//       rule: "Host(`weather.localhost`)"
+//       service: weather
+
+//   services:
+//     weather:
+//       loadBalancer:
+//         servers:
+//          # - url: http://0.0.0.0:0
+//            - url: http://localhost:5000
+//            - url: http://127.0.0.2:80
+
+type proxyConfig struct {
+	Http httpConfig `yaml:"http"`
+}
+
+type httpConfig struct {
+	Routers  map[string]routerConfig  `yaml:"routers"`
+	Services map[string]serviceConfig `yaml:"services"`
+}
+
+type routerConfig struct {
+	EntryPoints []string `yaml:"entryPoints"`
+	Rule        string   `yaml:"rule"`
+	Service     string   `yaml:"service"`
+}
+
+type serviceConfig struct {
+	LoadBalancer loadBalancerConfig `yaml:"loadBalancer"`
+}
+
+type loadBalancerConfig struct {
+	Servers []serverConfig `yaml:"servers"`
+}
+
+type serverConfig struct {
+	URL string `yaml:"url"`
 }
