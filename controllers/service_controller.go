@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
 type ServiceReconciler struct {
@@ -208,11 +209,11 @@ func (r *ServiceReconciler) ensureServiceConfigFile(serviceName string, endpoint
 			Services: map[string]serviceConfig{
 				serviceName: {
 					LoadBalancer: loadBalancerConfig{
-						Servers: []serverConfig{
-							{
-								URL: "http://localhost:1234",
-							},
-						},
+						Servers: slices.Map[apiv1.Endpoint, serverConfig](endpoints.Items, func(endpoint apiv1.Endpoint) serverConfig {
+							return serverConfig{
+								URL: endpoint.Status.Url,
+							}
+						}),
 					},
 				},
 			},
