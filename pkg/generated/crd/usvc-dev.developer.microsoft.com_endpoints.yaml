@@ -36,26 +36,22 @@ spec:
           spec:
             description: EndpointSpec defines the desired state of a Endpoint
             properties:
-              service:
+              serviceName:
                 description: Name of the service the endpoint implements
                 type: string
               serviceNamespace:
                 description: Namespace of the service the endpoint implements
                 type: string
             required:
-            - service
+            - serviceName
             - serviceNamespace
             type: object
           status:
             description: EndpointStatus describes the status of a Endpoint
             properties:
-              hostname:
-                description: The hostname of the endpoint
+              address:
+                description: The address of the endpoint
                 type: string
-              port:
-                description: The port of the endpoint
-                format: int32
-                type: integer
             type: object
         type: object
     served: true

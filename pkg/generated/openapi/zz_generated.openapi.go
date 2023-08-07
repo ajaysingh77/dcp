@@ -634,25 +634,11 @@ func schema_microsoft_usvc_apiserver_api_v1_EndpointStatus(ref common.ReferenceC
 				Description: "EndpointStatus describes the status of a Endpoint",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
-					"protocol": {
+					"address": {
 						SchemaProps: spec.SchemaProps{
-							Description: "The protocol of the endpoint",
+							Description: "The address of the endpoint",
 							Type:        []string{"string"},
 							Format:      "",
-						},
-					},
-					"host": {
-						SchemaProps: spec.SchemaProps{
-							Description: "The host (hostname or IP address) of the endpoint",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"port": {
-						SchemaProps: spec.SchemaProps{
-							Description: "The port of the endpoint",
-							Type:        []string{"integer"},
-							Format:      "int32",
 						},
 					},
 				},
