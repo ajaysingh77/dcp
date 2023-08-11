@@ -65,6 +65,7 @@ spec:
                 format: int32
                 type: integer
               state:
+                default: NotReady
                 description: The current state of the service
                 type: string
             type: object

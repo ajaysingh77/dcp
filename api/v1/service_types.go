@@ -21,8 +21,11 @@ import (
 type ServiceState string
 
 const (
+	// The service is not ready to accept connections
 	NotReady ServiceState = "NotReady"
-	Ready    ServiceState = "Ready"
+
+	// The service is ready to accept connections
+	Ready ServiceState = "Ready"
 )
 
 // ServiceSpec defines the desired state of a Service
@@ -42,6 +45,7 @@ type ServiceSpec struct {
 // +k8s:openapi-gen=true
 type ServiceStatus struct {
 	// The current state of the service
+	// +kubebuilder:default:=NotReady
 	State ServiceState `json:"state,omitempty"`
 
 	// The PID of the proxy process
