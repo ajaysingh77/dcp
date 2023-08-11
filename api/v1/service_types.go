@@ -18,6 +18,13 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 )
 
+type ServiceState string
+
+const (
+	NotReady ServiceState = "NotReady"
+	Ready    ServiceState = "Ready"
+)
+
 // ServiceSpec defines the desired state of a Service
 // +k8s:openapi-gen=true
 type ServiceSpec struct {
@@ -26,11 +33,17 @@ type ServiceSpec struct {
 
 	// The desired port for the service to run on
 	Port int32 `json:"port,omitempty"`
+
+	// The protocol, TCP or UDP
+	Protocol PortProtocol `json:"protocol,omitempty"`
 }
 
 // ServiceStatus describes the status of a Service
 // +k8s:openapi-gen=true
 type ServiceStatus struct {
+	// The current state of the service
+	State ServiceState `json:"state,omitempty"`
+
 	// The PID of the proxy process
 	ProxyProcessPid int32 `json:"proxyProcessPid,omitempty"`
 
