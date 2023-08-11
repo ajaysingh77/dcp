@@ -22,10 +22,10 @@ type ServiceState string
 
 const (
 	// The service is not ready to accept connections
-	NotReady ServiceState = "NotReady"
+	ServiceStateNotReady ServiceState = "NotReady"
 
 	// The service is ready to accept connections
-	Ready ServiceState = "Ready"
+	ServiceStateReady ServiceState = "Ready"
 )
 
 // ServiceSpec defines the desired state of a Service
