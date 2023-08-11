@@ -1,19 +1,13 @@
-package dcpctrl
+package commands
 
 import (
-	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 	ctrlruntime "sigs.k8s.io/controller-runtime"
 
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
-var (
-	rootCmdLogger      logr.Logger
-	rootCmdFlushLogger func()
-)
-
-func NewRootCommand() *cobra.Command {
+func NewRootCommand(logger logger.Logger) *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:   "dcpctrl",
 		Short: "Runs standard DCP controllers (for Executable, Container, and ContainerVolume objects)",
@@ -25,17 +19,17 @@ func NewRootCommand() *cobra.Command {
 	dcpctrl is the host process that runs the controllers for the DCP API objects.`,
 		SilenceUsage: true,
 		PersistentPostRun: func(_ *cobra.Command, _ []string) {
-			rootCmdFlushLogger()
+			logger.Flush()
 		},
 	}
 
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true
 
-	rootCmd.AddCommand(NewGetCapabilitiesCommand())
-	rootCmd.AddCommand(NewRunControllersCommand())
+	rootCmd.AddCommand(NewGetCapabilitiesCommand(logger))
+	rootCmd.AddCommand(NewRunControllersCommand(logger))
 
-	rootCmdLogger, rootCmdFlushLogger = logger.NewLogger(rootCmd.PersistentFlags())
-	ctrlruntime.SetLogger(rootCmdLogger)
+	logger.AddLevelFlag(rootCmd.PersistentFlags())
+	ctrlruntime.SetLogger(logger.V(1))
 
 	return rootCmd
 }

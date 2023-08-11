@@ -59,7 +59,7 @@
             "type": "go",
             "request": "launch",
             "mode": "debug",
-            "program": "${workspaceFolder}/cmd/dcpctrl/dcpctrl.go",
+            "program": "${workspaceFolder}/cmd/dcpctrl/main.go",
             "args": [
                 "run-controllers",
                 "-v=1"

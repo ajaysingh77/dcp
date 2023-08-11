@@ -1,12 +1,13 @@
-package dcpctrl
+package commands
 
 import (
 	"github.com/spf13/cobra"
 
 	"github.com/microsoft/usvc-apiserver/pkg/extensions"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
-func NewGetCapabilitiesCommand() *cobra.Command {
+func NewGetCapabilitiesCommand(logger logger.Logger) *cobra.Command {
 	getCapabilitiesCmd := &cobra.Command{
 		Use:   "get-capabilities",
 		Short: "Returns the role for this DCP extension (controller host)",

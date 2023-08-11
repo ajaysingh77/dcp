@@ -3,19 +3,13 @@ package commands
 import (
 	"fmt"
 
-	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 	ctrlruntime "sigs.k8s.io/controller-runtime"
 
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
-var (
-	rootCmdLogger      logr.Logger
-	rootCmdFlushLogger func()
-)
-
-func NewRootCmd() (*cobra.Command, error) {
+func NewRootCmd(log logger.Logger) (*cobra.Command, error) {
 	rootCmd := &cobra.Command{
 		Use:   "dcp",
 		Short: "Runs and manages multi-service applications and their dependencies",
@@ -25,7 +19,7 @@ func NewRootCmd() (*cobra.Command, error) {
 	with minimum remote dependencies and maximum ease of use.`,
 		SilenceUsage: true,
 		PersistentPostRun: func(_ *cobra.Command, _ []string) {
-			rootCmdFlushLogger()
+			log.Flush()
 		},
 	}
 
@@ -34,26 +28,26 @@ func NewRootCmd() (*cobra.Command, error) {
 	var err error
 	var cmd *cobra.Command
 
-	if cmd, err = NewGenerateFileCommand(); cmd != nil {
+	if cmd, err = NewGenerateFileCommand(log); cmd != nil {
 		rootCmd.AddCommand(cmd)
 	} else {
-		return nil, fmt.Errorf("Could not set up 'generate-file' command: %w", err)
+		return nil, fmt.Errorf("could not set up 'generate-file' command: %w", err)
 	}
 
-	if cmd, err = NewUpCommand(); cmd != nil {
+	if cmd, err = NewUpCommand(log); cmd != nil {
 		rootCmd.AddCommand(cmd)
 	} else {
-		return nil, fmt.Errorf("Could not set up 'up' command: %w", err)
+		return nil, fmt.Errorf("could not set up 'up' command: %w", err)
 	}
 
-	if cmd, err = NewStartApiSrvCommand(); cmd != nil {
+	if cmd, err = NewStartApiSrvCommand(log); cmd != nil {
 		rootCmd.AddCommand(cmd)
 	} else {
-		return nil, fmt.Errorf("Could not set up 'start-apiserver' command: %w", err)
+		return nil, fmt.Errorf("could not set up 'start-apiserver' command: %w", err)
 	}
 
-	rootCmdLogger, rootCmdFlushLogger = logger.NewLogger(rootCmd.PersistentFlags())
-	ctrlruntime.SetLogger(rootCmdLogger)
+	log.AddLevelFlag(rootCmd.PersistentFlags())
+	ctrlruntime.SetLogger(log.V(1))
 
 	return rootCmd, nil
 }

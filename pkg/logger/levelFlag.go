@@ -20,36 +20,42 @@ var (
 
 type LevelFlagValue struct {
 	// This function will be called when we know what the "level enabler" is
-	onLevelEnablerAvailable func(zapcore.LevelEnabler)
-	value                   string
+	onLevelAvailable func(zapcore.Level)
+	value            string
 }
 
-func NewLevelFlagValue(onLevelEnablerAvailable func(zapcore.LevelEnabler)) LevelFlagValue {
+func NewLevelFlagValue(onLevelAvailable func(zapcore.Level)) LevelFlagValue {
 	return LevelFlagValue{
-		onLevelEnablerAvailable: onLevelEnablerAvailable,
+		onLevelAvailable: onLevelAvailable,
+	}
+}
+
+func StringToLevel(value string, defaultLevel zapcore.Level) (zapcore.Level, error) {
+	if level, namedLevel := levelStrings[strings.ToLower(value)]; namedLevel {
+		return level, nil
+	}
+
+	logLevel, err := strconv.Atoi(value)
+	if err != nil {
+		return defaultLevel, fmt.Errorf("invalid log level \"%s\"", value)
+	}
+
+	if logLevel > 0 {
+		intLevel := -1 * logLevel // Zap has the levels backwards
+		return zapcore.Level(int8(intLevel)), nil
+	} else {
+		return defaultLevel, fmt.Errorf("invalid log level \"%s\"", value)
 	}
 }
 
 func (lfv *LevelFlagValue) Set(flagValue string) error {
-	level, namedLevel := levelStrings[strings.ToLower(flagValue)]
-
-	if !namedLevel {
-		logLevel, err := strconv.Atoi(flagValue)
-		if err != nil {
-			return fmt.Errorf("invalid log level \"%s\"", flagValue)
-		}
-
-		if logLevel > 0 {
-			intLevel := -1 * logLevel // Zap has the levels backwards
-			lfv.onLevelEnablerAvailable(zap.NewAtomicLevelAt(zapcore.Level(int8(intLevel))))
-		} else {
-			return fmt.Errorf("invalid log level \"%s\"", flagValue)
-		}
+	if level, err := StringToLevel(flagValue, zapcore.InfoLevel); err != nil {
+		return err
 	} else {
-		lfv.onLevelEnablerAvailable(zap.NewAtomicLevelAt(level))
+		lfv.onLevelAvailable(level)
+		lfv.value = flagValue
 	}
 
-	lfv.value = flagValue
 	return nil
 }
 

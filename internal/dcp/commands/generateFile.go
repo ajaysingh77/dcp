@@ -10,6 +10,7 @@ import (
 
 	"github.com/microsoft/usvc-apiserver/internal/osutil"
 	"github.com/microsoft/usvc-apiserver/internal/password"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
 type generateFileFlagData struct {
@@ -37,7 +38,7 @@ const (
 	overwriteFlag   = "overwrite"
 )
 
-func NewGenerateFileCommand() (*cobra.Command, error) {
+func NewGenerateFileCommand(log logger.Logger) (*cobra.Command, error) {
 	generateFileCmd := &cobra.Command{
 		Use:   "generate-file",
 		Short: "Generate file from a template.",
@@ -63,7 +64,7 @@ Additional functions that can be used inside the template are:
     symbols is the number of symbol characters in the password.
   Default values for parameters (for the "randomPassword" function variant) are 8, 8, 4, and 0.`,
 
-		RunE: generateFile,
+		RunE: generateFile(log),
 		Args: cobra.NoArgs,
 	}
 
@@ -74,48 +75,50 @@ Additional functions that can be used inside the template are:
 	return generateFileCmd, nil
 }
 
-func generateFile(cmd *cobra.Command, args []string) error {
-	var err error
-	var input *os.File
-	if inputFileName := generateFileFlags.input; inputFileName != "" {
-		input, err = openInputFile(inputFileName)
-		if err != nil {
-			return err
+func generateFile(log logger.Logger) func(cmd *cobra.Command, args []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		var err error
+		var input *os.File
+		if inputFileName := generateFileFlags.input; inputFileName != "" {
+			input, err = openInputFile(inputFileName)
+			if err != nil {
+				return err
+			} else {
+				defer input.Close()
+			}
 		} else {
-			defer input.Close()
+			input = os.Stdin
 		}
-	} else {
-		input = os.Stdin
-	}
 
-	var output *os.File
-	if outputFileName := generateFileFlags.output; outputFileName != "" {
-		output, err = openOrCreateOutputFile(outputFileName, osutil.PermissionFileOwnerOnly)
-		if err != nil {
-			return err
+		var output *os.File
+		if outputFileName := generateFileFlags.output; outputFileName != "" {
+			output, err = openOrCreateOutputFile(outputFileName, osutil.PermissionFileOwnerOnly)
+			if err != nil {
+				return err
+			} else {
+				defer output.Close()
+			}
 		} else {
-			defer output.Close()
+			output = os.Stdout
 		}
-	} else {
-		output = os.Stdout
-	}
 
-	contentBytes, err := io.ReadAll(input)
-	if err != nil {
-		return fmt.Errorf("template file could not be read: %w", err)
-	}
+		contentBytes, err := io.ReadAll(input)
+		if err != nil {
+			return fmt.Errorf("template file could not be read: %w", err)
+		}
 
-	t, err := template.New("content").Funcs(getDcpFuncMap()).Parse(string(contentBytes))
-	if err != nil {
-		return fmt.Errorf("the template could not be parsed: %w", err)
-	}
+		t, err := template.New("content").Funcs(getDcpFuncMap()).Parse(string(contentBytes))
+		if err != nil {
+			return fmt.Errorf("the template could not be parsed: %w", err)
+		}
 
-	err = t.Execute(output, nil)
-	if err != nil {
-		return fmt.Errorf("the file could not be generated: %w", err)
-	}
+		err = t.Execute(output, nil)
+		if err != nil {
+			return fmt.Errorf("the file could not be generated: %w", err)
+		}
 
-	return nil
+		return nil
+	}
 }
 
 func openInputFile(fileName string) (*os.File, error) {

@@ -6,7 +6,8 @@ import (
 
 	kubeapiserver "k8s.io/apiserver/pkg/server"
 
-	"github.com/microsoft/usvc-apiserver/internal/commands/azdRenderer"
+	"github.com/microsoft/usvc-apiserver/internal/dcpctrl/commands"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
 const (
@@ -15,7 +16,10 @@ const (
 
 func main() {
 	ctx := kubeapiserver.SetupSignalContext()
-	root := azdRenderer.NewRootCommand()
+
+	logger := logger.New("dcpctrl")
+
+	root := commands.NewRootCommand(logger)
 	err := root.ExecuteContext(ctx)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

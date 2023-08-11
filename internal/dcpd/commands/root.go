@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
+	"k8s.io/klog/v2"
 	ctrlruntime "sigs.k8s.io/controller-runtime"
 
 	"github.com/microsoft/usvc-apiserver/internal/apiserver"
@@ -14,12 +14,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
-var (
-	rootCmdLogger      logr.Logger
-	rootCmdFlushLogger func()
-)
-
-func NewRootCmd() (*cobra.Command, error) {
+func NewRootCmd(logger logger.Logger) (*cobra.Command, error) {
 	rootCmd := &cobra.Command{
 		Use:   "dcpd",
 		Short: "Runs the DCP API server",
@@ -27,12 +22,12 @@ func NewRootCmd() (*cobra.Command, error) {
 
 	This executable is the DCP API server, which holds the application workload model(s),
 	and facilitates communication between DCP CLI, application renderers, and DCP controllers.
-	
+
 	By default (no command specified), this executable runs the DCP API server.
 	`,
-		RunE: runApiServer,
+		RunE: runApiServer(logger),
 		PersistentPostRun: func(_ *cobra.Command, _ []string) {
-			rootCmdFlushLogger()
+			logger.Flush()
 		},
 	}
 
@@ -42,18 +37,22 @@ func NewRootCmd() (*cobra.Command, error) {
 
 	kubeconfig.EnsureKubeconfigFlag(rootCmd.Flags())
 
-	rootCmdLogger, rootCmdFlushLogger = logger.NewLogger(rootCmd.PersistentFlags())
-	ctrlruntime.SetLogger(rootCmdLogger)
+	logger.AddLevelFlag(rootCmd.PersistentFlags())
+
+	klog.SetLogger(logger.V(1))
+	ctrlruntime.SetLogger(logger.V(1))
 
 	return rootCmd, nil
 }
 
-func runApiServer(cmd *cobra.Command, _ []string) error {
-	apiServer := apiserver.NewApiServer(string(extensions.ApiServerCapability), rootCmdFlushLogger)
-	err := apiServer.Run(cmd.Context())
-	if err == nil || errors.Is(err, context.Canceled) {
-		return nil
-	} else {
-		return err
+func runApiServer(logger logger.Logger) func(cmd *cobra.Command, _ []string) error {
+	return func(cmd *cobra.Command, _ []string) error {
+		apiServer := apiserver.NewApiServer(string(extensions.ApiServerCapability), logger)
+		err := apiServer.Run(cmd.Context())
+		if err == nil || errors.Is(err, context.Canceled) {
+			return nil
+		} else {
+			return err
+		}
 	}
 }

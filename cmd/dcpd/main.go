@@ -7,6 +7,7 @@ import (
 	kubeapiserver "k8s.io/apiserver/pkg/server"
 
 	"github.com/microsoft/usvc-apiserver/internal/dcpd/commands"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
 const (
@@ -17,7 +18,9 @@ const (
 func main() {
 	ctx := kubeapiserver.SetupSignalContext()
 
-	root, err := commands.NewRootCmd()
+	logger := logger.New("dcpd")
+
+	root, err := commands.NewRootCmd(logger)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(errSetup)

@@ -1,4 +1,4 @@
-package azdRenderer
+package commands
 
 import (
 	"context"
@@ -17,13 +17,14 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/dcpclient"
 	"github.com/microsoft/usvc-apiserver/pkg/extensions"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
 var (
 	renderWorkloadFlags rendererData
 )
 
-func NewRenderWorkloadCommand() *cobra.Command {
+func NewRenderWorkloadCommand(logger logger.Logger) *cobra.Command {
 	renderWorkloadCmd := &cobra.Command{
 		Use:   "render-workload",
 		Short: "Renders the workload of an application",
@@ -59,7 +60,7 @@ func renderWorkload(cmd *cobra.Command, _ []string) error {
 
 	workload, err := createWorkload(cmd.Context(), client)
 	if err != nil {
-		return fmt.Errorf("Application run failed. An error occurred when creating the workload: %w", err)
+		return fmt.Errorf("application run failed. An error occurred when creating the workload: %w", err)
 	}
 
 	for _, obj := range workload {
@@ -67,7 +68,7 @@ func renderWorkload(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			// TODO: "roll back", i.e. delete, all objects that have been created up to this point
 
-			return fmt.Errorf("Application run failed. An error occurred when creating object '%s' of type '%s': %w", obj.GetName(), obj.GetObjectKind().GroupVersionKind().Kind, err)
+			return fmt.Errorf("application run failed. An error occurred when creating object '%s' of type '%s': %w", obj.GetName(), obj.GetObjectKind().GroupVersionKind().Kind, err)
 		}
 	}
 

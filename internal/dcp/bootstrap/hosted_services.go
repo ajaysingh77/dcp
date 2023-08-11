@@ -17,6 +17,8 @@ func NewDcpExtensionService(appRootDir string, ext DcpExtension, command string,
 	cmd := exec.Command(ext.Path, allArgs...)
 	cmd.Env = os.Environ() // Use DCP CLI environment
 	cmd.Dir = appRootDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 
 	// Do not share the process group with dcp CLI process.
 	// This allows us, upon reception of Ctrl-C, to delay the shutdown

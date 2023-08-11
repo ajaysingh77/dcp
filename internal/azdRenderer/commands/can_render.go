@@ -1,4 +1,4 @@
-package azdRenderer
+package commands
 
 import (
 	"encoding/json"
@@ -11,17 +11,18 @@ import (
 
 	"github.com/microsoft/usvc-apiserver/internal/commands"
 	"github.com/microsoft/usvc-apiserver/pkg/extensions"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
 const (
-	noRootDir = "Root directory of the application not specified (--root-dir parameter is required)"
+	noRootDir = "root directory of the application not specified (--root-dir parameter is required)"
 )
 
 var (
 	canRenderFlags rendererData
 )
 
-func NewCanRenderCommand() *cobra.Command {
+func NewCanRenderCommand(logger logger.Logger) *cobra.Command {
 	canRenderCmd := &cobra.Command{
 		Use:   "can-render",
 		Short: "Determines whether a given application can be rendered by this extension",
@@ -56,7 +57,7 @@ func canRender(appRootDir string) (extensions.CanRenderResult, string, error) {
 	// If "azure.yaml" file is in the root, we are good to go
 	azureYamlPath := filepath.Join(appRootDir, "azure.yaml")
 	if _, err := os.Stat(azureYamlPath); err != nil {
-		responseErr := fmt.Errorf("Folder '%s' does not seem to be a root of Azure Dev CLI-enabled application: %w", canRenderFlags.appRootDir, err)
+		responseErr := fmt.Errorf("folder '%s' does not seem to be a root of Azure Dev CLI-enabled application: %w", canRenderFlags.appRootDir, err)
 		return extensions.CanRenderResultNo, responseErr.Error(), nil // The answer is no, but there was no unexpected error while determining that.
 	}
 

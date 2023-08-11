@@ -10,7 +10,6 @@ import (
 
 	"github.com/spf13/cobra"
 	kubeapiserver "k8s.io/apiserver/pkg/server"
-	runtimelog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/microsoft/usvc-apiserver/internal/appmgmt"
 	"github.com/microsoft/usvc-apiserver/internal/dcp/bootstrap"
@@ -30,14 +29,14 @@ var (
 	upFlags upFlagData
 )
 
-func NewUpCommand() (*cobra.Command, error) {
+func NewUpCommand(log logger.Logger) (*cobra.Command, error) {
 	upCmd := &cobra.Command{
 		Use:   "up",
 		Short: "Runs an application",
 		Long: `Runs an application.
 
 This command currently supports only Azure CLI-enabled applications of certain types.`,
-		RunE: runApp,
+		RunE: runApp(log),
 		Args: cobra.NoArgs,
 	}
 
@@ -50,66 +49,68 @@ This command currently supports only Azure CLI-enabled applications of certain t
 	return upCmd, nil
 }
 
-func runApp(cmd *cobra.Command, args []string) error {
-	appRootDir := upFlags.appRootDir
-	var err error
-	if appRootDir == "" {
-		appRootDir, err = os.Getwd()
-		if err != nil {
-			return fmt.Errorf("Could not determine the working directory: %w", err)
-		}
-	}
-
-	log := runtimelog.Log.WithName("up")
-
-	kubeconfigPath, err := kubeconfig.EnsureKubeconfigFlagValue(cmd.Flags())
-	if err != nil {
-		return err
-	}
-
-	commandCtx, cancelCommandCtx := context.WithCancel(kubeapiserver.SetupSignalContext())
-	defer cancelCommandCtx()
-
-	allExtensions, err := bootstrap.GetExtensions(commandCtx)
-	if err != nil {
-		return err
-	}
-
-	effRenderer, err := getEffectiveRenderer(commandCtx, appRootDir, allExtensions)
-	if err != nil {
-		return err
-	}
-
-	runEvtHandlers := bootstrap.DcpRunEventHandlers{
-		AfterApiSrvStart: func() error {
-			// Start the application
-			err := effRenderer.Render(commandCtx, appRootDir, kubeconfigPath)
-			return err
-		},
-		BeforeApiSrvShutdown: func() error {
-			// Shut down the application.
-			//
-			// Don't use commandCtx here--it is already cancelled when this function is called,
-			// so using it would result in immediate failure.
-			shutdownCtx, cancelShutdownCtx := context.WithTimeout(context.Background(), 1*time.Minute)
-			defer cancelShutdownCtx()
-			log.Info("Stopping the application...")
-			err := appmgmt.ShutdownApp(shutdownCtx)
+func runApp(log logger.Logger) func(cmd *cobra.Command, args []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		appRootDir := upFlags.appRootDir
+		var err error
+		if appRootDir == "" {
+			appRootDir, err = os.Getwd()
 			if err != nil {
-				return fmt.Errorf("Could not shut down the application gracefully: %w", err)
-			} else {
-				log.Info("Application stopped.")
-				return nil
+				return fmt.Errorf("could not determine the working directory: %w", err)
 			}
-		},
-	}
+		}
 
-	invocationFlags := []string{"--kubeconfig", kubeconfigPath}
-	if verbosityArg := logger.GetVerbosityArg(cmd.Flags()); verbosityArg != "" {
-		invocationFlags = append(invocationFlags, verbosityArg)
+		log := log.WithName("up")
+
+		kubeconfigPath, err := kubeconfig.EnsureKubeconfigFlagValue(cmd.Flags())
+		if err != nil {
+			return err
+		}
+
+		commandCtx, cancelCommandCtx := context.WithCancel(kubeapiserver.SetupSignalContext())
+		defer cancelCommandCtx()
+
+		allExtensions, err := bootstrap.GetExtensions(commandCtx)
+		if err != nil {
+			return err
+		}
+
+		effRenderer, err := getEffectiveRenderer(commandCtx, appRootDir, allExtensions)
+		if err != nil {
+			return err
+		}
+
+		runEvtHandlers := bootstrap.DcpRunEventHandlers{
+			AfterApiSrvStart: func() error {
+				// Start the application
+				err := effRenderer.Render(commandCtx, appRootDir, kubeconfigPath)
+				return err
+			},
+			BeforeApiSrvShutdown: func() error {
+				// Shut down the application.
+				//
+				// Don't use commandCtx here--it is already cancelled when this function is called,
+				// so using it would result in immediate failure.
+				shutdownCtx, cancelShutdownCtx := context.WithTimeout(context.Background(), 1*time.Minute)
+				defer cancelShutdownCtx()
+				log.Info("Stopping the application...")
+				err := appmgmt.ShutdownApp(shutdownCtx)
+				if err != nil {
+					return fmt.Errorf("could not shut down the application gracefully: %w", err)
+				} else {
+					log.Info("Application stopped.")
+					return nil
+				}
+			},
+		}
+
+		invocationFlags := []string{"--kubeconfig", kubeconfigPath}
+		if verbosityArg := logger.GetVerbosityArg(cmd.Flags()); verbosityArg != "" {
+			invocationFlags = append(invocationFlags, verbosityArg)
+		}
+		err = bootstrap.DcpRun(commandCtx, appRootDir, log, allExtensions, invocationFlags, runEvtHandlers)
+		return err
 	}
-	err = bootstrap.DcpRun(commandCtx, appRootDir, log, allExtensions, invocationFlags, runEvtHandlers)
-	return err
 }
 
 // The logic of getEffectiveRenderer() is as follows:
@@ -129,7 +130,7 @@ func getEffectiveRenderer(ctx context.Context, appRootDir string, allExtensions 
 	})
 	if len(renderers) == 0 {
 		// A. No renderers available.
-		return bootstrap.DcpExtension{}, fmt.Errorf("No application runners found. Check DCP installation.")
+		return bootstrap.DcpExtension{}, fmt.Errorf("no application runners found. Check DCP installation")
 	}
 
 	if upFlags.renderer != "" {
@@ -155,7 +156,7 @@ func getEffectiveRenderer(ctx context.Context, appRootDir string, allExtensions 
 
 		if canRenderResponse.Result == extensions.CanRenderResultNo {
 			// B2: The specified renderer is available, but cannot render.
-			return bootstrap.DcpExtension{}, fmt.Errorf("The specified application type '%s' does not match application located in '%s': %s", candidate.Id, appRootDir, canRenderResponse.Reason)
+			return bootstrap.DcpExtension{}, fmt.Errorf("the specified application type '%s' does not match application located in '%s': %s", candidate.Id, appRootDir, canRenderResponse.Reason)
 		} else {
 			// B3: The specified renderer is available and can render.
 			return candidate, nil
@@ -217,7 +218,7 @@ func whoCanRender(ctx context.Context, renderers []bootstrap.DcpExtension, appRo
 	var eList []error
 	for i, r := range rendererResponses {
 		if r.Err != nil {
-			eList = append(eList, fmt.Errorf("Could not determine whether application type '%s' can be started: %w", renderers[i].Id, r.Err))
+			eList = append(eList, fmt.Errorf("could not determine whether application type '%s' can be started: %w", renderers[i].Id, r.Err))
 		} else {
 			retval[i] = r.Response
 		}

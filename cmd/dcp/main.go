@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/microsoft/usvc-apiserver/internal/dcp/commands"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
 const (
@@ -13,7 +14,9 @@ const (
 )
 
 func main() {
-	root, err := commands.NewRootCmd()
+	logger := logger.New("dcp")
+
+	root, err := commands.NewRootCmd(logger)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(errSetup)
