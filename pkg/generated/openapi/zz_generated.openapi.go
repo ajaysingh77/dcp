@@ -1504,6 +1504,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ServiceSpec(ref common.ReferenceCall
 							Format:      "",
 						},
 					},
+					"addressAllocationMode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The mode for address allocation",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 				},
 			},
 		},

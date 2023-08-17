@@ -38,6 +38,9 @@ spec:
               address:
                 description: The desired address for the service to run on
                 type: string
+              addressAllocationMode:
+                description: The mode for address allocation
+                type: string
               port:
                 description: The desired port for the service to run on
                 format: int32

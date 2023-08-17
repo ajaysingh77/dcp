@@ -28,6 +28,19 @@ const (
 	ServiceStateReady ServiceState = "Ready"
 )
 
+type AddressAllocationMode string
+
+const (
+	// Bind only to 127.0.0.1
+	AddressAllocationModeIPv4ZeroOne AddressAllocationMode = "IPv4ZeroOne"
+
+	// Bind to any 127.*.*.* loopback address
+	AddressAllocationModeIPv4Loopback AddressAllocationMode = "IPv4Loopback"
+
+	// Bind only to ::1
+	AddressAllocationModeIPv6ZeroOne AddressAllocationMode = "IPv6ZeroOne"
+)
+
 // ServiceSpec defines the desired state of a Service
 // +k8s:openapi-gen=true
 type ServiceSpec struct {
@@ -39,6 +52,9 @@ type ServiceSpec struct {
 
 	// The protocol, TCP or UDP
 	Protocol PortProtocol `json:"protocol,omitempty"`
+
+	// The mode for address allocation
+	AddressAllocationMode AddressAllocationMode `json:"addressAllocationMode,omitempty"`
 }
 
 // ServiceStatus describes the status of a Service
