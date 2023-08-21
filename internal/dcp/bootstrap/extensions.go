@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
 	"github.com/microsoft/usvc-apiserver/pkg/extensions"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
@@ -43,7 +44,7 @@ var (
 )
 
 func GetExtensions(ctx context.Context) ([]DcpExtension, error) {
-	extDirs, err := GetExtensionsDirs()
+	extDirs, err := dcppaths.GetExtensionsDirs()
 	if err != nil {
 		return nil, err
 	}

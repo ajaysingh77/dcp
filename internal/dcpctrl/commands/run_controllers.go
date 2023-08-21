@@ -149,6 +149,16 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 			return err
 		}
 
+		serviceCtrl := controllers.NewServiceReconciler(
+			mgr.GetClient(),
+			log.WithName("ServiceReconciler"),
+			processExecutor,
+		)
+		if err = serviceCtrl.SetupWithManager(mgr); err != nil {
+			log.Error(err, "unable to set up Service controller")
+			return err
+		}
+
 		log.Info("starting controller manager")
 		err = mgr.Start(cmd.Context())
 		if err != nil {

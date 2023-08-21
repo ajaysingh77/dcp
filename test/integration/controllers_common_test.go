@@ -174,6 +174,15 @@ func startTestEnvironment(ctx context.Context) (func(), error) {
 		return nil, fmt.Errorf("failed to initialize ContainerVolume reconciler: %w", err)
 	}
 
+	serviceR := controllers.NewServiceReconciler(
+		mgr.GetClient(),
+		ctrl.Log.WithName("ServiceReconciler"),
+		processExecutor,
+	)
+	if err = serviceR.SetupWithManager(mgr); err != nil {
+		return nil, fmt.Errorf("failed to initialize Service reconciler: %w", err)
+	}
+
 	// Starts the controller manager and all the associated controllers
 	go func() {
 		_ = mgr.Start(ctx)

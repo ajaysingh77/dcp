@@ -1,4 +1,4 @@
-package bootstrap
+package dcppaths
 
 import (
 	"fmt"
@@ -9,6 +9,7 @@ import (
 
 const DcpRootDir = ".dcp"
 const DcpExtensionsDir = "ext"
+const DcpBinDir = "bin"
 const DcpExtensionsPathEnv = "DCP_EXTENSIONS_PATH"
 
 // Get path to DCP CLI executable
@@ -50,4 +51,13 @@ func GetExtensionsDirs() ([]string, error) {
 	}
 
 	return extensionPaths, nil
+}
+
+func GetDcpBinDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("could not determine the path to the user's home directory: %w", err)
+	}
+
+	return filepath.Join(home, DcpRootDir, DcpBinDir), nil
 }

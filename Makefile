@@ -48,6 +48,7 @@ endif
 OUTPUT_BIN ?= $(repo_dir)/bin
 DCP_DIR ?= $(home_dir)/.dcp
 EXTENSIONS_DIR ?= $(home_dir)/.dcp/ext
+BIN_DIR ?= $(home_dir)/.dcp/bin
 DCP_BINARY ?= ${OUTPUT_BIN}/dcp$(bin_exe_suffix)
 DCPD_BINARY ?= ${OUTPUT_BIN}/ext/dcpd$(bin_exe_suffix)
 DCPCTRL_BINARY ?= $(OUTPUT_BIN)/ext/dcpctrl$(bin_exe_suffix)
@@ -60,12 +61,14 @@ CONTROLLER_GEN ?= $(TOOL_BIN)/controller-gen$(exe_suffix)
 OPENAPI_GEN ?= $(TOOL_BIN)/openapi-gen$(exe_suffix)
 DELAY_TOOL ?= $(TOOL_BIN)/delay$(exe_suffix)
 ENVTEST ?= $(TOOL_BIN)/setup-envtest$(exe_suffix)
+TRAEFIK ?= $(TOOL_BIN)/traefik$(exe_suffix)
 
 # Tool Versions
 GOLANGCI_LINT_VERSION ?= v1.53.3
 CONTROLLER_TOOLS_VERSION ?= v0.12.0
 CODE_GENERATOR_VERSION ?= v0.27.3
 ENVTEST_K8S_VERSION = 1.27.1
+TRAEFIK_VERSION = v2.10.4
 
 # Disable C interop https://dave.cheney.net/2016/01/18/cgo-is-not-go
 export CGO_ENABLED=0
@@ -218,6 +221,23 @@ link-dcp: ## Links the dcp binary to /usr/local/bin (macOS/Linux ONLY). Use 'sud
 	ln -s -v $(DCP_DIR)/dcp$(bin_exe_suffix) /usr/local/bin/dcp$(bin_exe_suffix)
 endif
 
+.PHONY: install-proxy
+install-proxy:
+ifeq ($(detected_OS),Windows)
+	curl -sSfL https://github.com/traefik/traefik/releases/download/$(TRAEFIK_VERSION)/traefik_$(TRAEFIK_VERSION)_$(detected_OS)_amd64.zip --output $(TOOL_BIN)\traefik.zip
+	Expand-Archive -Force -Path $(TOOL_BIN)\traefik.zip -DestinationPath $(TOOL_BIN)
+else
+	curl -sSfL https://github.com/traefik/traefik/releases/download/$(TRAEFIK_VERSION)/traefik_$(TRAEFIK_VERSION)_$(detected_OS)_amd64.tar.gz --output $(TOOL_BIN)/traefik.tar.gz
+	tar -xzf $(TOOL_BIN)/traefik.tar.gz -C $(TOOL_BIN)
+endif
+	$(install) $(TOOL_BIN)/traefik$(exe_suffix) $(BIN_DIR)
+	$(install) $(TOOL_BIN)/LICENSE.md $(BIN_DIR)
+
+.PHONY: uninstall-proxy
+uninstall-proxy:
+	$(rm_f) $(BIN_DIR)/traefik$(exe_suffix)
+	$(rm_f) $(BIN_DIR)/LICENSE.md
+
 ##@ Test targets
 
 ifeq ($(detected_OS),Windows)
@@ -262,6 +282,9 @@ $(TOOL_BIN):
 
 $(EXTENSIONS_DIR):
 	$(mkdir) $(EXTENSIONS_DIR)
+
+$(BIN_DIR):
+	$(mkdir) $(BIN_DIR)
 
 $(DCP_DIR):
 	$(mkdir) $(DCP_DIR)
