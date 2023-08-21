@@ -92,10 +92,10 @@ func (e *TestProcessExecutor) SimulateProcessExit(t *testing.T, pid int32, exitC
 }
 
 func (e *TestProcessExecutor) FindAll(cmdPath string, cond func(pe ProcessExecution) bool) []ProcessExecution {
-	retval := make([]ProcessExecution, 0)
 	e.m.RLock()
 	defer e.m.RUnlock()
 
+	retval := make([]ProcessExecution, 0)
 	usingAbsPath := path.IsAbs(cmdPath)
 
 	for _, pe := range e.Executions {
