@@ -122,7 +122,7 @@ func (dco *DockerCliOrchestrator) RunContainer(ctx context.Context, options cont
 	for _, port := range options.Ports {
 		portVal := fmt.Sprintf("%d:%d", port.HostPort, port.ContainerPort)
 		if port.HostIP != "" {
-			portVal = fmt.Sprintf("%s/%s", port.HostIP, portVal)
+			portVal = fmt.Sprintf("%s:%s", port.HostIP, portVal)
 		}
 		if port.Protocol != "" {
 			portVal = fmt.Sprintf("%s/%s", portVal, port.Protocol)

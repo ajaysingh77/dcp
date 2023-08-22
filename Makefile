@@ -210,7 +210,7 @@ install: compile | $(DCP_DIR) $(EXTENSIONS_DIR) ## Installs all binaries to thei
 	$(install) $(DCP_BINARY) $(DCP_DIR)
 
 .PHONY: uninstall
-uninstall: ## Uninstalls all binaries from their destinations
+uninstall: uninstall-proxy ## Uninstalls all binaries from their destinations
 	$(rm_f) $(EXTENSIONS_DIR)/dcpd$(bin_exe_suffix)
 	$(rm_f) $(EXTENSIONS_DIR)/dcpctrl$(bin_exe_suffix)
 	$(rm_f) $(DCP_DIR)/dcp$(bin_exe_suffix)
@@ -222,7 +222,7 @@ link-dcp: ## Links the dcp binary to /usr/local/bin (macOS/Linux ONLY). Use 'sud
 endif
 
 .PHONY: install-proxy
-install-proxy:
+install-proxy: $(TOOL_BIN) $(BIN_DIR) ## Installs the Traefik proxy used (necessary for running workloads with Service objects)
 ifeq ($(detected_OS),Windows)
 	curl -sSfL https://github.com/traefik/traefik/releases/download/$(TRAEFIK_VERSION)/traefik_$(TRAEFIK_VERSION)_$(detected_OS)_amd64.zip --output $(TOOL_BIN)\traefik.zip
 	Expand-Archive -Force -Path $(TOOL_BIN)\traefik.zip -DestinationPath $(TOOL_BIN)
