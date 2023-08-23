@@ -468,12 +468,16 @@ You can read more about how finalizers work in [Kubernetes documentation](https:
 
 ### Deleting object hierarchies
 
-Kubernetes objects can form a hierarchy (actually, a directed graph) via `ownerReferences` metadata property. The general rule is, when ALL owners are deleted, the object with no owners left is subject to auto-deletion (is "garbage-collected"), but that can be changed based on "propagation policy" requested for owner deletion. Kubernetes recognizes three different policies:
+Kubernetes objects can form a hierarchy (actually, a directed graph) via `ownerReferences` metadata property. Objects can have multiple owners. The general rule is, when ALL owners are deleted, the object with no owners left is a candidate for automatic deletion. The following discussion assumes a single owner; when multiple owners are present, deleting the owner does not affect children other than the need to update `ownerReferences` (by removing the reference to deleted owner). 
 
-- `Background` (the default): causes parent (owner) to be deleted immediately, followed by auto-deletion of orphaned children.
-- `Foreground`: with this policy, children that are marked with `blockOwnerDeletion` flag will be deleted first, before the owner is deleted.
-- `Orphan`: this policy effectively ignores the owner references, leaving the child alone.
+Kubernetes does not implement a true auto-deletion of orphaned children. The deletion is always facilitated by some controller; however, Kubernetes has ability to specify the intent for how children should be deleted as part of parent deletion request. This is known as "propagation policy". Kubernetes recognizes three different policies:
+
+- `Background` (the default): the owner deletion is completed first; its children are deleted afterwards, asychronously. This means any client looking for the owner object will see the owner and all its childern, or receive a `NotFound` error. 
+- `Foreground`: with this policy, children that have an `ownerReference` with `blockOwnerDeletion` flag set to true must be deleted first, before the owner is garbage-collected. For clients it means that they may observe the owner in a "being deleted" state, with some children deleted, but others not (yet).
+- `Orphan`: this policy effectively ignores the owner references, decoupling the lifetime of the owner from its children.
 
 For more information refer to [Garbage Collection topic](https://kubernetes.io/docs/concepts/architecture/garbage-collection/) in Kubernetes documentation and [Using Finalizers to Control Deletion](https://kubernetes.io/blog/2021/05/14/using-finalizers-to-control-deletion/) Kubernetes blog post. 
 
-The presence of finalizers can make the auto-deletion process quite complicated. The most straightforward tactics is often to limit the scope of auto-deletion by relying on finalizers and owner object controllers to delete children as appropriate.
+The presence of finalizers can make the orchestration of object hierarchy deletion quite complicated. The most straightforward tactics is often to limit the scope of auto-deletion by relying on finalizers and owner object controllers to delete children as appropriate. This works well if it is the parent object controller that creates the children (think ReplicaSet and its Replicas). 
+
+Another possibility for object hierarchy deletion is to have child controllers watch the parent objects and delete children when the parent gets removed. This option is useful if it is the parent controller is not involved in child creation.
