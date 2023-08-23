@@ -11,13 +11,24 @@ type notificationType string
 const (
 	notificationTypeProcessRestarted  notificationType = "processRestarted"
 	notificationTypeSessionTerminated notificationType = "sessionTerminated"
+	notificationTypeServiceLogs       notificationType = "serviceLogs"
 )
 
-type ideRunSessionChangeNotification struct {
+type ideSessionNotificationBase struct {
 	NotificationType notificationType `json:"notification_type"`
-	PID              uint16           `json:"pid,omitempty"`
 	SessionID        string           `json:"session_id,omitempty"`
-	ExitCode         *int32           `json:"exit_code,omitempty"`
+}
+
+type ideRunSessionChangeNotification struct {
+	ideSessionNotificationBase
+	PID      uint16 `json:"pid,omitempty"`
+	ExitCode *int32 `json:"exit_code,omitempty"`
+}
+
+type ideSessionLogNotification struct {
+	ideSessionNotificationBase
+	IsStdErr   bool   `json:"is_std_err"`
+	LogMessage string `json:"log_message"`
 }
 
 func (scn *ideRunSessionChangeNotification) ToString() string {
