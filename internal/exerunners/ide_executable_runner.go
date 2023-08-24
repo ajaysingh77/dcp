@@ -496,11 +496,20 @@ func withNewLine(msg []byte) []byte {
 }
 
 func endsWith(a, b []byte) bool {
-	i := bytes.LastIndex(a, b)
-	if i == -1 {
+	// If a is shorter than b, a doesn't end with b.
+	if len(a) < len(b) {
 		return false
 	}
-	return i == len(a)-len(b)
+	
+	// If any of the last len(b) characters of a don't match b, a doesn't end with b.
+	start := len(a) - len(b)
+	for i := range b {
+		if a[start + i] != b[i] {
+			return false
+		}
+	}
+
+	return true
 }
 
 var _ controllers.ExecutableRunner = (*IdeExecutableRunner)(nil)
