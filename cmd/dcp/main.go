@@ -11,10 +11,12 @@ import (
 const (
 	errCommand = 1
 	errSetup   = 2
+	errPanic   = 3
 )
 
 func main() {
 	logger := logger.New("dcp")
+	defer logger.BeforeExit(func(value interface{}) { os.Exit(errPanic) })
 
 	root, err := commands.NewRootCmd(logger)
 	if err != nil {
@@ -23,6 +25,7 @@ func main() {
 	}
 
 	err = root.Execute()
+
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(errCommand)

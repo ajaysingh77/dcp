@@ -112,6 +112,7 @@ func (host *Host) Run(ctx context.Context, lifecycleMsgs chan<- LifecycleMessage
 	// Handle shutdown timeouts.
 	timeout := make(chan struct{}, 1)
 	go func() {
+		defer close(timeout)
 		<-ctx.Done()
 		if host.TimeoutFunc != nil {
 			// Override to control timeout behavior for testing
@@ -119,9 +120,6 @@ func (host *Host) Run(ctx context.Context, lifecycleMsgs chan<- LifecycleMessage
 		} else {
 			time.Sleep(ShutdownTimeout)
 		}
-
-		timeout <- struct{}{}
-		close(timeout)
 	}()
 
 	host.Logger.Info("Started all services", "count", len(host.Services))

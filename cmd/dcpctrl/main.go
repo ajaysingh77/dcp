@@ -12,12 +12,14 @@ import (
 
 const (
 	errCommandError = 1
+	errPanic        = 3
 )
 
 func main() {
-	ctx := kubeapiserver.SetupSignalContext()
-
 	logger := logger.New("dcpctrl")
+	defer logger.BeforeExit(func(value interface{}) { os.Exit(errPanic) })
+
+	ctx := kubeapiserver.SetupSignalContext()
 
 	root := commands.NewRootCommand(logger)
 	err := root.ExecuteContext(ctx)

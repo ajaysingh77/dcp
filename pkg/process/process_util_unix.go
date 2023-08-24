@@ -3,6 +3,7 @@
 package process
 
 import (
+	"os"
 	"os/exec"
 	"syscall"
 )
@@ -10,4 +11,18 @@ import (
 // Use separate process group so this process exit will not affect the children.
 func DecoupleFromParent(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+}
+
+func FindProcess(pid int32) (*os.Process, error) {
+	process, err := os.FindProcess(int(pid))
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if the process actually exists for Unix systems
+	if err := process.Signal(syscall.Signal(0)); err != nil {
+		return nil, err
+	}
+
+	return process, nil
 }

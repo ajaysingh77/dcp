@@ -193,6 +193,65 @@ func TestChildrenTerminated(t *testing.T) {
 	}
 }
 
+func TestWatchCatchesProcessExit(t *testing.T) {
+	t.Parallel()
+
+	delayToolDir, toolLaunchErr := getDelayToolDir()
+	require.NoError(t, toolLaunchErr)
+
+	// Set a reasonable timeout that gives the wait polling time to see the delay process exit
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
+	defer cancel()
+	// All commands will return on its own after 10 seconds. This prevents the test from launching a bunch of processes
+	// that turn into zombies.
+	cmd := exec.CommandContext(ctx, "./delay", "--delay=10s", "--child-spec=2,1")
+	cmd.Dir = delayToolDir
+	DecoupleFromParent(cmd)
+	err := cmd.Start()
+	require.NoError(t, err)
+
+	delayProc, err := FindWaitableProcess(int32(cmd.Process.Pid))
+	require.NoError(t, err)
+
+	err = delayProc.Wait(ctx)
+	require.NoError(t, err)
+}
+
+func TestContextCancelsWatch(t *testing.T) {
+	t.Parallel()
+
+	delayToolDir, toolLaunchErr := getDelayToolDir()
+	require.NoError(t, toolLaunchErr)
+
+	// Set a reasonable timeout that gives the wait polling time to see the delay process exit
+	testCtx, testCancel := context.WithTimeout(context.Background(), time.Second*30)
+	defer testCancel()
+
+	// All commands will return on its own after 20 seconds. This prevents the test from launching a bunch of processes
+	// that turn into zombies.
+	cmd := exec.CommandContext(testCtx, "./delay", "--delay=20s", "--child-spec=2,1")
+	cmd.Dir = delayToolDir
+	DecoupleFromParent(cmd)
+	err := cmd.Start()
+
+	require.NoError(t, err, "command should start without error")
+
+	delayProc, err := FindWaitableProcess(int32(cmd.Process.Pid))
+	require.NoError(t, err, "find process should succeed without error")
+
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer waitCancel()
+
+	err = delayProc.Wait(waitCtx)
+	require.ErrorIs(t, err, context.DeadlineExceeded, "call to wait should return a context cancelation error")
+
+	select {
+	case <-testCtx.Done():
+		require.Fail(t, "test timed out")
+	default:
+	}
+}
+
 func getDelayToolDir() (string, error) {
 	delayExeName := "delay"
 	if runtime.GOOS == "windows" {

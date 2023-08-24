@@ -9,12 +9,13 @@ import (
 	wait "k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/go-logr/logr"
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/dcpclient"
 )
 
-func ShutdownApp(ctx context.Context) error {
+func ShutdownApp(ctx context.Context, log logr.Logger) error {
 	client, err := dcpclient.New(ctx, 5*time.Second)
 	if err != nil {
 		return err
@@ -29,6 +30,7 @@ func ShutdownApp(ctx context.Context) error {
 	for _, objList := range kinds {
 		err := client.List(ctx, objList)
 		if err != nil {
+			log.Error(err, "could not list objects", "kind", objList.GetObjectKind().GroupVersionKind().Kind)
 			shutdownErrors = append(shutdownErrors, fmt.Errorf("could not list '%s': %w", objList.GetObjectKind().GroupVersionKind().Kind, err))
 			continue
 		}
@@ -37,6 +39,7 @@ func ShutdownApp(ctx context.Context) error {
 		for _, item := range items {
 			err := client.Delete(ctx, item)
 			if err != nil {
+				log.Error(err, "could not delete object", "kind", item.GetObjectKind().GroupVersionKind().Kind, "name", item.GetName())
 				shutdownErrors = append(shutdownErrors, fmt.Errorf("could not delete '%s': %w", item.GetObjectKind().GroupVersionKind().Kind, err))
 			}
 		}
@@ -48,6 +51,7 @@ func ShutdownApp(ctx context.Context) error {
 
 	err = waitAllDeleted(ctx, client, kinds)
 	if err != nil {
+		log.Error(err, "could not ensure that all application assets were deleted")
 		return err
 	}
 

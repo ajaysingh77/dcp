@@ -66,7 +66,7 @@ You can also ask it to exit with a specific exit code.`,
 
 func runMain(cmd *cobra.Command, _ []string) error {
 	if flags.exitCode < 0 || flags.exitCode > 125 {
-		return fmt.Errorf("The exit code must be between 0 and 125 inclusive")
+		return fmt.Errorf("the exit code must be between 0 and 125 inclusive")
 	}
 
 	err := runChildrenAsNeeded()

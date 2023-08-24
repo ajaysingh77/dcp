@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -27,6 +28,7 @@ var (
 
 type Logger struct {
 	logr.Logger
+	name        string
 	atomicLevel zap.AtomicLevel
 	flush       func()
 }
@@ -94,6 +96,10 @@ func New(name string) Logger {
 	// Format console output to be human readible
 	encoderConfig := zap.NewProductionEncoderConfig()
 	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	// Honor Windows line endings for logs if appropriate
+	if runtime.GOOS == "windows" {
+		encoderConfig.LineEnding = "\r\n"
+	}
 	consoleEncoder := zapcore.NewConsoleEncoder(encoderConfig)
 
 	consoleAtomicLevel := zap.NewAtomicLevel()
@@ -116,6 +122,7 @@ func New(name string) Logger {
 
 	return Logger{
 		Logger:      zapr.NewLogger(zapLogger),
+		name:        name,
 		atomicLevel: consoleAtomicLevel,
 		flush: func() {
 			_ = zapLogger.Sync()
@@ -129,6 +136,22 @@ func (l *Logger) SetLevel(level zapcore.Level) {
 
 func (l *Logger) Flush() {
 	l.flush()
+}
+
+func (l *Logger) BeforeExit(onPanic func(value interface{})) {
+	defer l.Flush()
+
+	value := recover()
+
+	l.V(1).Info("exiting")
+
+	if value != nil {
+		err := fmt.Errorf("%s panicked: %v", l.name, value)
+		l.Error(err, "panic")
+		fmt.Fprintln(os.Stderr, err)
+
+		onPanic(value)
+	}
 }
 
 // Add verbosity flag to enable setting stdout log levels

@@ -41,20 +41,20 @@ func DcpRun(
 		return slices.Contains(ext.Capabilities, extensions.ApiServerCapability)
 	})
 	if len(apiServerExtensions) == 0 {
-		return fmt.Errorf("No API servers found. Check DCP installation.")
+		return fmt.Errorf("no API servers found")
 	} else if len(apiServerExtensions) > 1 {
-		return fmt.Errorf("Multiple API servers found. Exactly one API server is required. Check DCP installation.")
+		return fmt.Errorf("multiple API servers found")
 	}
 	apiServerSvc, err := NewDcpExtensionService(cwd, apiServerExtensions[0], "", invocationFlags)
 	if err != nil {
-		return fmt.Errorf("Could not start the API server: %w", err)
+		return fmt.Errorf("could not start the API server: %w", err)
 	}
 
 	hostedServices := []hosting.Service{apiServerSvc}
 	for _, controller := range controllers {
 		controllerService, err := NewDcpExtensionService(cwd, controller, "run-controllers", invocationFlags)
 		if err != nil {
-			return fmt.Errorf("Could not start controller '%s': %w", controller.Name, err)
+			return fmt.Errorf("could not start controller '%s': %w", controller.Name, err)
 		}
 		hostedServices = append(hostedServices, controllerService)
 	}
@@ -62,14 +62,15 @@ func DcpRun(
 	hostCtx, cancelHostCtx := context.WithCancel(context.Background())
 	host := &hosting.Host{
 		Services: hostedServices,
-		Logger:   log,
+		Logger:   log.WithName("dcp-host"),
 	}
 	shutdownErrors, lifecycleMsgs := host.RunAsync(hostCtx)
 	shutdownHost := func() error {
 		cancelHostCtx()
 		shutdownErr := <-shutdownErrors
 		if shutdownErr != nil {
-			return fmt.Errorf("The API server or some controllers failed to shut down gracefully: %w", shutdownErr)
+			log.Error(shutdownErr, "one or more services failed to shut down gracefully")
+			return fmt.Errorf("the API server or some controllers failed to shut down gracefully: %w", shutdownErr)
 		} else {
 			return nil
 		}
@@ -82,29 +83,38 @@ func DcpRun(
 	}
 
 	// Wait for the user to signal that they want to shut down.
-serviceMessageLoop:
-	for {
-		select {
-		case <-ctx.Done():
-			// We are being asked to shut down.
-			log.Info("Shutting down...")
-			break serviceMessageLoop
+	err = func() error {
+		for {
+			select {
+			case <-ctx.Done():
+				// We are being asked to shut down.
+				log.Info("Shutting down...")
+				return nil
 
-		case msg := <-lifecycleMsgs:
-			if msg.Err != nil && msg.ServiceName == apiServerSvc.Name() {
-				err = fmt.Errorf("API server exited with an error: %w.\nGraceful shutdown is not possible. Terminating...", msg.Err)
-				return errors.Join(err, shutdownHost())
-			}
+			case msg := <-lifecycleMsgs:
+				if msg.Err != nil && msg.ServiceName == apiServerSvc.Name() {
+					log.Error(msg.Err, "API server exited with an error. Graceful shutdown is not possible. Terminating...")
 
-			if msg.Err != nil {
-				log.Error(msg.Err, fmt.Sprintf("Controller '%s' exited with an error. Application may not function correctly.", msg.ServiceName))
-				// Let the user decide whether to continue or not, do not break the loop yet.
+					err = fmt.Errorf("API server exited with an error: %w.\nGraceful shutdown is not possible. Terminating...", msg.Err)
+					return errors.Join(err, shutdownHost())
+				}
+
+				if msg.Err != nil {
+					log.Error(msg.Err, fmt.Sprintf("Controller '%s' exited with an error. Application may not function correctly.", msg.ServiceName))
+					// Let the user decide whether to continue or not, do not break the loop yet.
+				}
 			}
 		}
+	}()
+
+	if err != nil {
+		return err
 	}
 
 	if evtHandlers.BeforeApiSrvShutdown != nil {
+		log.V(1).Info("Invoking BeforeApiSrvShutdown event handler.")
 		if err := evtHandlers.BeforeApiSrvShutdown(); err != nil {
+			log.Error(err, "BeforeApiSrvShutdown event handler failed.")
 			return errors.Join(err, shutdownHost())
 		}
 	}

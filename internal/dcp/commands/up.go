@@ -51,16 +51,17 @@ This command currently supports only Azure CLI-enabled applications of certain t
 
 func runApp(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 	return func(cmd *cobra.Command, args []string) error {
+		log := log.WithName("up")
+
 		appRootDir := upFlags.appRootDir
 		var err error
 		if appRootDir == "" {
 			appRootDir, err = os.Getwd()
 			if err != nil {
+				log.Error(err, "could not determine the working directory")
 				return fmt.Errorf("could not determine the working directory: %w", err)
 			}
 		}
-
-		log := log.WithName("up")
 
 		kubeconfigPath, err := kubeconfig.EnsureKubeconfigFlagValue(cmd.Flags())
 		if err != nil {
@@ -94,7 +95,7 @@ func runApp(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 				shutdownCtx, cancelShutdownCtx := context.WithTimeout(context.Background(), 1*time.Minute)
 				defer cancelShutdownCtx()
 				log.Info("Stopping the application...")
-				err := appmgmt.ShutdownApp(shutdownCtx)
+				err := appmgmt.ShutdownApp(shutdownCtx, log)
 				if err != nil {
 					return fmt.Errorf("could not shut down the application gracefully: %w", err)
 				} else {

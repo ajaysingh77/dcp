@@ -73,6 +73,14 @@
             "request": "attach",
             "mode": "local",
             "processId": "dcpctrl"
+        },
+
+        {
+            "name": "attach to process...",
+            "type": "go",
+            "request": "attach",
+            "mode": "local",
+            "processId": "${command:pickProcess}"
         }
     ]
 }
