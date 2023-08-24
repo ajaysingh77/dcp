@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -17,17 +19,31 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+var lineSeparator []byte
+
+func init() {
+	if runtime.GOOS == "windows" {
+		lineSeparator = []byte("\r\n")
+	} else {
+		lineSeparator = []byte("\n")
+	}
+}
+
 type runState struct {
 	runID             controllers.RunID
+	sessionURL        string // The URL of the run session resource in the IDE
 	completionHandler controllers.RunCompletionHandler
 	handlerWG         *sync.WaitGroup
 	finished          bool
 	exitCode          int32
+	stdOut            *usvc_io.BufferedWrappingWriter
+	stdErr            *usvc_io.BufferedWrappingWriter
 }
 
 func NewRunState() *runState {
@@ -37,6 +53,8 @@ func NewRunState() *runState {
 		handlerWG:         &sync.WaitGroup{},
 		finished:          false,
 		exitCode:          apiv1.UnknownExitCode,
+		stdOut:            usvc_io.NewBufferedWrappingWriter(),
+		stdErr:            usvc_io.NewBufferedWrappingWriter(),
 	}
 
 	// Three things need to happen before the completion handler is called:
@@ -60,6 +78,34 @@ func (rs *runState) NotifyRunCompletedAsync() {
 
 func (rs *runState) IncreaseCompletionCallReadiness() {
 	rs.handlerWG.Done()
+}
+
+func (rs *runState) SetOutputWriters(stdOut, stdErr io.Writer) error {
+	var err error
+	if stdOut != nil {
+		err = rs.stdOut.SetTarget(stdOut)
+	} else {
+		err = rs.stdOut.SetTarget(io.Discard)
+	}
+	if err != nil {
+		return err
+	}
+
+	if stdErr != nil {
+		err = rs.stdErr.SetTarget(stdErr)
+	} else {
+		err = rs.stdErr.SetTarget(io.Discard)
+	}
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (rs *runState) CloseOutputWriters() {
+	rs.stdOut.Close()
+	rs.stdErr.Close()
 }
 
 type IdeExecutableRunner struct {
@@ -116,43 +162,29 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 		return "", nil, fmt.Errorf(runSessionCouldNotBeStarted+"%w", err)
 	}
 
-	projectPath := exe.Annotations[csharpProjectPathAnnotation]
-	if projectPath == "" {
-		markAsFailedToStart(exe)
-		return "", nil, fmt.Errorf(runSessionCouldNotBeStarted+"missing required annotation '%s'", csharpProjectPathAnnotation)
-	}
-
-	// Start with orchestrator process environemnt, then override with Executable environment.
-	envMap := maps.SliceToMap(os.Environ(), func(envStr string) (string, string) {
-		parts := strings.SplitN(envStr, "=", 2)
-		return parts[0], parts[1]
-	})
-	for _, envVar := range exe.Spec.Env {
-		envMap[envVar.Name] = envVar.Value
-	}
-	effectiveEnv := maps.MapToSlice[string, string, apiv1.EnvVar](envMap, func(key, value string) apiv1.EnvVar {
-		return apiv1.EnvVar{Name: key, Value: value}
-	})
-
-	isr := ideRunSessionRequest{
-		ProjectPath: projectPath,
-		Env:         effectiveEnv,
-		Args:        exe.Spec.Args,
-	}
-	isrBody, err := json.Marshal(isr)
+	req, err := r.prepareRunRequest(exe)
 	if err != nil {
 		markAsFailedToStart(exe)
-		return "", nil, fmt.Errorf(runSessionCouldNotBeStarted+"failed to marshal request body: %w", err)
+		return "", nil, fmt.Errorf(runSessionCouldNotBeStarted+"%w", err)
 	}
 
-	url := fmt.Sprintf("http://localhost:%s%s", r.portStr, ideRunSessionResourcePath)
-
-	req, err := http.NewRequest(http.MethodPut, url, bytes.NewBuffer(isrBody))
+	// Set up temp files for capturing stdout and stderr. These files (if successfully created)
+	// will be cleaned up by the Executable controller when the Executable is deleted.
+	stdOutFile, err := os.CreateTemp("", fmt.Sprintf("%s_out_*", exe.Name))
 	if err != nil {
-		return "", nil, fmt.Errorf(runSessionCouldNotBeStarted+"failed to create request: %w", err)
+		log.Error(err, "failed to create temporary file for capturing standard output data")
+		stdOutFile = nil
+	} else {
+		exe.Status.StdOutFile = stdOutFile.Name()
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", r.tokenStr))
+
+	stdErrFile, err := os.CreateTemp("", fmt.Sprintf("%s_err_*", exe.Name))
+	if err != nil {
+		log.Error(err, "failed to create temporary file for capturing standard error data")
+		stdErrFile = nil
+	} else {
+		exe.Status.StdErrFile = stdErrFile.Name()
+	}
 
 	client := http.Client{}
 	resp, err := client.Do(req)
@@ -167,27 +199,35 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 		return "", nil, fmt.Errorf(runSessionCouldNotBeStarted+"%s %s", resp.Status, respBody)
 	}
 
-	var runID controllers.RunID = controllers.RunID(resp.Header.Get("Location"))
-	if runID == "" {
+	sessionURL := resp.Header.Get("Location")
+	if sessionURL == "" {
 		return "", nil, fmt.Errorf(runSessionCouldNotBeStarted + "the returned run ID was empty")
 	}
+	rid, err := getLastUrlPathSegment(sessionURL)
+	if err != nil {
+		return "", nil, fmt.Errorf(runSessionCouldNotBeStarted+"could not parse the Location header which should contain the run session ID: %w", err)
+	}
 
+	runID := controllers.RunID(rid)
 	r.log.Info("IDE run session started", "RunID", runID)
 	exe.Status.ExecutionID = string(runID)
 	exe.Status.StartupTimestamp = metav1.Now()
 
 	startWaitForRunCompletion := func() {}
-	// We might receive notifications for this run before we have a chance to create the run state instance here.
-	// That is why we use LoadOrStoreNew instead of just creating a new instance of runState.
-	rs, _ := r.activeRuns.LoadOrStoreNew(runID, func() *runState {
-		return NewRunState()
-	})
+
+	// Take the lock so we can manipulate the run state safely.
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
+	rs := r.ensureRunState(runID)
+	rs.sessionURL = sessionURL
 	defer rs.IncreaseCompletionCallReadiness()
+	err = rs.SetOutputWriters(stdOutFile, stdErrFile)
+	if err != nil {
+		log.Error(err, "failed to set output writers to capture stdout/stderr") // Should never happen
+	}
 
 	if runCompletionHandler != nil {
-		r.lock.Lock()
-		defer r.lock.Unlock()
-
 		rs.completionHandler = runCompletionHandler
 		startWaitForRunCompletion = func() {
 			rs.IncreaseCompletionCallReadiness()
@@ -236,6 +276,45 @@ func (r *IdeExecutableRunner) StopRun(ctx context.Context, runID controllers.Run
 	return fmt.Errorf(runSessionCouldNotBeStopped+"%s %s", resp.Status, respBody)
 }
 
+func (r *IdeExecutableRunner) prepareRunRequest(exe *apiv1.Executable) (*http.Request, error) {
+	projectPath := exe.Annotations[csharpProjectPathAnnotation]
+	if projectPath == "" {
+		return nil, fmt.Errorf("missing required annotation '%s'", csharpProjectPathAnnotation)
+	}
+
+	// Start with orchestrator process environemnt, then override with Executable environment.
+	envMap := maps.SliceToMap(os.Environ(), func(envStr string) (string, string) {
+		parts := strings.SplitN(envStr, "=", 2)
+		return parts[0], parts[1]
+	})
+	for _, envVar := range exe.Spec.Env {
+		envMap[envVar.Name] = envVar.Value
+	}
+	effectiveEnv := maps.MapToSlice[string, string, apiv1.EnvVar](envMap, func(key, value string) apiv1.EnvVar {
+		return apiv1.EnvVar{Name: key, Value: value}
+	})
+
+	isr := ideRunSessionRequest{
+		ProjectPath: projectPath,
+		Env:         effectiveEnv,
+		Args:        exe.Spec.Args,
+	}
+	isrBody, err := json.Marshal(isr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request body: %w", err)
+	}
+
+	url := fmt.Sprintf("http://localhost:%s%s", r.portStr, ideRunSessionResourcePath)
+
+	req, err := http.NewRequest(http.MethodPut, url, bytes.NewBuffer(isrBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", r.tokenStr))
+	return req, nil
+}
+
 func (r *IdeExecutableRunner) ensureNotificationSocket() error {
 	r.lock.Lock()
 	if r.notifySocket != nil {
@@ -282,21 +361,46 @@ func (r *IdeExecutableRunner) processNotifications() {
 			return
 
 		case websocket.TextMessage:
-			var scn ideRunSessionChangeNotification
-			err = json.Unmarshal(msg, &scn)
+			var basicNotification ideSessionNotificationBase
+			err = json.Unmarshal(msg, &basicNotification)
 			if err != nil {
-				r.log.Error(err, "invalid IDE run session notification received, recycling connection...")
+				r.log.Error(err, "invalid IDE basic session notification received, recycling connection...")
 				r.closeNotifySocket()
 				return
 			}
 
-			if scn.SessionID == "" {
+			if basicNotification.SessionID == "" {
 				r.log.Error(fmt.Errorf("received IDE run session notification with empty session ID"), "recycling connection...")
 				r.closeNotifySocket()
 				return
 			}
 
-			r.handleSessionNotification(scn)
+			switch basicNotification.NotificationType {
+			case notificationTypeProcessRestarted:
+				// We currently do not track process restarts, so we can ignore this notification
+
+			case notificationTypeSessionTerminated:
+				var nst ideRunSessionChangeNotification
+				err = json.Unmarshal(msg, &nst)
+				if err != nil {
+					r.log.Error(err, "invalid IDE run session notification received, recycling connection...")
+					r.closeNotifySocket()
+					return
+				} else {
+					r.handleSessionTermination(nst)
+				}
+
+			case notificationTypeServiceLogs:
+				var nsl ideSessionLogNotification
+				err = json.Unmarshal(msg, &nsl)
+				if err != nil {
+					r.log.Error(err, "invalid IDE run session notification received, recycling connection...")
+					r.closeNotifySocket()
+					return
+				} else {
+					r.handleSessionLogs(nsl)
+				}
+			}
 
 		default:
 			r.log.Info("unexpected message type '%c' received from session notification endpoint, ignoring...", msgType)
@@ -304,38 +408,62 @@ func (r *IdeExecutableRunner) processNotifications() {
 	}
 }
 
-func (r *IdeExecutableRunner) handleSessionNotification(scn ideRunSessionChangeNotification) {
-	switch scn.NotificationType {
-	case notificationTypeProcessRestarted:
-		// We currently do not track process restarts, so we can ignore this notification
-		return
-
-	case notificationTypeSessionTerminated:
-		runID := controllers.RunID(scn.SessionID)
-		exitCode := int32(apiv1.UnknownExitCode)
-		if scn.ExitCode != nil {
-			exitCode = *scn.ExitCode
-		}
-
-		r.lock.Lock()
-		defer r.lock.Unlock()
-
-		runState, found := r.activeRuns.LoadAndDelete(runID)
-		if !found {
-			// This happens if we receive an early notification for run session that has just started.
-			// Store the run status and exit code. The run completion handler will be filled by the StartRun method.
-			runState = NewRunState()
-			r.activeRuns.Store(runID, runState)
-		}
-
-		runState.finished = true
-		runState.exitCode = exitCode
-		runState.IncreaseCompletionCallReadiness()
-		runState.NotifyRunCompletedAsync()
-
-	default:
-		r.log.Error(fmt.Errorf("received unexpected IDE run session notification type '%s'", scn.NotificationType), "ignoring...")
+func (r *IdeExecutableRunner) handleSessionTermination(scn ideRunSessionChangeNotification) {
+	runID := controllers.RunID(scn.SessionID)
+	exitCode := int32(apiv1.UnknownExitCode)
+	if scn.ExitCode != nil {
+		exitCode = *scn.ExitCode
 	}
+
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
+	runState := r.fetchRunStateForDeletion(runID)
+	runState.finished = true
+	runState.exitCode = exitCode
+	runState.CloseOutputWriters()
+	runState.IncreaseCompletionCallReadiness()
+	runState.NotifyRunCompletedAsync()
+}
+
+func (r *IdeExecutableRunner) handleSessionLogs(nsl ideSessionLogNotification) {
+	runID := controllers.RunID(nsl.SessionID)
+
+	runState := r.ensureRunState(runID)
+	var err error
+	msg := withNewLine([]byte(nsl.LogMessage))
+	if nsl.IsStdErr {
+		_, err = runState.stdErr.Write(msg)
+	} else {
+		_, err = runState.stdOut.Write(msg)
+	}
+
+	if err != nil {
+		r.log.Error(err, "failed to persist a log message")
+	}
+}
+
+func (r *IdeExecutableRunner) ensureRunState(runID controllers.RunID) *runState {
+	// Notifications for a particular run may arrive befeore the call to create a run session returns.
+	// That is why we use LoadOrStoreNew in places where we want to ensure that we have a runState for a given run ID.
+	rs, _ := r.activeRuns.LoadOrStoreNew(runID, func() *runState {
+		return NewRunState()
+	})
+	return rs
+}
+
+func (r *IdeExecutableRunner) fetchRunStateForDeletion(runID controllers.RunID) *runState {
+	runState, found := r.activeRuns.LoadAndDelete(runID)
+	if !found {
+		// If the project has issues, we might receive a very early notification about run session termination,
+		// where that notification is the first piece of information we receive about the run session.
+		// If that is the case we need to create a run state for the run session so that we can store the exit code and run status.
+		// This means this run state will never be removed from activeRuns, but this should happen rearly and it does consume very little memory.
+		// If this proves to be an issue, consider adding a TTL to the run state and scavenge on a timer.
+		runState = NewRunState()
+		r.activeRuns.Store(runID, runState)
+	}
+	return runState
 }
 
 func (r *IdeExecutableRunner) closeNotifySocket() {
@@ -345,6 +473,43 @@ func (r *IdeExecutableRunner) closeNotifySocket() {
 		r.notifySocket = nil
 	}
 	r.lock.Unlock()
+}
+
+func getLastUrlPathSegment(rawURL string) (string, error) {
+	url, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+
+	pathSegments := strings.Split(url.Path, "/")
+	if len(pathSegments) == 0 {
+		return "", fmt.Errorf("URL '%s' has no path segments", rawURL)
+	}
+	return pathSegments[len(pathSegments)-1], nil
+}
+
+func withNewLine(msg []byte) []byte {
+	if endsWith(msg, lineSeparator) {
+		return msg
+	}
+	return append(msg, lineSeparator...)
+}
+
+func endsWith(a, b []byte) bool {
+	// If a is shorter than b, a doesn't end with b.
+	if len(a) < len(b) {
+		return false
+	}
+	
+	// If any of the last len(b) characters of a don't match b, a doesn't end with b.
+	start := len(a) - len(b)
+	for i := range b {
+		if a[start + i] != b[i] {
+			return false
+		}
+	}
+
+	return true
 }
 
 var _ controllers.ExecutableRunner = (*IdeExecutableRunner)(nil)
