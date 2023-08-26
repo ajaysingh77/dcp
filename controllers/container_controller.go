@@ -135,7 +135,10 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		change &= ^statusChanged
 	} else {
 		change = ensureFinalizer(&container, containerFinalizer)
-		change |= r.manageContainer(ctx, &container, log)
+		// If we added a finalizer, we'll do the additional reconciliation next call
+		if change == noChange {
+			change |= r.manageContainer(ctx, &container, log)
+		}
 	}
 
 	if change == noChange {
@@ -145,17 +148,6 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	var update *apiv1.Container
 
-	if (change & (metadataChanged | specChanged)) != 0 {
-		update = container.DeepCopy()
-		err = r.Patch(ctx, update, patch)
-		if err != nil {
-			log.Error(err, "Container object update failed")
-			return ctrl.Result{}, err
-		} else {
-			log.V(1).Info("Container object update succeeded")
-		}
-	}
-
 	if (change & statusChanged) != 0 {
 		update = container.DeepCopy()
 		err = r.Status().Patch(ctx, update, patch)
@@ -164,6 +156,17 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, err
 		} else {
 			log.V(1).Info("Container status update succeeded")
+		}
+	}
+
+	if (change & (metadataChanged | specChanged)) != 0 {
+		update = container.DeepCopy()
+		err = r.Patch(ctx, update, patch)
+		if err != nil {
+			log.Error(err, "Container object update failed")
+			return ctrl.Result{}, err
+		} else {
+			log.V(1).Info("Container object update succeeded")
 		}
 	}
 

@@ -8,8 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/go-logr/logr"
-
+	"go.uber.org/zap/zapcore"
 	"k8s.io/apimachinery/pkg/api/errors"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -26,6 +25,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/docker"
 	"github.com/microsoft/usvc-apiserver/internal/exerunners"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
@@ -44,9 +44,13 @@ const (
 )
 
 func TestMain(m *testing.M) {
+	log := logger.New("test")
+	log.SetLevel(zapcore.ErrorLevel)
+	ctrl.SetLogger(log.V(1))
+
 	ctx, cancel := context.WithCancel(context.Background())
 
-	flush, err := startTestEnvironment(ctx)
+	flush, err := startTestEnvironment(ctx, log)
 	if err != nil {
 		cancel()
 		panic(err)
@@ -68,7 +72,7 @@ func TestMain(m *testing.M) {
 	code = m.Run()
 }
 
-func startTestEnvironment(ctx context.Context) (func(), error) {
+func startTestEnvironment(ctx context.Context, log logger.Logger) (func(), error) {
 	flushFn := func() {
 		// No op by default
 	}
@@ -94,10 +98,9 @@ func startTestEnvironment(ctx context.Context) (func(), error) {
 	if !flag.Parsed() {
 		flag.Parse() // Needed to test if verbose flag was present.
 	}
+
 	if testing.Verbose() {
-		var logger logr.Logger
-		logger, flushFn = newControllerLogger()
-		ctrl.SetLogger(logger)
+		log.SetLevel(zapcore.DebugLevel)
 	}
 
 	scheme := apiruntime.NewScheme()

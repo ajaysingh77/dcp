@@ -6,7 +6,8 @@ endif
 
 # Detect the operating system, and configure shell and shell commands.
 ifeq ($(OS),Windows_NT)
-    detected_OS := Windows
+	detected_OS := windows
+	detected_arch := amd64
 	SHELL := pwsh.exe
 	.SHELLFLAGS := -Command
 	repo_dir := $(shell Get-Location | Select-Object -ExpandProperty Path)
@@ -17,10 +18,11 @@ ifeq ($(OS),Windows_NT)
 	install := Copy-Item
 	exe_suffix := .exe
 else
-    # -o pipefail will treat a pipeline as failed if one of the elements fail.
-    SHELL := /usr/bin/env bash -o pipefail
+	# -o pipefail will treat a pipeline as failed if one of the elements fail.
+	SHELL := /usr/bin/env bash -o pipefail
 
-    detected_OS := $(shell uname -s)
+	detected_OS := $(shell uname -s | awk '{print tolower($$0)}')
+	detected_arch := $(shell uname -m)
 	repo_dir := $(shell pwd)
 	mkdir := mkdir -p -m 0755
 	rm_rf := rm -rf
@@ -39,6 +41,21 @@ else ifeq ($(GOOS).$(OS),.Windows_NT)
 	bin_exe_suffix := .exe
 else
 	bin_exe_suffix :=
+endif
+
+ifeq ($(GOOS).$(detected_OS),.$(detected_OS))
+	build_os := $(detected_OS)
+else
+	build_os := $(GOOS)
+endif
+
+ifeq ($(GOARCH).$(detected_arch),.x86_64)
+	build_arch := arm64
+	detected_arch := arm64
+else ifeq ($(GOARCH).$(detected_arch),.$(detected_arch))
+	build_arch := $(detected_arch)
+else
+	build_arch := $(GOARCH)
 endif
 
 ## Environment variables affecting build and installation
@@ -73,7 +90,7 @@ TRAEFIK_VERSION = v2.10.4
 # Disable C interop https://dave.cheney.net/2016/01/18/cgo-is-not-go
 export CGO_ENABLED=0
 
-ifeq ($(detected_OS),Windows)
+ifeq ($(detected_OS),windows)
     GO_SOURCES := $(shell Get-ChildItem -Include '*.go' -Recurse -File | Select-Object -ExpandProperty FullName | Select-String -NotMatch 'pkg\\generated\\')
 else
     GO_SOURCES := $(shell find . -name '*.go' -type f -not -path "./pkg/generated/*")
@@ -139,7 +156,7 @@ $(crd_files) : $(GO_SOURCES) controller-gen
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN)
 $(CONTROLLER_GEN): | $(TOOL_BIN)
-ifeq ($(detected_OS),Windows)
+ifeq ($(detected_OS),windows)
 	if (-not (Test-Path "$(CONTROLLER_GEN)")) { $$env:GOBIN = "$(TOOL_BIN)"; go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION); $$env:GOBIN = $$null; }
 else
 	[[ -s $(CONTROLLER_GEN) ]] || GOBIN=$(TOOL_BIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
@@ -148,7 +165,7 @@ endif
 .PHONY: openapi-gen
 openapi-gen: $(OPENAPI_GEN)
 $(OPENAPI_GEN): | $(TOOL_BIN)
-ifeq ($(detected_OS),Windows)
+ifeq ($(detected_OS),windows)
 	if (-not (Test-Path "$(OPENAPI_GEN)")) { $$env:GOBIN = "$(TOOL_BIN)"; go install k8s.io/code-generator/cmd/openapi-gen@$(CODE_GENERATOR_VERSION); $$env:GOBIN = $$null; }
 else
 	[[ -s $(OPENAPI_GEN) ]] || GOBIN=$(TOOL_BIN) go install k8s.io/code-generator/cmd/openapi-gen@$(CODE_GENERATOR_VERSION)
@@ -196,7 +213,7 @@ clean: | ${OUTPUT_BIN} ${TOOL_BIN} ## Deletes build output (all binaries), and a
 .PHONY: lint
 lint: golangci-lint ## Runs the linter
 # On Windows we use the global golangci-lint binary.
-ifeq ($(detected_OS),Windows)
+ifeq ($(detected_OS),windows)
 	golangci-lint run --timeout 5m
 else
 	$(GOLANGCI_LINT) run --timeout 5m
@@ -214,32 +231,46 @@ uninstall: uninstall-proxy ## Uninstalls all binaries from their destinations
 	$(rm_f) $(EXTENSIONS_DIR)/dcpctrl$(bin_exe_suffix)
 	$(rm_f) $(DCP_DIR)/dcp$(bin_exe_suffix)
 
-ifneq ($(detected_OS),Windows)
+ifneq ($(detected_OS),windows)
 .PHONY: link-dcp
 link-dcp: ## Links the dcp binary to /usr/local/bin (macOS/Linux ONLY). Use 'sudo -E" to run this target (sudo -E make link-dcp). Typically it is a one-time operation (the symbolic link does not need to change when you modify the binary).
 	ln -s -v $(DCP_DIR)/dcp$(bin_exe_suffix) /usr/local/bin/dcp$(bin_exe_suffix)
 endif
 
+.PHONY: download-proxy
+download-proxy: $(TOOL_BIN) ${OUTPUT_BIN}
+ifeq ($(build_os),windows)
+	curl -sSfL https://github.com/traefik/traefik/releases/download/$(TRAEFIK_VERSION)/traefik_$(TRAEFIK_VERSION)_$(build_os)_$(build_arch).zip --output $(TOOL_BIN)/traefik.zip
+else
+	curl -sSfL https://github.com/traefik/traefik/releases/download/$(TRAEFIK_VERSION)/traefik_$(TRAEFIK_VERSION)_$(build_os)_$(build_arch).tar.gz --output $(TOOL_BIN)/traefik.tar.gz
+	tar -xzf $(TOOL_BIN)/traefik.tar.gz -C ${OUTPUT_BIN}/bin/
+endif
+ifeq ($(detected_OS).$(build_os),windows.windows)
+	Expand-Archive -Force -Path $(TOOL_BIN)/traefik.zip -DestinationPath ${OUTPUT_BIN}/bin/
+else ifeq (.$(build_os),.windows)
+	unzip -o $(TOOL_BIN)/traefik.zip -d ${OUTPUT_BIN}/bin/
+endif
+
 .PHONY: install-proxy
 install-proxy: $(TOOL_BIN) $(BIN_DIR) ## Installs the Traefik proxy used (necessary for running workloads with Service objects)
-ifeq ($(detected_OS),Windows)
-	curl -sSfL https://github.com/traefik/traefik/releases/download/$(TRAEFIK_VERSION)/traefik_$(TRAEFIK_VERSION)_$(detected_OS)_amd64.zip --output $(TOOL_BIN)\traefik.zip
+ifeq ($(detected_OS).$(build_os),windows.windows)
+	curl -sSfL https://github.com/traefik/traefik/releases/download/$(TRAEFIK_VERSION)/traefik_$(TRAEFIK_VERSION)_$(build_os)_$(build_arch).zip --output $(TOOL_BIN)\traefik.zip
 	Expand-Archive -Force -Path $(TOOL_BIN)\traefik.zip -DestinationPath $(TOOL_BIN)
 else
-	curl -sSfL https://github.com/traefik/traefik/releases/download/$(TRAEFIK_VERSION)/traefik_$(TRAEFIK_VERSION)_$(detected_OS)_amd64.tar.gz --output $(TOOL_BIN)/traefik.tar.gz
+	curl -sSfL https://github.com/traefik/traefik/releases/download/$(TRAEFIK_VERSION)/traefik_$(TRAEFIK_VERSION)_$(build_os)_$(build_arch).tar.gz --output $(TOOL_BIN)/traefik.tar.gz
 	tar -xzf $(TOOL_BIN)/traefik.tar.gz -C $(TOOL_BIN)
 endif
-	$(install) $(TOOL_BIN)/traefik$(exe_suffix) $(BIN_DIR)
+	$(install) $(TOOL_BIN)/traefik$(bin_exe_suffix) $(BIN_DIR)
 	$(install) $(TOOL_BIN)/LICENSE.md $(BIN_DIR)
 
 .PHONY: uninstall-proxy
 uninstall-proxy:
-	$(rm_f) $(BIN_DIR)/traefik$(exe_suffix)
+	$(rm_f) $(BIN_DIR)/traefik$(bin_exe_suffix)
 	$(rm_f) $(BIN_DIR)/LICENSE.md
 
 ##@ Test targets
 
-ifeq ($(detected_OS),Windows)
+ifeq ($(detected_OS),windows)
 define run-tests
 $$env:KUBEBUILDER_ASSETS = "$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(TOOL_BIN) -p path)"; go test ./... $(TEST_OPTS); $$env:KUBEBUILDER_ASSETS = $$null
 endef
@@ -249,17 +280,13 @@ KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(TO
 endef
 endif
 
-define run-tests
-go test ./... $(TEST_OPTS)
-endef
-
 .PHONY: test
 test: TEST_OPTS = -coverprofile cover.out
 test: delay-tool envtest ## Run all tests in the repository
 	$(run-tests)
 
 .PHONY: test-ci
-ifeq ($(detected_OS),Windows)
+ifeq ($(detected_OS),windows)
 # On Windows enabling -race requires additional components to be installed (gcc), so we do not support it at the moment.
 test-ci: TEST_OPTS = -coverprofile cover.out -count 1
 test-ci: lint delay-tool envtest
@@ -270,11 +297,15 @@ test-ci: lint delay-tool envtest ## Runs tests in a way appropriate for CI pipel
 	CGO_ENABLED=1 $(run-tests)
 endif
 
+.PHONY: show-test-vars
+show-test-vars: envtest ## Shows the values of variables used in test targets
+	@echo "KUBEBUILDER_ASSETS=$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(TOOL_BIN) -p path)"
 
 ## Development and test support targets
 
 ${OUTPUT_BIN}:
 	$(mkdir) ${OUTPUT_BIN}
+	$(mkdir) ${OUTPUT_BIN}/bin/
 
 $(TOOL_BIN):
 	$(mkdir) $(TOOL_BIN)
@@ -291,14 +322,14 @@ $(DCP_DIR):
 .PHONY: envtest
 envtest: $(ENVTEST)
 $(ENVTEST): | $(TOOL_BIN)
-ifeq ($(detected_OS),Windows)
+ifeq ($(detected_OS),windows)
 	if (-not (Test-Path "$(ENVTEST)")) { $$env:GOBIN = "$(TOOL_BIN)"; go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest; $$env:GOBIN = $$null; }
 else
 	[[ -s $(ENVTEST) ]] || GOBIN=$(TOOL_BIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
 endif
 
 .PHONY: golangci-lint
-ifeq ($(detected_OS),Windows)
+ifeq ($(detected_OS),windows)
 # golangci-lint does not have pwsh-compatible install script, so the user must install it manually
 golangci-lint:
 	@ try { golangci-lint --version } catch { throw "golangci-lint tool is missing. See https://golangci-lint.run/usage/install/#local-installation for installation instructions." }

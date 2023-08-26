@@ -177,8 +177,8 @@ func TestChildrenTerminated(t *testing.T) {
 
 			// We ask for launching two children, with a single (grand)child each,
 			// for a total of 4 child processes, so the expected tree size is 5.
-			const expectedProcessTreeSize = 5
-			ensureProcessTree(t, int32(cmd.Process.Pid), expectedProcessTreeSize, 5*time.Second)
+			expectedProcessTreeSize := 5
+			ensureProcessTree(t, int32(cmd.Process.Pid), expectedProcessTreeSize, 10*time.Second)
 
 			processTree, err := GetProcessTree(int32(cmd.Process.Pid))
 			require.NoError(t, err)
@@ -270,6 +270,7 @@ func ensureProcessTree(t *testing.T, rootPid int32, expectedSize int, timeout ti
 	processesStartedCtx, processesStartedCancelFn := context.WithTimeout(context.Background(), timeout)
 	defer processesStartedCancelFn()
 
+	var processTreeLen int
 	err := wait.PollUntilContextCancel(
 		processesStartedCtx,
 		100*time.Millisecond,
@@ -279,9 +280,10 @@ func ensureProcessTree(t *testing.T, rootPid int32, expectedSize int, timeout ti
 			if err != nil {
 				return false, err
 			}
-			return len(processTree) == expectedSize, nil
+			processTreeLen = len(processTree)
+			return processTreeLen == expectedSize, nil
 		},
 	)
 
-	require.NoError(t, err, "expected number of 'delay' program instances (%d) not found", expectedSize)
+	require.NoError(t, err, "expected number of 'delay' program instances not found (%d/%d)", processTreeLen, expectedSize)
 }

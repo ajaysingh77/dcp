@@ -60,7 +60,7 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, args []string) erro
 			forked.Stdin = os.Stdin
 			forked.Stdout = os.Stdout
 			forked.Stderr = os.Stderr
-			process.DecoupleFromParent(forked)
+			process.ForkFromParent(forked)
 
 			if err := forked.Start(); err != nil {
 				log.Error(err, "forked process failed to run")

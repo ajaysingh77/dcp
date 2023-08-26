@@ -72,18 +72,21 @@ func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1.Service{}).
-		Watches(&apiv1.Endpoint{}, handler.EnqueueRequestsFromMapFunc(requestReconcileForEndpoint), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		Watches(&apiv1.Endpoint{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForEndpoint), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		Complete(r)
 }
 
-func requestReconcileForEndpoint(ctx context.Context, obj ctrl_client.Object) []reconcile.Request {
+func (r *ServiceReconciler) requestReconcileForEndpoint(ctx context.Context, obj ctrl_client.Object) []reconcile.Request {
 	endpoint := obj.(*apiv1.Endpoint)
+	serviceNamespaceName := types.NamespacedName{
+		Namespace: endpoint.Spec.ServiceNamespace,
+		Name:      endpoint.Spec.ServiceName,
+	}
+
+	r.Log.V(1).Info("endpoint updated, requesting service reconciliation", "endpoint", endpoint, "serviceName", serviceNamespaceName)
 	return []reconcile.Request{
 		{
-			NamespacedName: types.NamespacedName{
-				Namespace: endpoint.Spec.ServiceNamespace,
-				Name:      endpoint.Spec.ServiceName,
-			},
+			NamespacedName: serviceNamespaceName,
 		},
 	}
 }
@@ -123,19 +126,13 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		change &= ^statusChanged
 	} else {
 		change = ensureFinalizer(&svc, serviceFinalizer)
-		change |= r.ensureServiceProxyStarted(ctx, &svc, log)
+		// If we added a finalizer, we'll do the additional reconciliation next call
+		if change == noChange {
+			change |= r.ensureServiceProxyStarted(ctx, &svc, log)
+		}
 	}
 
 	var update *apiv1.Service
-
-	if (change & (metadataChanged | specChanged)) != 0 {
-		update = svc.DeepCopy()
-		if err := r.Patch(ctx, update, patch); err != nil {
-			log.Error(err, "Service update failed")
-			return ctrl.Result{}, err
-		}
-		log.Info("Service update succeeded")
-	}
 
 	if (change & statusChanged) != 0 {
 		update = svc.DeepCopy()
@@ -144,6 +141,15 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			return ctrl.Result{}, err
 		}
 		log.Info("Service status update succeeded")
+	}
+
+	if (change & (metadataChanged | specChanged)) != 0 {
+		update = svc.DeepCopy()
+		if err := r.Patch(ctx, update, patch); err != nil {
+			log.Error(err, "Service update failed")
+			return ctrl.Result{}, err
+		}
+		log.Info("Service update succeeded")
 	}
 
 	if (change & additionalReconciliationNeeded) != 0 {
@@ -193,6 +199,7 @@ func (r *ServiceReconciler) ensureServiceProxyStarted(ctx context.Context, svc *
 		return additionalReconciliationNeeded
 	} else {
 		if svc.Status.ProxyConfigFile != proxyCfgFile {
+			log.V(1).Info("service proxy config file created", "file", proxyCfgFile)
 			svc.Status.ProxyConfigFile = proxyCfgFile
 			change |= statusChanged
 		}

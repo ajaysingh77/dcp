@@ -83,11 +83,12 @@ func makeCommand(ctx context.Context, exe *apiv1.Executable, log logr.Logger) *e
 
 	env := slices.Map[apiv1.EnvVar, string](exe.Spec.Env, func(e apiv1.EnvVar) string { return fmt.Sprintf("%s=%s", e.Name, e.Value) })
 
-	additionalEnv, err := godotenv.Read(exe.Spec.EnvFiles...)
-	if err != nil {
-		log.Error(err, "Environment settings from .env file(s) were not applied.", "EnvFiles", exe.Spec.EnvFiles)
-	} else {
-		env = append(env, maps.MapToSlice[string, string, string](additionalEnv, func(key, val string) string { return fmt.Sprintf("%s=%s", key, val) })...)
+	if len(exe.Spec.EnvFiles) > 0 {
+		if additionalEnv, err := godotenv.Read(exe.Spec.EnvFiles...); err != nil {
+			log.Error(err, "Environment settings from .env file(s) were not applied.", "EnvFiles", exe.Spec.EnvFiles)
+		} else {
+			env = append(env, maps.MapToSlice[string, string, string](additionalEnv, func(key, val string) string { return fmt.Sprintf("%s=%s", key, val) })...)
+		}
 	}
 
 	cmd.Env = append(os.Environ(), env...) // Include parent process environment

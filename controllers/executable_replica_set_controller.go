@@ -246,7 +246,10 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 	} else {
 		// We haven't been deleted or still have existing replicas, update our running replicas.
 		change = ensureFinalizer(&replicaSet, executableReplicaSetFinalizer)
-		change |= r.updateReplicas(ctx, &replicaSet, childExecutables, log)
+		// If we added a finalizer, we'll do the additional reconciliation next call
+		if change == noChange {
+			change |= r.updateReplicas(ctx, &replicaSet, childExecutables, log)
+		}
 	}
 
 	if change == noChange {
@@ -256,15 +259,6 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 
 	var update *apiv1.ExecutableReplicaSet
 
-	if (change & (metadataChanged | specChanged)) != 0 {
-		update = replicaSet.DeepCopy()
-		if err := r.Patch(ctx, update, patch); err != nil {
-			log.Error(err, "Executable update failed")
-			return ctrl.Result{}, err
-		}
-		log.V(1).Info("Executable update succeeded")
-	}
-
 	if (change & statusChanged) != 0 {
 		update = replicaSet.DeepCopy()
 		if err := r.Status().Patch(ctx, update, patch); err != nil {
@@ -272,6 +266,15 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 			return ctrl.Result{}, err
 		}
 		log.V(1).Info("Executable status update succeeded")
+	}
+
+	if (change & (metadataChanged | specChanged)) != 0 {
+		update = replicaSet.DeepCopy()
+		if err := r.Patch(ctx, update, patch); err != nil {
+			log.Error(err, "Executable update failed")
+			return ctrl.Result{}, err
+		}
+		log.V(1).Info("Executable update succeeded")
 	}
 
 	if (change & additionalReconciliationNeeded) != 0 {

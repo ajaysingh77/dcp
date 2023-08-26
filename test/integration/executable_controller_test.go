@@ -2,14 +2,8 @@ package integration_test
 
 import (
 	"context"
-	"os"
 	"strconv"
 	"testing"
-
-	"github.com/go-logr/logr"
-	"github.com/go-logr/zapr"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	wait "k8s.io/apimachinery/pkg/util/wait"
@@ -295,23 +289,6 @@ func TestExecutableDeletion(t *testing.T) {
 			tc.verifyRunEnded(ctx, t, tc.exe)
 		})
 	}
-}
-
-func newControllerLogger() (logr.Logger, func()) {
-	stdOutWriter := zapcore.AddSync(os.Stdout)
-
-	zapLogger := zap.New(
-		zapcore.NewCore(
-			zapcore.NewConsoleEncoder(zap.NewDevelopmentEncoderConfig()),
-			stdOutWriter,
-			zapcore.DebugLevel,
-		),
-	)
-	flushFn := func() {
-		_ = stdOutWriter.Sync() // Best effort
-	}
-	logger := zapr.NewLogger(zapLogger)
-	return logger, flushFn
 }
 
 func ensureProcessRunning(ctx context.Context, cmdPath string) (string, error) {

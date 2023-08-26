@@ -122,8 +122,11 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		change &= ^statusChanged
 	} else {
 		change = ensureFinalizer(&exe, executableFinalizer)
-		change |= r.updateRunState(&exe, log)
-		change |= r.runExecutable(ctx, &exe, log)
+		// If we added a finalizer, we'll do the additional reconciliation next call
+		if change == noChange {
+			change |= r.updateRunState(&exe, log)
+			change |= r.runExecutable(ctx, &exe, log)
+		}
 	}
 
 	if change == noChange {
@@ -133,15 +136,6 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	var update *apiv1.Executable
 
-	if (change & (metadataChanged | specChanged)) != 0 {
-		update = exe.DeepCopy()
-		if err := r.Patch(ctx, update, patch); err != nil {
-			log.Error(err, "Executable update failed")
-			return ctrl.Result{}, err
-		}
-		log.V(1).Info("Executable update succeeded")
-	}
-
 	if (change & statusChanged) != 0 {
 		update = exe.DeepCopy()
 		if err := r.Status().Patch(ctx, update, patch); err != nil {
@@ -149,6 +143,15 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return ctrl.Result{}, err
 		}
 		log.V(1).Info("Executable status update succeeded")
+	}
+
+	if (change & (metadataChanged | specChanged)) != 0 {
+		update = exe.DeepCopy()
+		if err := r.Patch(ctx, update, patch); err != nil {
+			log.Error(err, "Executable update failed")
+			return ctrl.Result{}, err
+		}
+		log.V(1).Info("Executable update succeeded")
 	}
 
 	if exe.Done() {

@@ -12,8 +12,13 @@ const (
 	CREATE_NEW_CONSOLE = 0x00000010
 )
 
-// Use separate console so this process exit will not affect the children.
+// Use separate process group so this process exit will not affect the children.
 func DecoupleFromParent(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP}
+}
+
+// Use separate console group to force the child process completely outside its parent's process group
+func ForkFromParent(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: CREATE_NEW_CONSOLE, HideWindow: true}
 }
 
