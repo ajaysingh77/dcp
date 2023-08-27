@@ -226,7 +226,7 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 	}
 
 	var change objectChange
-	patch := ctrl_client.MergeFrom(replicaSet.DeepCopy())
+	patch := ctrl_client.MergeFromWithOptions(replicaSet.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
 	if replicaSet.DeletionTimestamp != nil && !replicaSet.DeletionTimestamp.IsZero() {
 		// Deletion has ben requested, so ensure that we start scaling down to zero replicas.

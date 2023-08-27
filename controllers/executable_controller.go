@@ -109,7 +109,7 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	var change objectChange
-	patch := ctrl_client.MergeFrom(exe.DeepCopy())
+	patch := ctrl_client.MergeFromWithOptions(exe.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
 	if exe.DeletionTimestamp != nil && !exe.DeletionTimestamp.IsZero() {
 		log.Info("Executable is being deleted...")
