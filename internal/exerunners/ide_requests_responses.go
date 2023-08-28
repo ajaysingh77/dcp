@@ -21,7 +21,7 @@ type ideSessionNotificationBase struct {
 
 type ideRunSessionChangeNotification struct {
 	ideSessionNotificationBase
-	PID      uint16 `json:"pid,omitempty"`
+	PID      uint32 `json:"pid,omitempty"`
 	ExitCode *int32 `json:"exit_code,omitempty"`
 }
 
