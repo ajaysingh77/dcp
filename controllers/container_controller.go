@@ -124,7 +124,7 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	var change objectChange
-	patch := ctrl_client.MergeFrom(container.DeepCopy())
+	patch := ctrl_client.MergeFromWithOptions(container.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
 	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() {
 		log.Info("Container object is being deleted...")
@@ -133,22 +133,25 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// Removing the finalizer will unblock the deletion of the Container object.
 		// Status update will fail, because the object will no longer be there, so suppress it.
 		change &= ^statusChanged
+		removeEndpointsForWorkload(r, ctx, &container, log)
 	} else {
 		change = ensureFinalizer(&container, containerFinalizer)
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
-			change |= r.manageContainer(ctx, &container, log)
+			change = r.manageContainer(ctx, &container, log)
+			ensureEndpointsForWorkload(r, ctx, &container, log)
 		}
-	}
-
-	if change == noChange {
-		log.V(1).Info("no changes detected for Container object, continue monitoring...")
-		return ctrl.Result{}, nil
 	}
 
 	var update *apiv1.Container
 
-	if (change & statusChanged) != 0 {
+	// Apply one update per reconciliation function invocation,
+	// to avoid observing "partially updated" objects during subsequent reconciliations.
+	switch {
+	case change == noChange:
+		log.V(1).Info("no changes detected for Container object, continue monitoring...")
+		return ctrl.Result{}, nil
+	case (change & statusChanged) != 0:
 		update = container.DeepCopy()
 		err = r.Status().Patch(ctx, update, patch)
 		if err != nil {
@@ -157,9 +160,7 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		} else {
 			log.V(1).Info("Container status update succeeded")
 		}
-	}
-
-	if (change & (metadataChanged | specChanged)) != 0 {
+	case (change & (metadataChanged | specChanged)) != 0:
 		update = container.DeepCopy()
 		err = r.Patch(ctx, update, patch)
 		if err != nil {
