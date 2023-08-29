@@ -20,6 +20,8 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 
 // ExecutableReconciler reconciles a Executable object
@@ -32,6 +34,12 @@ type ExecutableReconciler struct {
 	// A map that stores information about running Executables,
 	// searchable by Executable name (first key), or run ID (second key).
 	runs *maps.SynchronizedDualKeyMap[types.NamespacedName, RunID, apiv1.ExecutableStatus]
+
+	// Local cache of freshly created workload endpoints.
+	// This is used to avoid re-creating the same endpoint multiple times.
+	// Because there can only be one Endpoint per workload+service combination,
+	// we only need to know whether that combination exists or not.
+	workloadEndpoints syncmap.Map[ServiceWorkloadEndpointKey, bool]
 
 	// Channel used to trigger reconciliation function when underlying run status changes.
 	notifyRunChanged chan ctrl_event.GenericEvent
@@ -49,6 +57,7 @@ func NewExecutableReconciler(client ctrl_client.Client, log logr.Logger, executa
 		Client:            client,
 		ExecutableRunners: executableRunners,
 		runs:              maps.NewSynchronizedDualKeyMap[types.NamespacedName, RunID, apiv1.ExecutableStatus](),
+		workloadEndpoints: syncmap.Map[ServiceWorkloadEndpointKey, bool]{},
 		notifyRunChanged:  make(chan ctrl_event.GenericEvent),
 		debouncer:         newReconcilerDebouncer[RunID](reconciliationDebounceDelay),
 	}
@@ -63,8 +72,19 @@ func (r *ExecutableReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Source: r.notifyRunChanged,
 	}
 
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &apiv1.Endpoint{}, workloadOwnerKey, func(rawObj ctrl_client.Object) []string {
+		endpoint := rawObj.(*apiv1.Endpoint)
+		return slices.Map[metav1.OwnerReference, string](endpoint.OwnerReferences, func(ref metav1.OwnerReference) string {
+			return string(ref.UID)
+		})
+	}); err != nil {
+		r.Log.Error(err, "failed to create owner index for Endpoint")
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1.Executable{}).
+		Owns(&apiv1.Endpoint{}).
 		WatchesRawSource(&src, &ctrl_handler.EnqueueRequestForObject{}).
 		Complete(r)
 }
@@ -116,12 +136,14 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		r.stopExecutable(ctx, &exe, log)
 		change = deleteFinalizer(&exe, executableFinalizer)
 		r.deleteOutputFiles(&exe, log)
+		r.removeEndpointsForExecutable(ctx, &exe, log)
 	} else {
 		change = ensureFinalizer(&exe, executableFinalizer)
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
 			change |= r.updateRunState(&exe, log)
 			change |= r.runExecutable(ctx, &exe, log)
+			r.ensureEndpointsForExecutable(ctx, &exe, log)
 		}
 	}
 
@@ -333,5 +355,91 @@ func (r *ExecutableReconciler) scheduleExecutableReconciliation(target types.Nam
 		err := fmt.Errorf("could not schedule reconciliation for Executable whose run has finished")
 		r.Log.Error(err, "Executable", target.Name, "FinishedRunID", finishedRunID)
 		return err
+	}
+}
+
+func (r *ExecutableReconciler) ensureEndpointsForExecutable(ctx context.Context, owner *apiv1.Executable, log logr.Logger) {
+	var serviceProducers []ServiceProducer
+	var err error
+	annotations := owner.GetAnnotations()
+
+	spa, found := annotations[serviceProducerAnnotation]
+	if !found {
+		log.V(1).Info("no service-producer annotation found on Container/Executable object")
+		return
+	}
+
+	serviceProducers, err = parseServiceProducerAnnotation(spa)
+	if err != nil {
+		log.Error(err, serviceProducerIsInvalid)
+		return
+	}
+
+	var childEndpoints apiv1.EndpointList
+	if err := r.List(ctx, &childEndpoints, ctrl_client.InNamespace(owner.Namespace), ctrl_client.MatchingFields{workloadOwnerKey: string(owner.GetUID())}); err != nil {
+		log.Error(err, "failed to list child Endpoint objects")
+	}
+
+	for _, serviceProducer := range serviceProducers {
+		// Check if we have already created an Endpoint for this workload.
+		sweKey := ServiceWorkloadEndpointKey{
+			NamespacedNameWithKind: GetNamespacedNameWithKind(owner),
+			ServiceName:            serviceProducer.ServiceName,
+		}
+		hasEndpoint := slices.Any(childEndpoints.Items, func(e apiv1.Endpoint) bool {
+			return e.Spec.ServiceName == serviceProducer.ServiceName
+		})
+
+		if hasEndpoint {
+			log.V(1).Info("Endpoint already exists for this workload and service combination", "ServiceName", serviceProducer.ServiceName)
+
+			// Client has caught up and has the info about the service endpoint workload, we can clear the local cache.
+			r.workloadEndpoints.Delete(sweKey)
+
+			continue
+		}
+		_, found := r.workloadEndpoints.Load(sweKey)
+		if found {
+			log.V(1).Info("Endpoint was just created for this workload and service combination", "ServiceName", serviceProducer.ServiceName)
+			continue
+		}
+
+		var endpoint *apiv1.Endpoint
+		endpoint, err = createEndpointForExecutable(owner, serviceProducer, log)
+
+		if err != nil {
+			log.Error(err, "could not create Endpoint object")
+			continue
+		}
+
+		if err := ctrl.SetControllerReference(owner, endpoint, r.Scheme()); err != nil {
+			log.Error(err, "failed to set owner for endpoint")
+		}
+
+		if err := r.Create(ctx, endpoint); err != nil {
+			log.Error(err, "could not persist Endpoint object")
+		}
+
+		r.workloadEndpoints.Store(sweKey, true)
+	}
+}
+
+func (r *ExecutableReconciler) removeEndpointsForExecutable(ctx context.Context, owner *apiv1.Executable, log logr.Logger) {
+	var childEndpoints apiv1.EndpointList
+	if err := r.List(ctx, &childEndpoints, ctrl_client.InNamespace(owner.Namespace), ctrl_client.MatchingFields{workloadOwnerKey: string(owner.GetUID())}); err != nil {
+		log.Error(err, "failed to list child Endpoint objects")
+	}
+
+	for _, endpoint := range childEndpoints.Items {
+		if err := r.Delete(ctx, &endpoint); err != nil {
+			log.Error(err, "could not delete Endpoint object")
+		}
+
+		sweKey := ServiceWorkloadEndpointKey{
+			NamespacedNameWithKind: GetNamespacedNameWithKind(owner),
+			ServiceName:            endpoint.Spec.ServiceName,
+		}
+
+		r.workloadEndpoints.Delete(sweKey)
 	}
 }

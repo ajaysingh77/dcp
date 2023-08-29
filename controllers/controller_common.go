@@ -93,3 +93,13 @@ type NamespacedNameWithKind struct {
 	types.NamespacedName
 	Kind string
 }
+
+func GetNamespacedNameWithKind(obj ctrl_client.Object) NamespacedNameWithKind {
+	return NamespacedNameWithKind{
+		NamespacedName: types.NamespacedName{
+			Namespace: obj.GetNamespace(),
+			Name:      obj.GetName(),
+		},
+		Kind: obj.GetObjectKind().GroupVersionKind().Kind,
+	}
+}
