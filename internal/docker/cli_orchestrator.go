@@ -66,9 +66,7 @@ func NewDockerCliOrchestrator(log logr.Logger, executor process.Executor) *Docke
 
 func (dco *DockerCliOrchestrator) CreateVolume(ctx context.Context, name string) error {
 	cmd := makeDockerCommand(ctx, "volume", "create", name)
-	effectiveCtx, cancel := context.WithTimeout(ctx, ordinaryDockerCommandTimeout)
-	defer cancel()
-	outBuf, _, err := dco.runDockerCommand(effectiveCtx, "CreateVolume", cmd)
+	outBuf, _, err := dco.runDockerCommand(ctx, "CreateVolume", cmd, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return err
 	}
@@ -85,9 +83,7 @@ func (dco *DockerCliOrchestrator) InspectVolumes(ctx context.Context, volumes []
 		volumes...)...,
 	)
 
-	effectiveCtx, cancel := context.WithTimeout(ctx, ordinaryDockerCommandTimeout)
-	defer cancel()
-	outBuf, errBuf, err := dco.runDockerCommand(effectiveCtx, "InspectVolumes", cmd)
+	outBuf, errBuf, err := dco.runDockerCommand(ctx, "InspectVolumes", cmd, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return nil, normalizeError(err, errBuf, volumeNotFoundRegEx, len(volumes))
 	}
@@ -102,9 +98,7 @@ func (dco *DockerCliOrchestrator) RemoveVolumes(ctx context.Context, volumes []s
 	}
 	args = append(args, volumes...)
 	cmd := makeDockerCommand(ctx, args...)
-	effectiveCtx, cancel := context.WithTimeout(ctx, ordinaryDockerCommandTimeout)
-	defer cancel()
-	outBuf, errBuf, err := dco.runDockerCommand(effectiveCtx, "RemoveVolumes", cmd)
+	outBuf, errBuf, err := dco.runDockerCommand(ctx, "RemoveVolumes", cmd, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return nil, normalizeError(err, errBuf, volumeNotFoundRegEx, len(volumes))
 	}
@@ -159,9 +153,7 @@ func (dco *DockerCliOrchestrator) RunContainer(ctx context.Context, options cont
 
 	// The run container command can take a long time to finish if the image is not available locally.
 	// So we use much longer timeout than for other commands.
-	effectiveCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-	defer cancel()
-	outBuf, _, err := dco.runDockerCommand(effectiveCtx, "RunContainer", cmd)
+	outBuf, _, err := dco.runDockerCommand(ctx, "RunContainer", cmd, 10*time.Minute)
 	if err != nil {
 		return "", err
 	}
@@ -177,9 +169,7 @@ func (dco *DockerCliOrchestrator) InspectContainers(ctx context.Context, names [
 		[]string{"container", "inspect", "--format", "{{json .}}"},
 		names...)...,
 	)
-	effectiveCtx, cancel := context.WithTimeout(ctx, ordinaryDockerCommandTimeout)
-	defer cancel()
-	outBuf, errBuf, err := dco.runDockerCommand(effectiveCtx, "InspectContainers", cmd)
+	outBuf, errBuf, err := dco.runDockerCommand(ctx, "InspectContainers", cmd, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return nil, normalizeError(err, errBuf, containerNotFoundRegEx, len(names))
 	}
@@ -200,10 +190,8 @@ func (dco *DockerCliOrchestrator) StopContainers(ctx context.Context, names []st
 	}
 	args = append(args, names...)
 
-	effectiveCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 	cmd := makeDockerCommand(ctx, args...)
-	outBuf, errBuf, err := dco.runDockerCommand(effectiveCtx, "StopContainers", cmd)
+	outBuf, errBuf, err := dco.runDockerCommand(ctx, "StopContainers", cmd, timeout)
 	if err != nil {
 		return nil, normalizeError(err, errBuf, containerNotFoundRegEx, len(names))
 	}
@@ -225,9 +213,7 @@ func (dco *DockerCliOrchestrator) RemoveContainers(ctx context.Context, names []
 	args = append(args, names...)
 
 	cmd := makeDockerCommand(ctx, args...)
-	effectiveCtx, cancel := context.WithTimeout(ctx, ordinaryDockerCommandTimeout)
-	defer cancel()
-	outBuf, errBuf, err := dco.runDockerCommand(effectiveCtx, "RemoveContainers", cmd)
+	outBuf, errBuf, err := dco.runDockerCommand(ctx, "RemoveContainers", cmd, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return nil, normalizeError(err, errBuf, containerNotFoundRegEx, len(names))
 	}
@@ -331,13 +317,16 @@ func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context) 
 	}
 }
 
-func (dco *DockerCliOrchestrator) runDockerCommand(ctx context.Context, commandName string, cmd *exec.Cmd) (*bytes.Buffer, *bytes.Buffer, error) {
+func (dco *DockerCliOrchestrator) runDockerCommand(ctx context.Context, commandName string, cmd *exec.Cmd, timeout time.Duration) (*bytes.Buffer, *bytes.Buffer, error) {
 	outBuf := new(bytes.Buffer)
 	errBuf := new(bytes.Buffer)
 	cmd.Stdout = outBuf
 	cmd.Stderr = errBuf
 
-	exitCode, err := process.Run(ctx, dco.executor, cmd)
+	effectiveCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	exitCode, err := process.Run(effectiveCtx, dco.executor, cmd)
 
 	// process.Run() guarantees (through exec.Cmd standard library implementation)
 	// that when it exits, all the available data written to stdout and stderr are captured.
