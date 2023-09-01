@@ -8,6 +8,8 @@ on:
   pull_request:
     branches:
       - main
+      - release/*
+      - production
 
 env:
   GOPRIVATE: github.com/microsoft/usvc-*

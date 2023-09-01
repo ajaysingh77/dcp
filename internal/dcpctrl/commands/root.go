@@ -4,6 +4,7 @@ import (
 	"github.com/spf13/cobra"
 	ctrlruntime "sigs.k8s.io/controller-runtime"
 
+	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
@@ -24,6 +25,10 @@ func NewRootCommand(logger logger.Logger) *cobra.Command {
 	}
 
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true
+
+	if cmd, _ := cmds.NewVersionCommand(logger); cmd != nil {
+		rootCmd.AddCommand(cmd)
+	}
 
 	rootCmd.AddCommand(NewGetCapabilitiesCommand(logger))
 	rootCmd.AddCommand(NewRunControllersCommand(logger))

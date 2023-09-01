@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 	ctrlruntime "sigs.k8s.io/controller-runtime"
 
+	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
@@ -27,6 +28,12 @@ func NewRootCmd(log logger.Logger) (*cobra.Command, error) {
 
 	var err error
 	var cmd *cobra.Command
+
+	if cmd, err = cmds.NewVersionCommand(log); cmd != nil {
+		rootCmd.AddCommand(cmd)
+	} else {
+		return nil, fmt.Errorf("could not set up 'version' command: %w", err)
+	}
 
 	if cmd, err = NewGenerateFileCommand(log); cmd != nil {
 		rootCmd.AddCommand(cmd)

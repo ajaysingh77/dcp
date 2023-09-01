@@ -9,6 +9,7 @@ import (
 	ctrlruntime "sigs.k8s.io/controller-runtime"
 
 	"github.com/microsoft/usvc-apiserver/internal/apiserver"
+	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
 	"github.com/microsoft/usvc-apiserver/pkg/extensions"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
@@ -32,6 +33,10 @@ func NewRootCmd(logger logger.Logger) (*cobra.Command, error) {
 	}
 
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true
+
+	if cmd, _ := cmds.NewVersionCommand(logger); cmd != nil {
+		rootCmd.AddCommand(cmd)
+	}
 
 	rootCmd.AddCommand(NewGetCapabilitiesCommand())
 

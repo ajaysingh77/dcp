@@ -17,6 +17,7 @@ ifeq ($(OS),Windows_NT)
 	home_dir := $(USERPROFILE)
 	install := Copy-Item
 	exe_suffix := .exe
+	BUILD_TIMESTAMP ?= $(shell Get-Date -UFormat %s)
 else
 	# -o pipefail will treat a pipeline as failed if one of the elements fail.
 	SHELL := /usr/bin/env bash -o pipefail
@@ -30,6 +31,7 @@ else
 	home_dir := $(HOME)
 	install := install -p
 	exe_suffix :=
+	BUILD_TIMESTAMP ?= $(shell date -u +%s)
 endif
 
 # Honor GOOS settings from the environment to determine appropriate suffix.
@@ -86,6 +88,11 @@ CONTROLLER_TOOLS_VERSION ?= v0.12.0
 CODE_GENERATOR_VERSION ?= v0.27.3
 ENVTEST_K8S_VERSION = 1.27.1
 TRAEFIK_VERSION = v2.10.4
+
+VERSION ?= dev
+COMMIT ?= $(shell git rev-parse HEAD)
+
+version_values := -X 'github.com/microsoft/usvc-apiserver/internal/version.Version=$(VERSION)' -X 'github.com/microsoft/usvc-apiserver/internal/version.CommitHash=$(COMMIT)' -X 'github.com/microsoft/usvc-apiserver/internal/version.BuildTimestamp=$(BUILD_TIMESTAMP)'
 
 # Disable C interop https://dave.cheney.net/2016/01/18/cgo-is-not-go
 export CGO_ENABLED=0
@@ -179,10 +186,11 @@ $(DELAY_TOOL): $(wildcard ./test/delay/*.go) | $(TOOL_BIN)
 
 ##@ Development
 
-release: BUILD_ARGS ?= -ldflags "-s -w"
+release: BUILD_ARGS ?= -ldflags "-s -w $(version_values)"
 release: compile ## Builds all binaries with flags to reduce binary size
 
 build: generate compile ## Runs codegen and builds all binaries (DCP CLI, DCP API server, and controller host)
+compile: BUILD_ARGS ?= -ldflags "$(version_values)"
 compile: build-dcpd build-dcpctrl build-dcp ## Builds all binaries (DCP CLI, DCP API server, and controller host) (skips codegen)
 
 .PHONY: build-dcpd
