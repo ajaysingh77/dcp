@@ -5,6 +5,8 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/go-logr/logr"
@@ -21,6 +23,7 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
 const (
@@ -92,6 +95,7 @@ func (r *ContainerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1.Container{}).
+		Owns(&apiv1.Endpoint{}).
 		WatchesRawSource(&src, &ctrl_handler.EnqueueRequestForObject{}).
 		Complete(r)
 }
@@ -133,11 +137,13 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// Removing the finalizer will unblock the deletion of the Container object.
 		// Status update will fail, because the object will no longer be there, so suppress it.
 		change &= ^statusChanged
+		removeEndpointsForWorkload(r, ctx, &container, log)
 	} else {
 		change = ensureFinalizer(&container, containerFinalizer)
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
 			change = r.manageContainer(ctx, &container, log)
+			ensureEndpointsForWorkload(r, ctx, &container, log)
 		}
 	}
 
@@ -428,4 +434,94 @@ func (r *ContainerReconciler) cancelContainerWatch() {
 func (r *ContainerReconciler) onShutdown() {
 	<-r.lifetimeCtx.Done()
 	r.cancelContainerWatch()
+}
+
+func (r *ContainerReconciler) createEndpoint(
+	ctx context.Context,
+	owner ctrl_client.Object,
+	serviceProducer ServiceProducer,
+	log logr.Logger,
+) (*apiv1.Endpoint, error) {
+	endpointName, err := MakeUniqueName(owner.GetName())
+	if err != nil {
+		log.Error(err, "could not generate unique name for Endpoint object")
+		return nil, err
+	}
+
+	if serviceProducer.Address != "" {
+		log.Error(fmt.Errorf("address cannot be specified for Container objects"), serviceProducerIsInvalid)
+		return nil, err
+	}
+
+	hostAddress, hostPort, err := r.getHostAddressAndPortForContainerPort(ctx, owner.(*apiv1.Container), serviceProducer.Port)
+	if err != nil {
+		log.Error(err, "could not determine host address and port for container port")
+		return nil, err
+	}
+
+	if hostAddress == "" || hostAddress == "0.0.0.0" {
+		hostAddress = "127.0.0.1"
+	}
+
+	// Otherwise, create a new Endpoint object.
+	endpoint := &apiv1.Endpoint{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      endpointName,
+			Namespace: owner.GetNamespace(),
+		},
+		Spec: apiv1.EndpointSpec{
+			ServiceNamespace: owner.GetNamespace(),
+			ServiceName:      serviceProducer.ServiceName,
+			Address:          hostAddress,
+			Port:             hostPort,
+		},
+	}
+
+	return endpoint, nil
+}
+
+func (r *ContainerReconciler) getHostAddressAndPortForContainerPort(ctx context.Context, ctr *apiv1.Container, containerPort int32) (string, int32, error) {
+	matchedPorts := slices.Select(ctr.Spec.Ports, func(p apiv1.ContainerPort) bool {
+		return p.ContainerPort == containerPort
+	})
+
+	if len(matchedPorts) > 0 {
+		matchedPort := matchedPorts[0]
+
+		if matchedPort.HostPort != 0 {
+			// If the spec contains a host port matching the desired container port, just use that
+			return matchedPort.HostIP, matchedPort.HostPort, nil
+		}
+	}
+
+	// Otherwise, need to inspect the container
+	ci, err := r.orchestrator.InspectContainers(ctx, []string{ctr.Status.ContainerID})
+	if err != nil {
+		return "", 0, err
+	}
+
+	if len(ci) == 0 {
+		return "", 0, fmt.Errorf("could not find container with ID %s", ctr.Status.ContainerID)
+	}
+
+	inspected := ci[0]
+
+	var matchedHostPort ct.InspectedContainerHostPortConfig
+	for k, v := range inspected.Ports {
+		ctrPort := strings.Split(k, "/")[0]
+
+		if ctrPort == fmt.Sprintf("%d", containerPort) {
+			matchedHostPort = v[0]
+			break
+		}
+	}
+
+	hostPort, err := strconv.ParseInt(matchedHostPort.HostPort, 10, 32)
+	if err != nil {
+		return "", 0, fmt.Errorf("could not parse host port '%s' as integer", matchedHostPort.HostPort)
+	} else if hostPort == 0 {
+		return "", 0, fmt.Errorf("could not find host port for container port %d", containerPort)
+	}
+
+	return matchedHostPort.HostIp, int32(hostPort), nil
 }

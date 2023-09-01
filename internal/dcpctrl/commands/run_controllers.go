@@ -161,6 +161,11 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 			return err
 		}
 
+		if err = controllers.SetupEndpointIndexWithManager(mgr); err != nil {
+			log.Error(err, "unable to set up Endpoint owner index")
+			return err
+		}
+
 		log.Info("starting controller manager")
 		err = mgr.Start(cmd.Context())
 		if err != nil {

@@ -21,6 +21,13 @@ const (
 	ContainerStatusDead       ContainerStatus = "dead"
 )
 
+type InspectedContainerPortMapping map[string][]InspectedContainerHostPortConfig
+
+type InspectedContainerHostPortConfig struct {
+	HostIp   string `json:"HostIp,omitempty"`
+	HostPort string `json:"HostPort,omitempty"`
+}
+
 type InspectedContainer struct {
 	// ID of the container
 	Id string `json:"Id"`
@@ -45,6 +52,9 @@ type InspectedContainer struct {
 
 	// Exit code
 	ExitCode int32 `json:"ExitCode,omitempty"`
+
+	// Container ports
+	Ports InspectedContainerPortMapping `json:"Ports,omitempty"`
 }
 
 type RunContainerOptions struct {

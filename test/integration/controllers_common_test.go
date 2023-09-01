@@ -186,6 +186,10 @@ func startTestEnvironment(ctx context.Context, log logger.Logger) (func(), error
 		return nil, fmt.Errorf("failed to initialize Service reconciler: %w", err)
 	}
 
+	if err = controllers.SetupEndpointIndexWithManager(mgr); err != nil {
+		return nil, fmt.Errorf("failed to initialize Endpoint index: %w", err)
+	}
+
 	// Starts the controller manager and all the associated controllers
 	go func() {
 		_ = mgr.Start(ctx)

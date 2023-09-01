@@ -461,6 +461,7 @@ func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
 	ic.FinishedAt = dci.State.FinishedAt
 	ic.Status = dci.State.Status
 	ic.ExitCode = dci.State.ExitCode
+	ic.Ports = dci.NetworkSettings.Ports
 	return nil
 }
 
@@ -468,11 +469,12 @@ func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
 // The definition only includes data that we care about.
 // For reference see https://github.com/moby/moby/blob/master/api/swagger.yaml
 type dockerInspectedContainer struct {
-	Id      string                         `json:"Id"`
-	Name    string                         `json:"Name,omitempty"`
-	Config  dockerInspectedContainerConfig `json:"Config,omitempty"`
-	Created time.Time                      `json:"Created,omitempty"`
-	State   dockerInspectedContainerState  `json:"State,omitempty"`
+	Id              string                                  `json:"Id"`
+	Name            string                                  `json:"Name,omitempty"`
+	Config          dockerInspectedContainerConfig          `json:"Config,omitempty"`
+	Created         time.Time                               `json:"Created,omitempty"`
+	State           dockerInspectedContainerState           `json:"State,omitempty"`
+	NetworkSettings dockerInspectedContainerNetworkSettings `json:"NetworkSettings,omitempty"`
 }
 
 type dockerInspectedContainerConfig struct {
@@ -484,6 +486,10 @@ type dockerInspectedContainerState struct {
 	StartedAt  time.Time                  `json:"StartedAt,omitempty"`
 	FinishedAt time.Time                  `json:"FinishedAt,omitempty"`
 	ExitCode   int32                      `json:"ExitCode,omitempty"`
+}
+
+type dockerInspectedContainerNetworkSettings struct {
+	Ports containers.InspectedContainerPortMapping `json:"Ports,omitempty"`
 }
 
 var _ containers.VolumeOrchestrator = (*DockerCliOrchestrator)(nil)

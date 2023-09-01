@@ -66,6 +66,7 @@ func (r *ExecutableReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1.Executable{}).
+		Owns(&apiv1.Endpoint{}).
 		WatchesRawSource(&src, &ctrl_handler.EnqueueRequestForObject{}).
 		Complete(r)
 }
@@ -117,12 +118,14 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		r.stopExecutable(ctx, &exe, log)
 		change = deleteFinalizer(&exe, executableFinalizer)
 		r.deleteOutputFiles(&exe, log)
+		removeEndpointsForWorkload(r, ctx, &exe, log)
 	} else {
 		change = ensureFinalizer(&exe, executableFinalizer)
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
 			change |= r.updateRunState(&exe, log)
 			change |= r.runExecutable(ctx, &exe, log)
+			ensureEndpointsForWorkload(r, ctx, &exe, log)
 		}
 	}
 
@@ -332,4 +335,44 @@ func (r *ExecutableReconciler) scheduleExecutableReconciliation(target types.Nam
 		r.Log.Error(err, "the state of the Executable may not reflect the real world", "Executable", target.Name, "FinishedRunID", finishedRunID)
 		return err
 	}
+}
+
+func (r *ExecutableReconciler) createEndpoint(
+	ctx context.Context,
+	owner ctrl_client.Object,
+	serviceProducer ServiceProducer,
+	log logr.Logger,
+) (*apiv1.Endpoint, error) {
+	endpointName, err := MakeUniqueName(owner.GetName())
+	if err != nil {
+		log.Error(err, "could not generate unique name for Endpoint object")
+		return nil, err
+	}
+
+	// TODO: logic to find an address and port for the executable
+	// TODO: until then, raise an error if port is not specified
+	if serviceProducer.Port == 0 {
+		return nil, fmt.Errorf(serviceProducerIsInvalid)
+	}
+
+	address := serviceProducer.Address
+	if address == "" {
+		address = "localhost"
+	}
+
+	// Otherwise, create a new Endpoint object.
+	endpoint := &apiv1.Endpoint{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      endpointName,
+			Namespace: owner.GetNamespace(),
+		},
+		Spec: apiv1.EndpointSpec{
+			ServiceNamespace: owner.GetNamespace(),
+			ServiceName:      serviceProducer.ServiceName,
+			Address:          address,
+			Port:             serviceProducer.Port,
+		},
+	}
+
+	return endpoint, nil
 }
