@@ -67,7 +67,7 @@ endif
 OUTPUT_BIN ?= $(repo_dir)/bin
 DCP_DIR ?= $(home_dir)/.dcp
 EXTENSIONS_DIR ?= $(home_dir)/.dcp/ext
-BIN_DIR ?= $(home_dir)/.dcp/bin
+BIN_DIR ?= $(home_dir)/.dcp/ext/bin
 DCP_BINARY ?= ${OUTPUT_BIN}/dcp$(bin_exe_suffix)
 DCPD_BINARY ?= ${OUTPUT_BIN}/ext/dcpd$(bin_exe_suffix)
 DCPCTRL_BINARY ?= $(OUTPUT_BIN)/ext/dcpctrl$(bin_exe_suffix)
@@ -186,11 +186,11 @@ $(DELAY_TOOL): $(wildcard ./test/delay/*.go) | $(TOOL_BIN)
 
 ##@ Development
 
-release: BUILD_ARGS ?= -ldflags "-s -w $(version_values)"
+release: BUILD_ARGS := $(BUILD_ARGS) -ldflags "-s -w $(version_values)"
 release: compile ## Builds all binaries with flags to reduce binary size
 
 build: generate compile ## Runs codegen and builds all binaries (DCP CLI, DCP API server, and controller host)
-compile: BUILD_ARGS ?= -ldflags "$(version_values)"
+compile: BUILD_ARGS := $(BUILD_ARGS) -ldflags "$(version_values)"
 compile: build-dcpd build-dcpctrl build-dcp ## Builds all binaries (DCP CLI, DCP API server, and controller host) (skips codegen)
 
 .PHONY: build-dcpd
@@ -251,12 +251,12 @@ ifeq ($(build_os),windows)
 	curl -sSfL https://github.com/traefik/traefik/releases/download/$(TRAEFIK_VERSION)/traefik_$(TRAEFIK_VERSION)_$(build_os)_$(build_arch).zip --output $(TOOL_BIN)/traefik.zip
 else
 	curl -sSfL https://github.com/traefik/traefik/releases/download/$(TRAEFIK_VERSION)/traefik_$(TRAEFIK_VERSION)_$(build_os)_$(build_arch).tar.gz --output $(TOOL_BIN)/traefik.tar.gz
-	tar -xzf $(TOOL_BIN)/traefik.tar.gz -C ${OUTPUT_BIN}/bin/
+	tar -xzf $(TOOL_BIN)/traefik.tar.gz -C ${OUTPUT_BIN}/ext/bin/
 endif
 ifeq ($(detected_OS).$(build_os),windows.windows)
-	Expand-Archive -Force -Path $(TOOL_BIN)/traefik.zip -DestinationPath ${OUTPUT_BIN}/bin/
+	Expand-Archive -Force -Path $(TOOL_BIN)/traefik.zip -DestinationPath ${OUTPUT_BIN}/ext/bin/
 else ifeq (.$(build_os),.windows)
-	unzip -o $(TOOL_BIN)/traefik.zip -d ${OUTPUT_BIN}/bin/
+	unzip -o $(TOOL_BIN)/traefik.zip -d ${OUTPUT_BIN}/ext/bin/
 endif
 
 .PHONY: install-proxy
@@ -313,7 +313,8 @@ show-test-vars: envtest ## Shows the values of variables used in test targets
 
 ${OUTPUT_BIN}:
 	$(mkdir) ${OUTPUT_BIN}
-	$(mkdir) ${OUTPUT_BIN}/bin/
+	$(mkdir) ${OUTPUT_BIN}/ext/
+	$(mkdir) ${OUTPUT_BIN}/ext/bin/
 
 $(TOOL_BIN):
 	$(mkdir) $(TOOL_BIN)

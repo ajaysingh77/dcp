@@ -5,14 +5,24 @@
             "type": "shell",
             "label": "compile",
             "command": "make",
-            "args": ["compile"]
+            "args": ["compile"],
+            "options": {
+                "env": {
+                    "BUILD_ARGS": "-gcflags=all=\"-N -l\""
+                }
+            }
         },
 
         {
             "type": "shell",
             "label": "build",
             "command": "make",
-            "args": ["build"]
+            "args": ["build"],
+            "options": {
+                "env": {
+                    "BUILD_ARGS": "-gcflags=all=\"-N -l\""
+                }
+            }
         }
     ]
 }
