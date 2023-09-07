@@ -34,7 +34,7 @@ func TestRunCompleted(t *testing.T) {
 		// The command will wait for 300 ms and then exit with code 12.
 		cmd := exec.Command("./delay", "-d", "300ms", "-e", "12")
 		cmd.Dir = delayToolDir
-		exitCode, err := Run(testCtx, executor, cmd)
+		exitCode, err := RunToCompletion(testCtx, executor, cmd)
 		exitInfoChan <- ProcessExitInfo{
 			ExitCode: exitCode,
 			Err:      err,
@@ -51,8 +51,8 @@ func TestRunCompleted(t *testing.T) {
 	}
 }
 
-// Tests that process is terminated when the context expires.
-func TestRunDeadlineExceeded(t *testing.T) {
+// Tests that process is terminated when the context passed to RunToCompletion() expires.
+func TestRunToCompletionDeadlineExceeded(t *testing.T) {
 	t.Parallel()
 
 	delayToolDir, err := getDelayToolDir()
@@ -71,12 +71,48 @@ func TestRunDeadlineExceeded(t *testing.T) {
 	ctx, cancelFn := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancelFn()
 
-	_, err = Run(ctx, executor, cmd)
+	_, err = RunToCompletion(ctx, executor, cmd)
 
 	elapsed := time.Since(start)
 	require.True(t, errors.Is(err, context.DeadlineExceeded))
 	if elapsed > 2*time.Second {
-		t.Fatal("Process was not terminated timely")
+		t.Fatal("Process was not terminated timely, elapsed time was ", elapsed)
+	}
+}
+
+// Tests that RunWithTimeout() call returns almost immediately when the context is cancelled.
+func TestRunWithTimeout(t *testing.T) {
+	t.Parallel()
+
+	delayToolDir, err := getDelayToolDir()
+	require.NoError(t, err)
+
+	executor := NewOSExecutor()
+
+	// Command returns on its own after 5 seconds. This prevents the test from hanging
+	// or leaving processes running after the test is done.
+	cmd := exec.Command("./delay", "-d", "5s")
+	cmd.Dir = delayToolDir
+	ctx, cancelFn := context.WithCancel(context.Background())
+	runCallEndedCh := make(chan struct{})
+
+	go func() {
+		_, _ = RunWithTimeout(ctx, executor, cmd)
+		runCallEndedCh <- struct{}{}
+	}()
+
+	// Sleep for a bit to make sure the process is started.
+	time.Sleep(1 * time.Second)
+
+	start := time.Now()
+	cancelFn()
+	<-runCallEndedCh
+	elapsed := time.Since(start)
+
+	// Normally we expect the RunWithTimeout() call to return much faster than 500 ms,
+	// but we allow for some slack in case the test is running on a heavily loaded machine.
+	if elapsed > 500*time.Millisecond {
+		t.Fatal("RunWithTimeout() call did not return immediately after context cancellation, elapsed time was ", elapsed)
 	}
 }
 

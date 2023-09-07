@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -338,10 +339,14 @@ func (dco *DockerCliOrchestrator) runDockerCommand(ctx context.Context, commandN
 	effectiveCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	exitCode, err := process.Run(effectiveCtx, dco.executor, cmd)
+	exitCode, err := process.RunWithTimeout(effectiveCtx, dco.executor, cmd)
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		// If a timeout occurs, the content of the stdout and stderr buffers is not guaranteed to be complete.
+		return nil, nil, err
+	}
 
-	// process.Run() guarantees (through exec.Cmd standard library implementation)
-	// that when it exits, all the available data written to stdout and stderr are captured.
+	// process.RunWithTimeout() guarantees (through exec.Cmd standard library implementation)
+	// that when it exits without timeout error, all the available data written to stdout and stderr has been captured.
 
 	stderr := ""
 	stdout := ""
@@ -366,6 +371,10 @@ func (dco *DockerCliOrchestrator) runDockerCommand(ctx context.Context, commandN
 func normalizeError(originalError error, errBuf *bytes.Buffer, isNotFound *regexp.Regexp, maxObjectsAffected int) error {
 	if originalError == nil {
 		return nil
+	}
+
+	if errBuf == nil {
+		return originalError
 	}
 
 	lines := bytes.Split(errBuf.Bytes(), []byte("\n"))
@@ -425,6 +434,10 @@ func expectStrings(b *bytes.Buffer, expected []string) error {
 }
 
 func asObjects[T any](b *bytes.Buffer, unmarshalFn func([]byte, *T) error) ([]T, error) {
+	if b == nil {
+		return nil, fmt.Errorf("Docker command timed out without returning any data")
+	}
+
 	retval := []T{}
 	chunks := bytes.Split(b.Bytes(), LF)
 
@@ -447,6 +460,10 @@ func asObjects[T any](b *bytes.Buffer, unmarshalFn func([]byte, *T) error) ([]T,
 }
 
 func asId(b *bytes.Buffer) (string, error) {
+	if b == nil {
+		return "", fmt.Errorf("Docker command timed out without returning object identifier")
+	}
+
 	chunks := slices.NonEmpty[byte](slices.Map[[]byte, []byte](bytes.Split(b.Bytes(), LF), bytes.TrimSpace))
 	if len(chunks) != 1 {
 		return "", fmt.Errorf("command output does not contain a single identifier (it is '%s')", b.String())
@@ -455,10 +472,18 @@ func asId(b *bytes.Buffer) (string, error) {
 }
 
 func unmarshalVolume(data []byte, vol *containers.InspectedVolume) error {
+	if data == nil {
+		return fmt.Errorf("Docker command timed out without returning volume data")
+	}
+
 	return json.Unmarshal(data, vol)
 }
 
 func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
+	if data == nil {
+		return fmt.Errorf("Docker command timed out without returning container data")
+	}
+
 	var dci dockerInspectedContainer
 	err := json.Unmarshal(data, &dci)
 	if err != nil {

@@ -37,7 +37,11 @@ func GetProcessTree(pid int32) ([]int32, error) {
 
 // Runs the command as a child process to completion.
 // Returns exit code, or error if the process could not be started/tracked for some reason.
-func Run(ctx context.Context, executor Executor, cmd *exec.Cmd) (int32, error) {
+//
+// The context parameter is used to request cancellation of the process, but the call to RunToCompletion() will not return
+// until the process exits and all its output is captured.
+// Do not assume the call will end quickly if the context is cancelled.
+func RunToCompletion(ctx context.Context, executor Executor, cmd *exec.Cmd) (int32, error) {
 	pic := make(chan ProcessExitInfo, 1)
 	peh := NewChannelProcessExitHandler(pic)
 
@@ -51,4 +55,26 @@ func Run(ctx context.Context, executor Executor, cmd *exec.Cmd) (int32, error) {
 	// Only exit when the process exit--do not exit merely because the context is cancelled.
 	exitInfo := <-pic
 	return exitInfo.ExitCode, exitInfo.Err
+}
+
+type resultOrError[T any] struct {
+	result T
+	err    error
+}
+
+// Runs the command as a child process to completion, unless the passed context is cancelled,
+// or its deadline is exceeded.
+func RunWithTimeout(ctx context.Context, executor Executor, cmd *exec.Cmd) (int32, error) {
+	resultCh := make(chan resultOrError[int32], 1)
+	go func() {
+		exitCode, err := RunToCompletion(ctx, executor, cmd)
+		resultCh <- resultOrError[int32]{exitCode, err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return UnknownExitCode, ctx.Err()
+	case runResult := <-resultCh:
+		return runResult.result, runResult.err
+	}
 }

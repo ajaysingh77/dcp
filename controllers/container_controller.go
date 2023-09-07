@@ -220,9 +220,11 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 		return statusChanged
 	}
 
+	log.V(1).Info("inspecting running container...", "ContainerID", containerID)
 	res, err := r.orchestrator.InspectContainers(ctx, []string{containerID})
 	if err != nil || len(res) == 0 {
 		// The container was probably removed
+		log.Info("running container was not found, marking Container object as finished", "ContainerID", containerID)
 		container.Status.State = apiv1.ContainerStateRemoved
 		container.Status.FinishTimestamp = metav1.Now()
 		r.runningContainers.DeleteBySecondKey(container.NamespacedName())
@@ -313,6 +315,7 @@ func (r *ContainerReconciler) ensureContainerWatch(log logr.Logger) {
 	r.containerEvtWorkerStop = make(chan struct{})
 	go r.containerEventWorker(r.containerEvtWorkerStop)
 
+	log.V(1).Info("subscribing to container events...")
 	sub, err := r.orchestrator.WatchContainers(r.containerEvtCh.In)
 	if err != nil {
 		log.Error(err, "could not subscribe to containter events")
@@ -421,7 +424,7 @@ func (r *ContainerReconciler) createEndpoint(
 		return nil, err
 	}
 
-	hostAddress, hostPort, err := r.getHostAddressAndPortForContainerPort(ctx, owner.(*apiv1.Container), serviceProducer.Port)
+	hostAddress, hostPort, err := r.getHostAddressAndPortForContainerPort(ctx, owner.(*apiv1.Container), serviceProducer.Port, log)
 	if err != nil {
 		log.Error(err, "could not determine host address and port for container port")
 		return nil, err
@@ -448,21 +451,28 @@ func (r *ContainerReconciler) createEndpoint(
 	return endpoint, nil
 }
 
-func (r *ContainerReconciler) getHostAddressAndPortForContainerPort(ctx context.Context, ctr *apiv1.Container, containerPort int32) (string, int32, error) {
+func (r *ContainerReconciler) getHostAddressAndPortForContainerPort(
+	ctx context.Context,
+	ctr *apiv1.Container,
+	serviceProducerPort int32,
+	log logr.Logger,
+) (string, int32, error) {
 	matchedPorts := slices.Select(ctr.Spec.Ports, func(p apiv1.ContainerPort) bool {
-		return p.ContainerPort == containerPort
+		return p.ContainerPort == serviceProducerPort
 	})
 
 	if len(matchedPorts) > 0 {
 		matchedPort := matchedPorts[0]
 
 		if matchedPort.HostPort != 0 {
-			// If the spec contains a host port matching the desired container port, just use that
+			// If the spec contains a port matching the desired container port, just use that
+			log.V(1).Info("found matching port in Container spec", "ServiceProducerPort", serviceProducerPort, "HostPort", matchedPort.HostPort)
 			return matchedPort.HostIP, matchedPort.HostPort, nil
 		}
 	}
 
 	// Otherwise, need to inspect the container
+	log.V(1).Info("inspecting running container to get its port information...", "ContainerID", ctr.Status.ContainerID)
 	ci, err := r.orchestrator.InspectContainers(ctx, []string{ctr.Status.ContainerID})
 	if err != nil {
 		return "", 0, err
@@ -478,7 +488,7 @@ func (r *ContainerReconciler) getHostAddressAndPortForContainerPort(ctx context.
 	for k, v := range inspected.Ports {
 		ctrPort := strings.Split(k, "/")[0]
 
-		if ctrPort == fmt.Sprintf("%d", containerPort) {
+		if ctrPort == fmt.Sprintf("%d", serviceProducerPort) {
 			matchedHostPort = v[0]
 			break
 		}
@@ -488,8 +498,9 @@ func (r *ContainerReconciler) getHostAddressAndPortForContainerPort(ctx context.
 	if err != nil {
 		return "", 0, fmt.Errorf("could not parse host port '%s' as integer", matchedHostPort.HostPort)
 	} else if hostPort == 0 {
-		return "", 0, fmt.Errorf("could not find host port for container port %d", containerPort)
+		return "", 0, fmt.Errorf("could not find host port for container port %d", serviceProducerPort)
 	}
 
+	log.V(1).Info("matched service producer port to one of the container host ports", "ServiceProducerPort", serviceProducerPort, "HostPort", hostPort, "HostIP", matchedHostPort.HostIp)
 	return matchedHostPort.HostIp, int32(hostPort), nil
 }

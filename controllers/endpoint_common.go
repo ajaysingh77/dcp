@@ -105,6 +105,8 @@ func ensureEndpointsForWorkload(r EndpointOwner, ctx context.Context, owner ctrl
 			log.Error(err, "could not persist Endpoint object")
 		}
 
+		log.V(1).Info("New Endpoint created", "Endpoint", endpoint, "ServiceName", serviceProducer.ServiceName)
+
 		workloadEndpointCache.Store(sweKey, true)
 	}
 }

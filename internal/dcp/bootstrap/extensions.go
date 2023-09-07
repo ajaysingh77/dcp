@@ -105,7 +105,7 @@ func getExtensionCapabilities(ctx context.Context, path string) (DcpExtension, e
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	code, err := process.Run(timeoutCtx, processExecutor, cmd)
+	code, err := process.RunToCompletion(timeoutCtx, processExecutor, cmd)
 
 	if err != nil || code != 0 {
 		return DcpExtension{}, getCommandExecutionError(fmt.Sprintf("could not determine capabilities of extension '%s'", path), &stdout, &stderr, err, code)
@@ -135,7 +135,7 @@ func (ext *DcpExtension) CanRender(ctx context.Context, appRootDir string) (exte
 	cmd.Args = append(cmd.Args, "--root-dir", appRootDir) // append because the first argument is the executable path
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	code, err := process.Run(ctx, processExecutor, cmd)
+	code, err := process.RunToCompletion(ctx, processExecutor, cmd)
 
 	if err != nil || code != 0 {
 		return extensions.CanRenderResponse{}, getCommandExecutionError(fmt.Sprintf("could not determine if application type '%s' (%s) can be run", ext.Id, ext.Name), &stdout, &stderr, err, code)
@@ -162,7 +162,7 @@ func (ext *DcpExtension) Render(ctx context.Context, appRootDir string, kubeconf
 		"--kubeconfig", kubeconfigPath,
 	) // append because the first argument is the executable path
 	cmd.Stderr = &stderr
-	code, err := process.Run(ctx, processExecutor, cmd)
+	code, err := process.RunToCompletion(ctx, processExecutor, cmd)
 
 	if err != nil || code != 0 {
 		return getCommandExecutionError("could not run application", nil, &stderr, err, code)

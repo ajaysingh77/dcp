@@ -83,7 +83,7 @@ func (r *ServiceReconciler) requestReconcileForEndpoint(ctx context.Context, obj
 		Name:      endpoint.Spec.ServiceName,
 	}
 
-	r.Log.V(1).Info("endpoint updated, requesting service reconciliation", "endpoint", endpoint, "serviceName", serviceNamespaceName)
+	r.Log.V(1).Info("endpoint updated, requesting service reconciliation", "Endpoint", endpoint, "ServiceName", serviceNamespaceName)
 	return []reconcile.Request{
 		{
 			NamespacedName: serviceNamespaceName,
