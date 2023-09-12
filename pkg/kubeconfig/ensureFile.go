@@ -101,8 +101,12 @@ func createKubeconfigFile(path string, port int32) error {
 		CurrentContext: "apiserver",
 	}
 
-	err = clientcmd.WriteToFile(config, path)
+	contents, err := clientcmd.Write(config)
 	if err != nil {
+		return fmt.Errorf("could not write Kubeconfig file: %w", err)
+	}
+
+	if err := writeFile(path, contents); err != nil {
 		return fmt.Errorf("could not write Kubeconfig file: %w", err)
 	}
 
