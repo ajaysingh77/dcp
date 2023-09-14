@@ -62,8 +62,20 @@ func TestServiceProxyStartedAndStopped(t *testing.T) {
 	}
 
 	t.Log("Check if corresponding proxy process has started...")
-	err = ensureProxyProcess(ctx, selector)
+	proxyProcess, err := ensureProxyProcess(ctx, selector)
 	require.NoError(t, err, "Could not ensure proxy process running")
+
+	t.Log("Killing proxy process to ensure it is restarted upon crash...")
+	processExecutor.SimulateProcessExit(t, proxyProcess.PID, 1)
+
+	selector2 := func(pe ctrl_testutil.ProcessExecution) bool {
+		return selector(pe) && pe.PID != proxyProcess.PID
+	}
+
+	t.Log("Check if corresponding proxy process has restarted...")
+	proxyProcess2, err := ensureProxyProcess(ctx, selector2)
+	require.NoError(t, err, "Could not ensure proxy process running")
+	require.True(t, proxyProcess2.Running(), "Proxy process is not running")
 
 	t.Log("Delete service...")
 	err = client.Delete(ctx, &svc)
@@ -196,27 +208,32 @@ func TestServiceIPv6Address(t *testing.T) {
 	t.Log("Service has IPv6 address.")
 }
 
-func ensureProxyProcess(ctx context.Context, selector func(pe ctrl_testutil.ProcessExecution) bool) error {
+func ensureProxyProcess(ctx context.Context, selector func(pe ctrl_testutil.ProcessExecution) bool) (*ctrl_testutil.ProcessExecution, error) {
+	var processExecution *ctrl_testutil.ProcessExecution
+
 	processStarted := func(_ context.Context) (bool, error) {
-		runningProcessesWithPath := processExecutor.FindAll("traefik", selector)
+		processesWithPath := processExecutor.FindAll("traefik", selector)
 
-		if len(runningProcessesWithPath) != 1 {
+		if len(processesWithPath) != 1 {
 			return false, nil
+		} else {
+			processExecution = &processesWithPath[0]
+			return true, nil
 		}
-
-		return true, nil
 	}
 
 	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, processStarted)
 	if err != nil {
-		return err
+		return nil, err
 	} else {
-		return nil
+		return processExecution, nil
 	}
 }
 
 func ensureProxyProcessStopped(ctx context.Context, selector func(pe ctrl_testutil.ProcessExecution) bool) error {
-	return ensureProxyProcess(ctx, func(pe ctrl_testutil.ProcessExecution) bool {
+	_, err := ensureProxyProcess(ctx, func(pe ctrl_testutil.ProcessExecution) bool {
 		return selector(pe) && pe.Finished() && pe.ExitCode == ctrl_testutil.KilledProcessExitCode
 	})
+
+	return err
 }

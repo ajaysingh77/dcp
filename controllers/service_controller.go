@@ -15,40 +15,62 @@ import (
 	"runtime"
 
 	"github.com/go-logr/logr"
+	"github.com/smallnest/chanx"
 	"gopkg.in/yaml.v3"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+	ctrl_event "sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	ctrl_source "sigs.k8s.io/controller-runtime/pkg/source"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
 	"github.com/microsoft/usvc-apiserver/internal/osutil"
+	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/networking"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
 
+type ProxyProcessStatus int32
+
+const (
+	ProxyProcessStatusRunning ProxyProcessStatus = 0
+	ProxyProcessStatusExited  ProxyProcessStatus = 1
+)
+
 type ServiceReconciler struct {
 	ctrl_client.Client
-	Log             logr.Logger
-	ProcessExecutor process.Executor
-	ProxyConfigDir  string
+	Log                logr.Logger
+	ProcessExecutor    process.Executor
+	ProxyConfigDir     string
+	proxyProcessStatus *maps.SynchronizedDualKeyMap[types.NamespacedName, int32, ProxyProcessStatus]
+
+	// Channel used to trigger reconciliation function when underlying run status changes.
+	notifyProxyRunChanged *chanx.UnboundedChan[ctrl_event.GenericEvent]
+
+	// Debouncer used to schedule reconciliations. Extra data carried is the finished PID.
+	debouncer *reconcilerDebouncer[int32]
 }
 
 var (
 	serviceFinalizer string = fmt.Sprintf("%s/service-reconciler", apiv1.GroupVersion.Group)
 )
 
-func NewServiceReconciler(client ctrl_client.Client, log logr.Logger, processExecutor process.Executor) *ServiceReconciler {
+func NewServiceReconciler(lifetimeCtx context.Context, client ctrl_client.Client, log logr.Logger, processExecutor process.Executor) *ServiceReconciler {
 	r := ServiceReconciler{
-		Client:          client,
-		Log:             log,
-		ProcessExecutor: processExecutor,
-		ProxyConfigDir:  filepath.Join(os.TempDir(), "usvc-servicecontroller-serviceconfig"),
+		Client:                client,
+		Log:                   log,
+		ProcessExecutor:       processExecutor,
+		ProxyConfigDir:        filepath.Join(os.TempDir(), "usvc-servicecontroller-serviceconfig"),
+		proxyProcessStatus:    maps.NewSynchronizedDualKeyMap[types.NamespacedName, int32, ProxyProcessStatus](),
+		notifyProxyRunChanged: chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
+		debouncer:             newReconcilerDebouncer[int32](reconciliationDebounceDelay),
 	}
 	return &r
 }
@@ -70,9 +92,14 @@ func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return err
 	}
 
+	src := ctrl_source.Channel{
+		Source: r.notifyProxyRunChanged.Out,
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1.Service{}).
 		Watches(&apiv1.Endpoint{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForEndpoint), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		WatchesRawSource(&src, &handler.EnqueueRequestForObject{}).
 		Complete(r)
 }
 
@@ -201,8 +228,17 @@ func (r *ServiceReconciler) ensureServiceProxyStarted(ctx context.Context, svc *
 }
 
 func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.Service) error {
-	if svc.Status.ProxyProcessPid != 0 {
-		return nil
+	if svc.Status.ProxyProcessPid != 0 && svc.Status.ProxyProcessPid != apiv1.UnknownPID {
+		if _, proxyProcessState, found := r.proxyProcessStatus.FindBySecondKey(svc.Status.ProxyProcessPid); found && proxyProcessState == ProxyProcessStatusExited {
+			// If the process exited, reset the proxy process PID to zero, and a proxy restart will be triggered
+			svc.Status.ProxyProcessPid = apiv1.UnknownPID
+		} else if found && proxyProcessState == ProxyProcessStatusRunning {
+			// If the process has not exited, then there's nothing to do
+			return nil
+		} else if !found {
+			// If the process is not in the map, then it's a process we don't care about
+			return nil
+		}
 	}
 
 	proxyAddress := svc.Spec.Address
@@ -257,17 +293,72 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 		fmt.Sprintf("--entryPoints.web.address=%s:%s", proxyAddress, proxyPortString),
 	)
 
-	if pid, startWaitForProcessExit, err := r.ProcessExecutor.StartProcess(ctx, cmd, nil); err != nil {
+	if pid, startWaitForProcessExit, err := r.ProcessExecutor.StartProcess(ctx, cmd, r); err != nil {
 		return err
 	} else {
 		svc.Status.ProxyProcessPid = pid
+
+		namespacedName := types.NamespacedName{
+			Namespace: svc.ObjectMeta.Namespace,
+			Name:      svc.ObjectMeta.Name,
+		}
+
+		// Delete if it exists, then store anew
+		r.proxyProcessStatus.DeleteByFirstKey(namespacedName)
+		r.proxyProcessStatus.Store(namespacedName, pid, ProxyProcessStatusRunning)
+
 		startWaitForProcessExit()
+
+		r.Log.Info(fmt.Sprintf("proxy process with PID %d started for service %s", pid, namespacedName))
 	}
 
 	svc.Status.EffectiveAddress = proxyAddress
 	svc.Status.EffectivePort = proxyPort
 
 	return nil
+}
+
+func (r *ServiceReconciler) OnProcessExited(pid int32, exitCode int32, err error) {
+	namespacedName, _, found := r.proxyProcessStatus.FindBySecondKey(pid)
+
+	if !found {
+		// Not a process we care about
+		return
+	}
+
+	r.proxyProcessStatus.Store(namespacedName, pid, ProxyProcessStatusExited)
+	r.Log.Info(fmt.Sprintf("proxy process for service %s exited with code %d", namespacedName, exitCode))
+
+	// Schedule reconciliation for the service
+	scheduleErr := r.debouncer.ReconciliationNeeded(namespacedName, pid, func(rti reconcileTriggerInput[int32]) error {
+		return r.scheduleServiceReconciliation(rti.target, rti.input)
+	})
+	if scheduleErr != nil {
+		r.Log.Error(scheduleErr, "could not schedule reconciliation for Executable object")
+	}
+}
+
+func (r *ServiceReconciler) scheduleServiceReconciliation(target types.NamespacedName, finishedPid int32) error {
+	event := ctrl_event.GenericEvent{
+		Object: &apiv1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      target.Name,
+				Namespace: target.Namespace,
+			},
+		},
+	}
+
+	select {
+	case r.notifyProxyRunChanged.In <- event:
+		return nil // Reconciliation scheduled successfully
+
+	default:
+		// We could not schedule the reconciliation. This should never really happen, given that we are using an unbounded channel.
+		// If this happens though, returning from OnProcessExited() handler is most important.
+		err := fmt.Errorf("could not schedule reconciliation for Service whose proxy process has finished")
+		r.Log.Error(err, "the state of the Service may not reflect the real world", "Service", target.Name, "FinishedPID", finishedPid)
+		return err
+	}
 }
 
 func (r *ServiceReconciler) stopProxyIfNeeded(ctx context.Context, svc *apiv1.Service) error {

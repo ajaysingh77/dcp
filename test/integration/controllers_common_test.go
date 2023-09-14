@@ -180,6 +180,7 @@ func startTestEnvironment(ctx context.Context, log logger.Logger) (func(), error
 	}
 
 	serviceR := controllers.NewServiceReconciler(
+		ctx,
 		mgr.GetClient(),
 		ctrl.Log.WithName("ServiceReconciler"),
 		processExecutor,
