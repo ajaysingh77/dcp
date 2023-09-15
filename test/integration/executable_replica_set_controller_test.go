@@ -8,6 +8,7 @@ import (
 	"time"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 	"github.com/stretchr/testify/require"
@@ -284,9 +285,11 @@ func TestExecutableReplicaSetExecutableStatusChangeTracked(t *testing.T) {
 		return !exe.Status.StartupTimestamp.IsZero(), nil
 	})
 
-	pid, err := strconv.ParseInt(updatedExe.Status.ExecutionID, 10, 32)
+	pid64, err := strconv.ParseInt(updatedExe.Status.ExecutionID, 10, 32)
 	require.NoError(t, err, "Failed to parse PID from Executable status")
-	if err := processExecutor.StopProcess(int32(pid)); err != nil {
+	pid, err := process.Int64ToPidT(pid64)
+	require.NoError(t, err)
+	if err := processExecutor.StopProcess(pid); err != nil {
 		t.Fatalf("could not kill process: %v", err)
 	}
 

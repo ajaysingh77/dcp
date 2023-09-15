@@ -8,8 +8,13 @@ import (
 	"os"
 )
 
-func (e *OSExecutor) stopSingleProcess(pid int32, opts processStoppingOpts) error {
-	proc, err := os.FindProcess(int(pid))
+func (e *OSExecutor) stopSingleProcess(pid Pid_t, opts processStoppingOpts) error {
+	osPid, err := PidT_ToInt(pid)
+	if err != nil {
+		return err
+	}
+
+	proc, err := os.FindProcess(osPid)
 	if err != nil {
 		if (opts & optNotFoundIsError) != 0 {
 			return fmt.Errorf("could not find process %d: %w", pid, err)

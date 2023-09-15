@@ -38,12 +38,15 @@ func TestStopProcessIgnoreSigterm(t *testing.T) {
 		_ = cmd.Wait()
 	}()
 
+	pid, err := IntToPidT(cmd.Process.Pid)
+	require.NoError(t, err)
+
 	// Only one process should be running, so the "tree" size is 1.
-	ensureProcessTree(t, int32(cmd.Process.Pid), 1, 5*time.Second)
+	ensureProcessTree(t, pid, 1, 5*time.Second)
 
 	executor := NewOSExecutor()
 	start := time.Now()
-	err = executor.StopProcess(int32(cmd.Process.Pid))
+	err = executor.StopProcess(pid)
 	require.NoError(t, err)
 	elapsed := time.Since(start)
 	if elapsed > delay {
@@ -51,10 +54,10 @@ func TestStopProcessIgnoreSigterm(t *testing.T) {
 		// It should not take more than `signalAndWaitTimeout` though.
 		t.Fatal("Process was not terminated timely")
 	}
-	ensureAllStopped(t, []int32{int32(cmd.Process.Pid)}, 5*time.Second)
+	ensureAllStopped(t, []Pid_t{pid}, 5*time.Second)
 }
 
-func ensureAllStopped(t *testing.T, pids []int32, timeout time.Duration) {
+func ensureAllStopped(t *testing.T, pids []Pid_t, timeout time.Duration) {
 	timeoutCtx, timeoutCtxCancelFn := context.WithTimeout(context.Background(), timeout)
 	defer timeoutCtxCancelFn()
 
@@ -71,10 +74,15 @@ func ensureAllStopped(t *testing.T, pids []int32, timeout time.Duration) {
 	require.NoError(t, err, "not all processes could be stopped")
 }
 
-func isStopped(pid int32) bool {
+func isStopped(pid Pid_t) bool {
 	// On Unix-like systems FindProcess() always succeeds, so it is not a reliable way of checking
 	// if the process is still running.
-	proc, findProcessErr := os.FindProcess(int(pid))
+	osPid, err := PidT_ToInt(pid)
+	if err != nil {
+		panic(err)
+	}
+
+	proc, findProcessErr := os.FindProcess(osPid)
 	if findProcessErr != nil {
 		return true
 	}

@@ -14,6 +14,7 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
+	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
@@ -117,9 +118,11 @@ func TestExecutableExitCodeCaptured(t *testing.T) {
 				}
 			},
 			simulateRunEnding: func(t *testing.T, runID string) {
-				pid, err := strconv.ParseInt(runID, 10, 32)
+				pid64, err := strconv.ParseInt(runID, 10, 32)
 				require.NoError(t, err)
-				processExecutor.SimulateProcessExit(t, int32(pid), int32(expectedEC))
+				pid, err := process.Int64ToPidT(pid64)
+				require.NoError(t, err)
+				processExecutor.SimulateProcessExit(t, pid, int32(expectedEC))
 			},
 		},
 		{
@@ -303,7 +306,7 @@ func ensureProcessRunning(ctx context.Context, cmdPath string) (string, error) {
 			return false, nil
 		}
 
-		pidStr = strconv.Itoa(int(runningProcessesWithPath[0].PID))
+		pidStr = strconv.FormatInt(int64(runningProcessesWithPath[0].PID), 10)
 		return true, nil
 	}
 

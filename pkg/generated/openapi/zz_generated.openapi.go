@@ -1311,7 +1311,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ServiceStatus(ref common.ReferenceCa
 						SchemaProps: spec.SchemaProps{
 							Description: "The PID of the proxy process",
 							Type:        []string{"integer"},
-							Format:      "int32",
+							Format:      "int64",
 						},
 					},
 					"proxyConfigFile": {

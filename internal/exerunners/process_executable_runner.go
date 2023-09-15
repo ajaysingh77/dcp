@@ -53,7 +53,7 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 
 	var processExitHandler process.ProcessExitHandler = nil
 	if runCompletionHandler != nil {
-		processExitHandler = process.ProcessExitHandlerFunc(func(pid int32, exitCode int32, err error) {
+		processExitHandler = process.ProcessExitHandlerFunc(func(pid process.Pid_t, exitCode int32, err error) {
 			runCompletionHandler.OnRunCompleted(pidToRunID(pid), exitCode, err)
 		})
 	}
@@ -97,20 +97,24 @@ func makeCommand(ctx context.Context, exe *apiv1.Executable, log logr.Logger) *e
 
 }
 
-func pidToRunID(pid int32) controllers.RunID {
-	return controllers.RunID(strconv.Itoa(int(pid)))
+func pidToRunID(pid process.Pid_t) controllers.RunID {
+	return controllers.RunID(strconv.FormatInt(int64(pid), 10))
 }
 
-func runIdToPID(runID controllers.RunID) int32 {
-	pid, err := strconv.ParseInt(string(runID), 10, 32)
+func runIdToPID(runID controllers.RunID) process.Pid_t {
+	pid64, err := strconv.ParseInt(string(runID), 10, 64)
 	if err != nil {
-		return apiv1.UnknownPID
+		return process.UnknownPID
 	}
-	return int32(pid)
+	pid, err := process.Int64ToPidT(pid64)
+	if err != nil {
+		return process.UnknownPID
+	}
+	return pid
 }
 
-func pidToExecutionID(pid int32) string {
-	return strconv.Itoa(int(pid))
+func pidToExecutionID(pid process.Pid_t) string {
+	return strconv.FormatInt(int64(pid), 10)
 }
 
 var _ controllers.ExecutableRunner = (*ProcessExecutableRunner)(nil)

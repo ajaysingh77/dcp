@@ -21,7 +21,7 @@ type waitable_process struct {
 	waitLock         sync.Mutex
 }
 
-func FindWaitableProcess(pid int32) (*waitable_process, error) {
+func FindWaitableProcess(pid Pid_t) (*waitable_process, error) {
 	foundProcess, err := FindProcess(pid)
 	if err != nil {
 		return nil, err
@@ -56,10 +56,16 @@ func (p *waitable_process) pollingWait(ctx context.Context) {
 			var syscallErr syscall.Errno
 			if found := errors.As(err, &syscallErr); found && syscallErr == syscall.ECHILD {
 				timer := time.NewTimer(p.WaitPollInterval)
+
 				for done := false; !done; {
 					select {
 					case <-timer.C:
-						_, pollErr := FindProcess(int32(p.process.Pid))
+						pid, err := IntToPidT(p.process.Pid)
+						if err != nil {
+							panic(err)
+						}
+
+						_, pollErr := FindProcess(pid)
 						// We couldn't find the PID, so the process has exited
 						if pollErr != nil {
 							p.err = nil
@@ -67,6 +73,7 @@ func (p *waitable_process) pollingWait(ctx context.Context) {
 						} else {
 							timer = time.NewTimer(p.WaitPollInterval)
 						}
+
 					case <-ctx.Done():
 						p.err = ctx.Err()
 						done = true

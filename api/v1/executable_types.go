@@ -45,10 +45,10 @@ const (
 
 const (
 	// A valid exit code of a process is a non-negative number. We use UnknownExitCode to indicate that we have not obtained the exit code yet.
-	UnknownExitCode = -1
+	UnknownExitCode int32 = -1
 
 	// Unknown PID code is used when replica is not started (or fails to start)
-	UnknownPID = -1
+	UnknownPID int64 = -1
 )
 
 type ExecutionType string

@@ -67,7 +67,9 @@ type ServiceStatus struct {
 	State ServiceState `json:"state,omitempty"`
 
 	// The PID of the proxy process
-	ProxyProcessPid int32 `json:"proxyProcessPid,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=4294967295
+	ProxyProcessPid int64 `json:"proxyProcessPid,omitempty"`
 
 	// The path of the proxy config file for this service containing both routing config and service definition
 	ProxyConfigFile string `json:"proxyConfigFile,omitempty"`

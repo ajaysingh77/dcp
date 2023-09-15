@@ -36,8 +36,13 @@ func GetBuiltInSid(domainAliasRid uint32) (*windows.SID, error) {
 	return sid, nil
 }
 
-func FindProcess(pid int32) (*os.Process, error) {
-	process, err := os.FindProcess(int(pid))
+func FindProcess(pid Pid_t) (*os.Process, error) {
+	osPid, err := PidT_ToInt(pid)
+	if err != nil {
+		return nil, err
+	}
+
+	process, err := os.FindProcess(osPid)
 	if err != nil {
 		return nil, err
 	}

@@ -17,7 +17,7 @@ import (
 )
 
 type ProcessExecution struct {
-	PID                int32
+	PID                process.Pid_t
 	Cmd                *exec.Cmd
 	StartWaitingCalled bool
 	StartedAt          time.Time
@@ -34,7 +34,7 @@ func (pe *ProcessExecution) Finished() bool {
 }
 
 type TestProcessExecutor struct {
-	nextPID    int32
+	nextPID    int64
 	Executions []ProcessExecution
 	m          *sync.RWMutex
 }
@@ -51,8 +51,13 @@ func NewTestProcessExecutor() *TestProcessExecutor {
 	}
 }
 
-func (e *TestProcessExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler process.ProcessExitHandler) (int32, func(), error) {
-	pid := atomic.AddInt32(&e.nextPID, 1)
+func (e *TestProcessExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler process.ProcessExitHandler) (process.Pid_t, func(), error) {
+	pid64 := atomic.AddInt64(&e.nextPID, 1)
+	pid, err := process.Int64ToPidT(pid64)
+	if err != nil {
+		return process.UnknownPID, nil, err
+	}
+
 	e.m.Lock()
 	defer e.m.Unlock()
 
@@ -86,12 +91,12 @@ func (e *TestProcessExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, h
 }
 
 // Called by the controller (via Executor interface)
-func (e *TestProcessExecutor) StopProcess(pid int32) error {
+func (e *TestProcessExecutor) StopProcess(pid process.Pid_t) error {
 	return e.stopProcessImpl(pid, KilledProcessExitCode)
 }
 
 // Called by tests
-func (e *TestProcessExecutor) SimulateProcessExit(t *testing.T, pid int32, exitCode int32) {
+func (e *TestProcessExecutor) SimulateProcessExit(t *testing.T, pid process.Pid_t, exitCode int32) {
 	err := e.stopProcessImpl(pid, exitCode)
 	if err != nil {
 		require.Failf(t, "invalid PID (test issue)", err.Error())
@@ -137,7 +142,7 @@ func (e *TestProcessExecutor) ClearHistory() {
 	// The PID counter is not reset so that the clients continue to receive unique PIDs.
 }
 
-func (e *TestProcessExecutor) findByPid(pid int32) int {
+func (e *TestProcessExecutor) findByPid(pid process.Pid_t) int {
 	for i, pe := range e.Executions {
 		if pe.PID == pid {
 			return i
@@ -147,7 +152,7 @@ func (e *TestProcessExecutor) findByPid(pid int32) int {
 	return NotFound
 }
 
-func (e *TestProcessExecutor) stopProcessImpl(pid int32, exitCode int32) error {
+func (e *TestProcessExecutor) stopProcessImpl(pid process.Pid_t, exitCode int32) error {
 	e.m.Lock()
 	defer e.m.Unlock()
 

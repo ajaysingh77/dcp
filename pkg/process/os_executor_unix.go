@@ -13,8 +13,13 @@ import (
 	"time"
 )
 
-func (e *OSExecutor) stopSingleProcess(pid int32, opts processStoppingOpts) error {
-	proc, err := os.FindProcess(int(pid))
+func (e *OSExecutor) stopSingleProcess(pid Pid_t, opts processStoppingOpts) error {
+	osPid, err := PidT_ToInt(pid)
+	if err != nil {
+		return err
+	}
+
+	proc, err := os.FindProcess(osPid)
 	if err != nil {
 		if (opts & optNotFoundIsError) != 0 {
 			return fmt.Errorf("could not find process %d: %w", pid, err)
@@ -68,7 +73,13 @@ func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig syscall.Signal, 
 		_, err := proc.Wait()
 		return err
 	}
-	ws := e.tryStartWaiting(int32(proc.Pid), waitFunc, waitReasonStopping)
+
+	pid, err := IntToPidT(proc.Pid)
+	if err != nil {
+		return err
+	}
+
+	ws := e.tryStartWaiting(pid, waitFunc, waitReasonStopping)
 	select {
 	case <-ws.waitEndedCh:
 		err = ws.waitErr

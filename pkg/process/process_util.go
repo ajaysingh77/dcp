@@ -11,24 +11,34 @@ import (
 
 // Returns the list of ID for a given process and its children
 // The list is ordered starting with the root of the hierarchy, then the children, then the grandchildren etc.
-func GetProcessTree(pid int32) ([]int32, error) {
+func GetProcessTree(pid Pid_t) ([]Pid_t, error) {
 	procs, err := ps.Processes()
 	if err != nil {
 		return nil, err
 	}
 
-	tree := []int32{}
-	next := []int{int(pid)}
+	tree := []Pid_t{}
+	next := []Pid_t{pid}
 
 	for len(next) > 0 {
 		current := next[0]
 		next = next[1:]
-		tree = append(tree, int32(current))
+		tree = append(tree, current)
+
 		children := slices.Select(procs, func(p ps.Process) bool {
-			return p.PPid() == current
+			ppid, err := IntToPidT(p.PPid())
+			if err != nil {
+				panic(err)
+			}
+			return ppid == current
 		})
-		next = append(next, slices.Map[ps.Process, int](children, func(p ps.Process) int {
-			return p.Pid()
+
+		next = append(next, slices.Map[ps.Process, Pid_t](children, func(p ps.Process) Pid_t {
+			pid, err := IntToPidT(p.Pid())
+			if err != nil {
+				panic(err)
+			}
+			return pid
 		})...)
 	}
 
@@ -77,4 +87,20 @@ func RunWithTimeout(ctx context.Context, executor Executor, cmd *exec.Cmd) (int3
 	case runResult := <-resultCh:
 		return runResult.result, runResult.err
 	}
+}
+
+func Int64ToPidT(val int64) (Pid_t, error) {
+	return convertPid[int64, Pid_t](val)
+}
+
+func IntToPidT(val int) (Pid_t, error) {
+	return convertPid[int, Pid_t](val)
+}
+
+func PidT_ToInt(val Pid_t) (int, error) {
+	return convertPid[Pid_t, int](val)
+}
+
+func PidT_ToUint32(val Pid_t) (uint32, error) {
+	return convertPid[Pid_t, uint32](val)
 }

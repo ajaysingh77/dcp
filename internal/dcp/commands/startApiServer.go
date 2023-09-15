@@ -18,7 +18,7 @@ import (
 )
 
 var rootDir string
-var monitorPid int32
+var monitorPidInt64 int64 // Can't use process.Pid_t because the pflag package doesn't support nonstandard types
 var monitorInterval uint8
 var detach bool
 
@@ -35,7 +35,7 @@ func NewStartApiSrvCommand(log logger.Logger) (*cobra.Command, error) {
 	kubeconfig.EnsureKubeconfigPortFlag(startApiSrvCmd.Flags())
 
 	startApiSrvCmd.Flags().StringVarP(&rootDir, "root-dir", "r", "", "If present, tells DCP to use specific directory as the application root directory. Defaults to current working directory.")
-	startApiSrvCmd.Flags().Int32VarP(&monitorPid, "monitor", "m", process.UnknownPID, "If present, tells DCP to monitor a given process ID (PID) and gracefully shutdown if the monitored process exits for any reason.")
+	startApiSrvCmd.Flags().Int64VarP(&monitorPidInt64, "monitor", "m", int64(process.UnknownPID), "If present, tells DCP to monitor a given process ID (PID) and gracefully shutdown if the monitored process exits for any reason.")
 	startApiSrvCmd.Flags().Uint8VarP(&monitorInterval, "monitor-interval", "i", 0, "If present, specifies the time in seconds between checks for the monitor PID.")
 	startApiSrvCmd.Flags().BoolVar(&detach, "detach", false, "If present, instructs DCP to fork itself as a detached process.")
 
@@ -92,7 +92,12 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, args []string) erro
 		defer cancelCommandCtx()
 
 		// If a monitor PID is set, find the process and ensure we shutdown DCP if it exits
-		if monitorPid != process.UnknownPID {
+		if monitorPidInt64 != int64(process.UnknownPID) {
+			monitorPid, err := process.Int64ToPidT(monitorPidInt64)
+			if err != nil {
+				return err
+			}
+
 			monitorProc, err := process.FindWaitableProcess(monitorPid)
 			if err != nil {
 				return err

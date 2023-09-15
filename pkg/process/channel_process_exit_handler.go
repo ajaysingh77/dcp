@@ -1,7 +1,7 @@
 package process
 
 type ProcessExitInfo struct {
-	PID      int32
+	PID      Pid_t
 	ExitCode int32
 	Err      error
 }
@@ -25,7 +25,7 @@ func NewChannelProcessExitHandler(c chan ProcessExitInfo) *ChannelProcessExitHan
 	}
 }
 
-func (eh *ChannelProcessExitHandler) OnProcessExited(pid int32, exitCode int32, err error) {
+func (eh *ChannelProcessExitHandler) OnProcessExited(pid Pid_t, exitCode int32, err error) {
 	eh.c <- ProcessExitInfo{
 		PID:      pid,
 		ExitCode: exitCode,
