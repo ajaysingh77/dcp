@@ -34,7 +34,7 @@ func TestRunCompleted(t *testing.T) {
 		// The command will wait for 300 ms and then exit with code 12.
 		cmd := exec.Command("./delay", "-d", "300ms", "-e", "12")
 		cmd.Dir = delayToolDir
-		exitCode, err := Run(testCtx, executor, cmd)
+		exitCode, err := RunToCompletion(testCtx, executor, cmd)
 		exitInfoChan <- ProcessExitInfo{
 			ExitCode: exitCode,
 			Err:      err,
@@ -51,8 +51,8 @@ func TestRunCompleted(t *testing.T) {
 	}
 }
 
-// Tests that process is terminated when the context expires.
-func TestRunDeadlineExceeded(t *testing.T) {
+// Tests that process is terminated when the context passed to RunToCompletion() expires.
+func TestRunToCompletionDeadlineExceeded(t *testing.T) {
 	t.Parallel()
 
 	delayToolDir, err := getDelayToolDir()
@@ -71,12 +71,48 @@ func TestRunDeadlineExceeded(t *testing.T) {
 	ctx, cancelFn := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancelFn()
 
-	_, err = Run(ctx, executor, cmd)
+	_, err = RunToCompletion(ctx, executor, cmd)
 
 	elapsed := time.Since(start)
 	require.True(t, errors.Is(err, context.DeadlineExceeded))
 	if elapsed > 2*time.Second {
-		t.Fatal("Process was not terminated timely")
+		t.Fatal("Process was not terminated timely, elapsed time was ", elapsed)
+	}
+}
+
+// Tests that RunWithTimeout() call returns almost immediately when the context is cancelled.
+func TestRunWithTimeout(t *testing.T) {
+	t.Parallel()
+
+	delayToolDir, err := getDelayToolDir()
+	require.NoError(t, err)
+
+	executor := NewOSExecutor()
+
+	// Command returns on its own after 5 seconds. This prevents the test from hanging
+	// or leaving processes running after the test is done.
+	cmd := exec.Command("./delay", "-d", "5s")
+	cmd.Dir = delayToolDir
+	ctx, cancelFn := context.WithCancel(context.Background())
+	runCallEndedCh := make(chan struct{})
+
+	go func() {
+		_, _ = RunWithTimeout(ctx, executor, cmd)
+		runCallEndedCh <- struct{}{}
+	}()
+
+	// Sleep for a bit to make sure the process is started.
+	time.Sleep(1 * time.Second)
+
+	start := time.Now()
+	cancelFn()
+	<-runCallEndedCh
+	elapsed := time.Since(start)
+
+	// Normally we expect the RunWithTimeout() call to return much faster than 500 ms,
+	// but we allow for some slack in case the test is running on a heavily loaded machine.
+	if elapsed > 500*time.Millisecond {
+		t.Fatal("RunWithTimeout() call did not return immediately after context cancellation, elapsed time was ", elapsed)
 	}
 }
 
@@ -93,7 +129,7 @@ func TestRunCancelled(t *testing.T) {
 	exitInfoChan := make(chan ProcessExitInfo, 2)
 	cmd := exec.Command("./delay", "-d", "5s")
 	cmd.Dir = delayToolDir
-	var onProcessExited ProcessExitHandlerFunc = func(pid int32, exitCode int32, err error) {
+	var onProcessExited ProcessExitHandlerFunc = func(pid Pid_t, exitCode int32, err error) {
 		exitInfoChan <- ProcessExitInfo{
 			ExitCode: exitCode,
 			Err:      err,
@@ -178,12 +214,15 @@ func TestChildrenTerminated(t *testing.T) {
 			// We ask for launching two children, with a single (grand)child each,
 			// for a total of 4 child processes, so the expected tree size is 5.
 			expectedProcessTreeSize := 5
-			ensureProcessTree(t, int32(cmd.Process.Pid), expectedProcessTreeSize, 10*time.Second)
-
-			processTree, err := GetProcessTree(int32(cmd.Process.Pid))
+			pid, err := IntToPidT(cmd.Process.Pid)
 			require.NoError(t, err)
 
-			err = executor.StopProcess(int32(cmd.Process.Pid))
+			ensureProcessTree(t, pid, expectedProcessTreeSize, 10*time.Second)
+
+			processTree, err := GetProcessTree(pid)
+			require.NoError(t, err)
+
+			err = executor.StopProcess(pid)
 			require.NoError(t, err)
 
 			// Wait up to 5 seconds for all processes to exit. This guarantees that the test will only pass if StopProcess()
@@ -210,7 +249,10 @@ func TestWatchCatchesProcessExit(t *testing.T) {
 	err := cmd.Start()
 	require.NoError(t, err)
 
-	delayProc, err := FindWaitableProcess(int32(cmd.Process.Pid))
+	pid, err := IntToPidT(cmd.Process.Pid)
+	require.NoError(t, err)
+
+	delayProc, err := FindWaitableProcess(pid)
 	require.NoError(t, err)
 
 	err = delayProc.Wait(ctx)
@@ -236,7 +278,9 @@ func TestContextCancelsWatch(t *testing.T) {
 
 	require.NoError(t, err, "command should start without error")
 
-	delayProc, err := FindWaitableProcess(int32(cmd.Process.Pid))
+	pid, err := IntToPidT(cmd.Process.Pid)
+	require.NoError(t, err)
+	delayProc, err := FindWaitableProcess(pid)
 	require.NoError(t, err, "find process should succeed without error")
 
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second*5)
@@ -266,7 +310,7 @@ func getDelayToolDir() (string, error) {
 	}
 }
 
-func ensureProcessTree(t *testing.T, rootPid int32, expectedSize int, timeout time.Duration) {
+func ensureProcessTree(t *testing.T, rootPid Pid_t, expectedSize int, timeout time.Duration) {
 	processesStartedCtx, processesStartedCancelFn := context.WithTimeout(context.Background(), timeout)
 	defer processesStartedCancelFn()
 
@@ -276,7 +320,7 @@ func ensureProcessTree(t *testing.T, rootPid int32, expectedSize int, timeout ti
 		100*time.Millisecond,
 		true, // Don't wait before polling for the first time
 		func(_ context.Context) (bool, error) {
-			processTree, err := GetProcessTree(int32(rootPid))
+			processTree, err := GetProcessTree(rootPid)
 			if err != nil {
 				return false, err
 			}

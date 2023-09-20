@@ -24,7 +24,7 @@ const (
 	STILL_ACTIVE = 259
 )
 
-func ensureAllStopped(t *testing.T, pids []int32, timeout time.Duration) {
+func ensureAllStopped(t *testing.T, pids []Pid_t, timeout time.Duration) {
 	timeoutCtx, timeoutCtxCancelFn := context.WithTimeout(context.Background(), timeout)
 	defer timeoutCtxCancelFn()
 
@@ -41,8 +41,14 @@ func ensureAllStopped(t *testing.T, pids []int32, timeout time.Duration) {
 	require.NoError(t, err, "not all processes could be stopped")
 }
 
-func isStopped(pid int32) bool {
-	handle, err := syscall.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+func isStopped(pid Pid_t) bool {
+	osPid, err := PidT_ToUint32(pid)
+	if err != nil {
+		// Invalid PID value, so there is no process with such ID
+		return true
+	}
+
+	handle, err := syscall.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, osPid)
 	if err != nil {
 		return true // Process not found, assume it's stopped
 	}

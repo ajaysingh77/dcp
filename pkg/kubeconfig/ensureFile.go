@@ -13,7 +13,7 @@ import (
 	clientcmd_api "k8s.io/client-go/tools/clientcmd/api"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/pkg/networking"
+	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 )
 
@@ -101,8 +101,12 @@ func createKubeconfigFile(path string, port int32) error {
 		CurrentContext: "apiserver",
 	}
 
-	err = clientcmd.WriteToFile(config, path)
+	contents, err := clientcmd.Write(config)
 	if err != nil {
+		return fmt.Errorf("could not write Kubeconfig file: %w", err)
+	}
+
+	if err := writeFile(path, contents); err != nil {
 		return fmt.Errorf("could not write Kubeconfig file: %w", err)
 	}
 

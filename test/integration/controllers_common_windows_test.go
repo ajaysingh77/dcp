@@ -40,7 +40,11 @@ func stopTestEnvironment() error {
 		_ = os.RemoveAll(etcdDataDir)
 	}()
 
-	chlidren, err := process.GetProcessTree(int32(os.Getpid()))
+	pid, err := process.IntToPidT(os.Getpid())
+	if err != nil {
+		panic(err)
+	}
+	chlidren, err := process.GetProcessTree(pid)
 	if err != nil {
 		return fmt.Errorf("failed to get children of the current process: %w", err)
 	}

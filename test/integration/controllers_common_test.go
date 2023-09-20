@@ -133,7 +133,9 @@ func startTestEnvironment(ctx context.Context, log logger.Logger) (func(), error
 	}
 
 	processExecutor = ctrl_testutil.NewTestProcessExecutor()
-	containerOrchestrator := docker.NewDockerCliOrchestrator(ctrl.Log.WithName("DockerCliOrchestrator"), processExecutor)
+	dockerOrchestrator := docker.NewDockerCliOrchestrator(ctrl.Log.WithName("DockerCliOrchestrator"), processExecutor)
+	containerOrchestrator := ctrl_testutil.NewTestContainerOrchestrator(dockerOrchestrator)
+
 	exeRunner := exerunners.NewProcessExecutableRunner(processExecutor)
 	ideRunner = ctrl_testutil.NewTestIdeRunner()
 
@@ -178,6 +180,7 @@ func startTestEnvironment(ctx context.Context, log logger.Logger) (func(), error
 	}
 
 	serviceR := controllers.NewServiceReconciler(
+		ctx,
 		mgr.GetClient(),
 		ctrl.Log.WithName("ServiceReconciler"),
 		processExecutor,

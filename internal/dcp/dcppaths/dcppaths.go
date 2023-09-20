@@ -7,12 +7,15 @@ import (
 	"strings"
 )
 
-const DcpRootDir = ".dcp"
-const DcpExtensionsDir = "ext"
-const DcpBinDir = "bin"
-const DcpExtensionsPathEnv = "DCP_EXTENSIONS_PATH"
+const (
+	DcpRootDir           = ".dcp"
+	DcpExtensionsDir     = "ext"
+	DcpBinDir            = "bin"
+	DcpExtensionsPathEnv = "DCP_EXTENSIONS_PATH"
+	DcpBinPathEnv        = "DCP_BIN_PATH"
+)
 
-// Get path to DCP CLI executable
+// Get path to current DCP CLI executable
 func GetDcpDir() (string, error) {
 	const errFmt = "could not determine the path to the DCP CLI executable: %w"
 
@@ -42,22 +45,34 @@ func GetExtensionsDirs() ([]string, error) {
 	}
 
 	if len(extensionPaths) == 0 {
-		home, err := os.UserHomeDir()
+		dcpDir, err := GetDcpDir()
 		if err != nil {
-			return nil, fmt.Errorf("could not determine the path to the user's home directory: %w", err)
+			if home, err := os.UserHomeDir(); err != nil {
+				dcpDir = filepath.Join(home, DcpRootDir)
+			} else {
+				return nil, fmt.Errorf("could not determine the path to the user's home directory: %w", err)
+			}
 		}
 
-		extensionPaths = []string{filepath.Join(home, DcpRootDir, DcpExtensionsDir)}
+		extensionPaths = []string{filepath.Join(dcpDir, DcpExtensionsDir)}
 	}
 
 	return extensionPaths, nil
 }
 
 func GetDcpBinDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("could not determine the path to the user's home directory: %w", err)
+	if binPath, found := os.LookupEnv(DcpBinPathEnv); found {
+		return binPath, nil
 	}
 
-	return filepath.Join(home, DcpRootDir, DcpBinDir), nil
+	dcpDir, err := GetDcpDir()
+	if err != nil {
+		if home, err := os.UserHomeDir(); err != nil {
+			dcpDir = filepath.Join(home, DcpRootDir)
+		} else {
+			return "", fmt.Errorf("could not determine the path to the user's home directory: %w", err)
+		}
+	}
+
+	return filepath.Join(dcpDir, DcpBinDir), nil
 }

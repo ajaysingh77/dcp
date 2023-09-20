@@ -36,18 +36,18 @@ func (f WaitFunc) Wait() error {
 }
 
 type OSExecutor struct {
-	procsWaiting map[int32]*waitState
+	procsWaiting map[Pid_t]*waitState
 	lock         sync.Locker
 }
 
 func NewOSExecutor() Executor {
 	return &OSExecutor{
-		procsWaiting: make(map[int32]*waitState),
+		procsWaiting: make(map[Pid_t]*waitState),
 		lock:         &sync.Mutex{},
 	}
 }
 
-func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler ProcessExitHandler) (int32, func(), error) {
+func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler ProcessExitHandler) (Pid_t, func(), error) {
 	if err := cmd.Start(); err != nil {
 		return UnknownPID, nil, err
 	}
@@ -58,7 +58,12 @@ func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler Pr
 	if handler != nil {
 		processStopCh = make(chan *waitState, 1)
 	}
-	pid := int32(cmd.Process.Pid)
+
+	osPid := cmd.Process.Pid
+	pid, err := IntToPidT(osPid)
+	if err != nil {
+		return UnknownPID, nil, err
+	}
 
 	go func() {
 		select {
@@ -110,7 +115,7 @@ func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler Pr
 	return pid, startWaitingForProcessExit, nil
 }
 
-func (e *OSExecutor) tryStartWaiting(pid int32, waitable Waitable, reason waitReason) *waitState {
+func (e *OSExecutor) tryStartWaiting(pid Pid_t, waitable Waitable, reason waitReason) *waitState {
 	e.acquireLock()
 	defer e.releaseLock()
 
@@ -159,7 +164,7 @@ func (e *OSExecutor) acquireLock() {
 	e.lock.Lock()
 
 	// Only keep wait states that correspond to processes that are still running, or the ones that completed recently
-	e.procsWaiting = maps.Select(e.procsWaiting, func(_ int32, ws *waitState) bool {
+	e.procsWaiting = maps.Select(e.procsWaiting, func(_ Pid_t, ws *waitState) bool {
 		return ws.waitEnded.IsZero() || time.Since(ws.waitEnded) < maxCompletedDuration
 	})
 }
@@ -168,7 +173,7 @@ func (e *OSExecutor) releaseLock() {
 	e.lock.Unlock()
 }
 
-func (e *OSExecutor) StopProcess(pid int32) error {
+func (e *OSExecutor) StopProcess(pid Pid_t) error {
 	tree, err := GetProcessTree(pid)
 	if err != nil {
 		return fmt.Errorf("could not get process tree for process %d: %w", pid, err)
@@ -185,7 +190,7 @@ func (e *OSExecutor) StopProcess(pid int32) error {
 		return nil
 	}
 
-	childStoppingErrors := slices.MapConcurrent[int32, error](tree, func(id int32) error {
+	childStoppingErrors := slices.MapConcurrent[Pid_t, error](tree, func(id Pid_t) error {
 		return e.stopSingleProcess(id, optNone)
 	}, slices.MaxConcurrency)
 	childStoppingErrors = slices.Select(childStoppingErrors, func(e error) bool { return e != nil })

@@ -61,7 +61,7 @@ func (s *CommandService) Run(ctx context.Context) error {
 		}()
 	}
 
-	code, err := process.Run(ctx, s.executor, s.cmd)
+	code, err := process.RunToCompletion(ctx, s.executor, s.cmd)
 	s.exitCode = code
 	return err
 }

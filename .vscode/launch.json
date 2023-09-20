@@ -16,15 +16,12 @@
             "name": "dcp start-apiserver",
             "type": "go",
             "request": "launch",
-            "mode": "debug",
-            "program": "${workspaceFolder}/cmd/dcp/main.go",
+            "mode": "exec",
+            "program": "${workspaceFolder}/bin/dcp",
             "args": [
                 "start-apiserver",
                 "-v=1"
             ],
-            "env": {
-                "DCP_EXTENSIONS_PATH": "${workspaceFolder}/bin/ext"
-            },
             "preLaunchTask": "compile"
         },
 

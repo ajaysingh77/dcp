@@ -31,10 +31,13 @@ const (
 type AddressAllocationMode string
 
 const (
+	// Bind to localhost (default)
+	AddressAllocationModeLocalhost AddressAllocationMode = "Localhost"
+
 	// Bind only to 127.0.0.1
 	AddressAllocationModeIPv4ZeroOne AddressAllocationMode = "IPv4ZeroOne"
 
-	// Bind to any 127.*.*.* loopback address
+	// Bind to a random 127.*.*.* loopback address
 	AddressAllocationModeIPv4Loopback AddressAllocationMode = "IPv4Loopback"
 
 	// Bind only to ::1
@@ -67,7 +70,9 @@ type ServiceStatus struct {
 	State ServiceState `json:"state,omitempty"`
 
 	// The PID of the proxy process
-	ProxyProcessPid int32 `json:"proxyProcessPid,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=4294967295
+	ProxyProcessPid int64 `json:"proxyProcessPid,omitempty"`
 
 	// The path of the proxy config file for this service containing both routing config and service definition
 	ProxyConfigFile string `json:"proxyConfigFile,omitempty"`

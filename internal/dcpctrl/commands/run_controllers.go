@@ -152,6 +152,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 		}
 
 		serviceCtrl := controllers.NewServiceReconciler(
+			cmd.Context(),
 			mgr.GetClient(),
 			log.WithName("ServiceReconciler"),
 			processExecutor,

@@ -70,7 +70,9 @@ spec:
                 type: string
               proxyProcessPid:
                 description: The PID of the proxy process
-                format: int32
+                format: int64
+                maximum: 4294967295
+                minimum: 0
                 type: integer
               state:
                 default: NotReady
