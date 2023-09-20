@@ -52,8 +52,8 @@ else
 endif
 
 ifeq ($(GOARCH).$(detected_arch),.x86_64)
-	build_arch := arm64
-	detected_arch := arm64
+	build_arch := amd64
+	detected_arch := amd64
 else ifeq ($(GOARCH).$(detected_arch),.$(detected_arch))
 	build_arch := $(detected_arch)
 else
