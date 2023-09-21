@@ -14,6 +14,8 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
+	"github.com/microsoft/usvc-apiserver/internal/osutil"
+	"github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 )
 
@@ -106,7 +108,7 @@ func createKubeconfigFile(path string, port int32) error {
 		return fmt.Errorf("could not write Kubeconfig file: %w", err)
 	}
 
-	if err := writeFile(path, contents); err != nil {
+	if err := io.WriteFile(path, contents, osutil.PermissionFileOwnerOnly); err != nil {
 		return fmt.Errorf("could not write Kubeconfig file: %w", err)
 	}
 

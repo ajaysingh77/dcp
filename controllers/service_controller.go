@@ -33,6 +33,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/osutil"
+	ourio "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
@@ -463,5 +464,5 @@ func writeObjectYamlToFile(fileName string, data interface{}) error {
 		return err
 	}
 
-	return os.WriteFile(fileName, yamlContent, osutil.PermissionFile)
+	return ourio.WriteFile(fileName, yamlContent, osutil.PermissionFile)
 }

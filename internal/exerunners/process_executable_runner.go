@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 
 	"github.com/go-logr/logr"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
+	"github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,7 +35,7 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 		"env", cmd.Env,
 		"cwd", cmd.Dir)
 
-	stdOutFile, err := os.CreateTemp("", fmt.Sprintf("%s_out_*", exe.Name))
+	stdOutFile, err := io.OpenFile(filepath.Join(os.TempDir(), fmt.Sprintf("%s_out_%s", exe.Name, exe.Status.ExecutionID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		log.Error(err, "failed to create temporary file for capturing process standard output data")
 	} else {
@@ -41,7 +43,7 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 		exe.Status.StdOutFile = stdOutFile.Name()
 	}
 
-	stdErrFile, err := os.CreateTemp("", fmt.Sprintf("%s_err_*", exe.Name))
+	stdErrFile, err := io.OpenFile(filepath.Join(os.TempDir(), fmt.Sprintf("%s_err_%s", exe.Name, exe.Status.ExecutionID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		log.Error(err, "failed to create temporary file for capturing process standard error data")
 	} else {
