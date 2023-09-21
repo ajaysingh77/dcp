@@ -13,6 +13,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrlruntime "sigs.k8s.io/controller-runtime"
 	ctrl_manager "sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
@@ -55,10 +56,12 @@ func getManager(ctx context.Context, log logr.Logger) (ctrl_manager.Manager, err
 	// Do some retries with exponential back-off before giving up
 	mgr, err := resiliency.RetryGet(retryCtx, func() (ctrl_manager.Manager, error) {
 		return ctrlruntime.NewManager(ctrlruntime.GetConfigOrDie(), ctrlruntime.Options{
-			Scheme:             scheme,
-			LeaderElection:     false,
-			MetricsBindAddress: "0",
-			Logger:             log.WithName("ControllerManager"),
+			Scheme:         scheme,
+			LeaderElection: false,
+			Metrics: metricsserver.Options{
+				BindAddress: "0",
+			},
+			Logger: log.WithName("ControllerManager"),
 		})
 	})
 	if err != nil {
