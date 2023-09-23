@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	defaultWaitPollInterval = time.Second * 5
+	defaultWaitPollInterval = time.Second * 2
 )
 
 type waitable_process struct {

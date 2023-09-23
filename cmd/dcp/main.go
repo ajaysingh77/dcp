@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 
+	kubeapiserver "k8s.io/apiserver/pkg/server"
+
 	"github.com/microsoft/usvc-apiserver/internal/dcp/commands"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
@@ -19,13 +21,15 @@ func main() {
 	defer log.BeforeExit(func(value interface{}) { os.Exit(errPanic) })
 	defer logger.CleanupSessionFolderIfNeeded()
 
+	ctx := kubeapiserver.SetupSignalContext()
+
 	root, err := commands.NewRootCmd(log)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(errSetup)
 	}
 
-	err = root.Execute()
+	err = root.ExecuteContext(ctx)
 
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

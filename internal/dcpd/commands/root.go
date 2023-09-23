@@ -43,6 +43,8 @@ func NewRootCmd(logger logger.Logger) (*cobra.Command, error) {
 	kubeconfig.EnsureKubeconfigFlag(rootCmd.Flags())
 	kubeconfig.EnsureKubeconfigPortFlag(rootCmd.Flags())
 
+	cmds.AddMonitorFlags(rootCmd)
+
 	logger.AddLevelFlag(rootCmd.PersistentFlags())
 
 	klog.SetLogger(logger.V(1))
@@ -53,8 +55,9 @@ func NewRootCmd(logger logger.Logger) (*cobra.Command, error) {
 
 func runApiServer(logger logger.Logger) func(cmd *cobra.Command, _ []string) error {
 	return func(cmd *cobra.Command, _ []string) error {
+		ctx := cmds.Monitor(cmd.Context(), logger.WithName("monitor"))
 		apiServer := apiserver.NewApiServer(string(extensions.ApiServerCapability), logger)
-		err := apiServer.Run(cmd.Context())
+		err := apiServer.Run(ctx)
 		if err == nil || errors.Is(err, context.Canceled) {
 			return nil
 		} else {
