@@ -107,7 +107,7 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, args []string) erro
 				shutdownCtx, cancelShutdownCtx := context.WithTimeout(context.Background(), 1*time.Minute)
 				defer cancelShutdownCtx()
 				log.Info("Stopping the application...")
-				err := appmgmt.ShutdownApp(shutdownCtx, log)
+				err := appmgmt.ShutdownApp(shutdownCtx, log.WithName("shutdown").V(1))
 				if err != nil {
 					log.Error(err, "could not shut down the application gracefully")
 					return fmt.Errorf("could not shut down the application gracefully: %w", err)

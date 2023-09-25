@@ -2,81 +2,136 @@ package appmgmt
 
 import (
 	"context"
-	"errors"
-	"fmt"
+	"sync/atomic"
 	"time"
-
-	wait "k8s.io/apimachinery/pkg/util/wait"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/go-logr/logr"
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/dcpclient"
+
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/dynamic/dynamicinformer"
+	"k8s.io/client-go/tools/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/config"
 )
 
-func ShutdownApp(ctx context.Context, log logr.Logger) error {
-	client, err := dcpclient.New(ctx, 5*time.Second)
+func ShutdownApp(ctx context.Context, logger logr.Logger) error {
+	shutdownCtx, shutdownCtxCancel := context.WithCancel(ctx)
+	defer shutdownCtxCancel()
+
+	if len(apiv1.CleanupResources) <= 0 {
+		logger.Info("No resources to delete")
+		return nil
+	}
+
+	dcpclient, err := dcpclient.New(shutdownCtx, 5*time.Second)
 	if err != nil {
+		logger.Error(err, "could not get dcpclient")
 		return err
 	}
 
-	// The order here matters. Services go first, then Executables, then Containers, then ContainerVolumes.
-	// Do not use client.DeleteAllOf() because it does not seem to give the controllers an opportunity to handle the deletion
-	// (probably a bug in controller-runtime or Tilt API server). E.g. https://github.com/kubernetes-sigs/controller-runtime/issues/1842
-	kinds := []commonapi.ListWithObjectItems{&apiv1.ServiceList{}, &apiv1.ExecutableReplicaSetList{}, &apiv1.ExecutableList{}, &apiv1.ContainerList{}, &apiv1.ContainerVolumeList{}}
-	shutdownErrors := []error{}
-
-	for _, objList := range kinds {
-		err := client.List(ctx, objList)
-		if err != nil {
-			log.Error(err, "could not list objects", "kind", objList.GetObjectKind().GroupVersionKind().Kind)
-			shutdownErrors = append(shutdownErrors, fmt.Errorf("could not list '%s': %w", objList.GetObjectKind().GroupVersionKind().Kind, err))
-			continue
-		}
-
-		items := objList.GetItems()
-		for _, item := range items {
-			err := client.Delete(ctx, item)
-			if err != nil {
-				log.Error(err, "could not delete object", "kind", item.GetObjectKind().GroupVersionKind().Kind, "name", item.GetName())
-				shutdownErrors = append(shutdownErrors, fmt.Errorf("could not delete '%s': %w", item.GetObjectKind().GroupVersionKind().Kind, err))
-			}
-		}
-	}
-
-	if len(shutdownErrors) > 0 {
-		return fmt.Errorf("not all application assets could be deleted: %w", errors.Join(shutdownErrors...))
-	}
-
-	err = waitAllDeleted(ctx, client, kinds)
+	clusterConfig, err := config.GetConfig()
 	if err != nil {
-		log.Error(err, "could not ensure that all application assets were deleted")
+		logger.Error(err, "could not get config")
 		return err
+	}
+
+	dynamicClient, err := dynamic.NewForConfig(clusterConfig)
+	if err != nil {
+		logger.Error(err, "could not get client")
+		return err
+	}
+
+	factory := dynamicinformer.NewDynamicSharedInformerFactory(dynamicClient, 5*time.Second)
+	defer factory.Shutdown()
+
+	currentWeight := apiv1.CleanupResources[0].Weight
+	batchIndex := 0
+	resourceBatches := [][]*apiv1.WeightedResource{}
+	for _, resource := range apiv1.CleanupResources {
+		// If the context is cancelled, stop the informers
+		if ctx.Err() != nil {
+			logger.Info("Context cancelled, stopping shutdown")
+			return ctx.Err()
+		}
+
+		if resource.Weight != currentWeight {
+			batchIndex += 1
+		}
+
+		if batchIndex >= len(resourceBatches) {
+			resourceBatches = append(resourceBatches, []*apiv1.WeightedResource{})
+		}
+
+		resourceBatches[batchIndex] = append(resourceBatches[batchIndex], resource)
+		logger.Info("Adding resource to current batch", "resource", resource.Object.GetGroupVersionResource(), "length", len(resourceBatches[batchIndex]))
+	}
+
+	logger.Info("Resource batches generated", "batches", len(resourceBatches))
+
+	for _, resourceBatch := range resourceBatches {
+		logger.Info("Cleaning up resource batch", "weight", resourceBatch[0].Weight, "length", len(resourceBatch))
+		if err := cleanupResourceBatch(shutdownCtx, dcpclient, factory, resourceBatch, logger); err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
-func waitAllDeleted(ctx context.Context, client client.Client, kinds []commonapi.ListWithObjectItems) error {
-	allDeleted := func(ctx context.Context) (bool, error) {
-		for _, objList := range kinds {
-			listErr := client.List(ctx, objList)
-			if listErr != nil {
-				return false, listErr
-			}
-			if objList.ItemCount() > 0 {
-				return false, nil
-			}
+func cleanupResourceBatch(
+	ctx context.Context,
+	dcpclient client.Client,
+	factory dynamicinformer.DynamicSharedInformerFactory,
+	batch []*apiv1.WeightedResource,
+	logger logr.Logger,
+) error {
+	cleanupCtx, cleanupCtxCancel := context.WithCancel(ctx)
+	defer cleanupCtxCancel()
+
+	initialResourceCounts := &atomic.Int32{}
+	totalResourceCounts := &atomic.Int32{}
+
+	for _, resource := range batch {
+		gvr := resource.Object.GetGroupVersionResource()
+		informer := factory.ForResource(gvr)
+
+		logger.Info("Shutting down resource", "resource", gvr)
+		if _, err := informer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+			AddFunc: func(obj interface{}) {
+				clientObj := obj.(client.Object)
+				initialResourceCounts.Add(1)
+				totalResources := totalResourceCounts.Add(1)
+				logger.Info("Deleting resource", "resource", gvr, "total", totalResources)
+				if err := dcpclient.Delete(ctx, clientObj); err != nil {
+					logger.Error(err, "could not delete resource", "resource", clientObj)
+				}
+			},
+			DeleteFunc: func(obj interface{}) {
+				totalResources := totalResourceCounts.Add(-1)
+				logger.Info("Resource removed", "resource", gvr, "total", totalResources)
+
+				if totalResources <= 0 {
+					cleanupCtxCancel()
+				}
+			},
+		}); err != nil {
+			return err
 		}
-		return true, nil
 	}
 
-	const pollImmediately = true // Don't wait before polling for the first time
-	err := wait.PollUntilContextCancel(ctx, 1*time.Second, pollImmediately, allDeleted)
-	if err != nil {
-		return fmt.Errorf("could not ensure that all application assets were deleted: %w", err)
-	} else {
-		return nil
+	factory.Start(ctx.Done())
+	_ = factory.WaitForCacheSync(ctx.Done())
+
+	count := initialResourceCounts.Load()
+	logger.Info("Waiting for resource batch to be deleted", "initialCount", count)
+	if count <= 0 {
+		cleanupCtxCancel()
 	}
+
+	// Wait for the current batch of resources to be deleted before starting the next batch
+	<-cleanupCtx.Done()
+
+	return nil
 }
