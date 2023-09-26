@@ -13,9 +13,11 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrlruntime "sigs.k8s.io/controller-runtime"
 	ctrl_manager "sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
+	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
 	"github.com/microsoft/usvc-apiserver/internal/docker"
 	"github.com/microsoft/usvc-apiserver/internal/exerunners"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
@@ -44,6 +46,8 @@ func NewRunControllersCommand(logger logger.Logger) *cobra.Command {
 	kubeconfig.EnsureKubeconfigFlag(runControllersCmd.Flags())
 	kubeconfig.EnsureKubeconfigPortFlag(runControllersCmd.Flags())
 
+	cmds.AddMonitorFlags(runControllersCmd)
+
 	return runControllersCmd
 }
 
@@ -55,10 +59,12 @@ func getManager(ctx context.Context, log logr.Logger) (ctrl_manager.Manager, err
 	// Do some retries with exponential back-off before giving up
 	mgr, err := resiliency.RetryGet(retryCtx, func() (ctrl_manager.Manager, error) {
 		return ctrlruntime.NewManager(ctrlruntime.GetConfigOrDie(), ctrlruntime.Options{
-			Scheme:             scheme,
-			LeaderElection:     false,
-			MetricsBindAddress: "0",
-			Logger:             log.WithName("ControllerManager"),
+			Scheme:         scheme,
+			LeaderElection: false,
+			Metrics: metricsserver.Options{
+				BindAddress: "0",
+			},
+			Logger: log.WithName("ControllerManager"),
 		})
 	})
 	if err != nil {
@@ -88,12 +94,14 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 		// ctlrruntime.SetLogger() was already called by main()
 		log := logger.WithName("dcpctrl")
 
+		ctx := cmds.Monitor(cmd.Context(), log.WithName("monitor"))
+
 		_, err := kubeconfig.EnsureKubeconfigFlagValue(cmd.Flags())
 		if err != nil {
 			return fmt.Errorf("cannot set up connection to the API server without kubeconfig file: %w", err)
 		}
 
-		mgr, err := getManager(cmd.Context(), log.V(1))
+		mgr, err := getManager(ctx, log.V(1))
 		if err != nil {
 			return fmt.Errorf("failed to initialize the controller manager: %w", err)
 		}
@@ -111,7 +119,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 		// Executables can still be run, just not via IDE.
 
 		exCtrl := controllers.NewExecutableReconciler(
-			cmd.Context(),
+			ctx,
 			mgr.GetClient(),
 			log.WithName("ExecutableReconciler"),
 			exeRunners,
@@ -131,7 +139,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 		}
 
 		containerCtrl := controllers.NewContainerReconciler(
-			cmd.Context(),
+			ctx,
 			mgr.GetClient(),
 			log.WithName("ContainerReconciler"),
 			containerOrchestrator,
@@ -152,7 +160,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 		}
 
 		serviceCtrl := controllers.NewServiceReconciler(
-			cmd.Context(),
+			ctx,
 			mgr.GetClient(),
 			log.WithName("ServiceReconciler"),
 			processExecutor,
@@ -168,7 +176,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 		}
 
 		log.Info("starting controller manager")
-		err = mgr.Start(cmd.Context())
+		err = mgr.Start(ctx)
 		if err != nil {
 			log.Error(err, "contoller manager failed")
 			return err

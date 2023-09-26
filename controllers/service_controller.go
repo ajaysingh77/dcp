@@ -33,6 +33,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/osutil"
+	ourio "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
@@ -295,14 +296,30 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 		proxyPortString = fmt.Sprintf("%d", proxyPort)
 	}
 
-	cmd := exec.CommandContext(ctx,
-		proxyExecutable,
-		fmt.Sprintf("--providers.file.filename=%s", svc.Status.ProxyConfigFile),
-		"--providers.file.watch=true",
-		"--log.level=INFO",
-		"--log.format=common",
-		fmt.Sprintf("--entryPoints.web.address=%s:%s", proxyAddress, proxyPortString),
-	)
+	var cmd *exec.Cmd
+
+	if proxyAddress == "localhost" {
+		// Bind to both 127.0.0.1 and [::1] explicitly
+		cmd = exec.CommandContext(ctx,
+			proxyExecutable,
+			fmt.Sprintf("--entryPoints.web.address=%s:%s", "127.0.0.1", proxyPortString),
+			fmt.Sprintf("--entryPoints.webipv6.address=%s:%s", "[::1]", proxyPortString),
+			fmt.Sprintf("--providers.file.filename=%s", svc.Status.ProxyConfigFile),
+			"--providers.file.watch=true",
+			"--log.level=INFO",
+			"--log.format=common",
+		)
+	} else {
+		// Bind to just the proxy address
+		cmd = exec.CommandContext(ctx,
+			proxyExecutable,
+			fmt.Sprintf("--entryPoints.web.address=%s:%s", proxyAddress, proxyPortString),
+			fmt.Sprintf("--providers.file.filename=%s", svc.Status.ProxyConfigFile),
+			"--providers.file.watch=true",
+			"--log.level=INFO",
+			"--log.format=common",
+		)
+	}
 
 	if pid, startWaitForProcessExit, err := r.ProcessExecutor.StartProcess(ctx, cmd, r); err != nil {
 		return err
@@ -463,5 +480,5 @@ func writeObjectYamlToFile(fileName string, data interface{}) error {
 		return err
 	}
 
-	return os.WriteFile(fileName, yamlContent, osutil.PermissionFile)
+	return ourio.WriteFile(fileName, yamlContent, osutil.PermissionFile)
 }

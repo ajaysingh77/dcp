@@ -239,6 +239,7 @@ func (el *ExecutableList) GetItems() []ctrl_client.Object {
 
 func init() {
 	SchemeBuilder.Register(&Executable{}, &ExecutableList{})
+	SetCleanupPriority(&Executable{}, 100)
 }
 
 // Ensure types support interfaces expected by our API server

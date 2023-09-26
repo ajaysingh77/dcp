@@ -134,6 +134,7 @@ func (el *EndpointList) GetItems() []ctrl_client.Object {
 
 func init() {
 	SchemeBuilder.Register(&Endpoint{}, &EndpointList{})
+	// Don't register endpoint types for cleanup at shutdown as they're purely virtual
 }
 
 // Ensure types support interfaces expected by our API server

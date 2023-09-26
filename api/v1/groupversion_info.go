@@ -6,9 +6,19 @@
 package v1
 
 import (
+	"sync"
+
+	"github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
+	"golang.org/x/exp/slices"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/scheme"
 )
+
+// +k8s:deepcopy-gen=false
+type WeightedResource struct {
+	Object resource.Object
+	Weight uint
+}
 
 var (
 	// GroupVersion is group version used to register these objects
@@ -19,4 +29,34 @@ var (
 
 	// AddToScheme adds the types in this group-version to the given scheme.
 	AddToScheme = SchemeBuilder.AddToScheme
+
+	// Track the resources that need to be automatically cleaned up at shutdown
+	// Uses weighting to cleanup resources in batches
+	CleanupResources = []*WeightedResource{}
 )
+
+var (
+	resourceMutex = sync.Mutex{}
+)
+
+func SetCleanupPriority(obj resource.Object, weight uint) {
+	weightedResource := &WeightedResource{
+		Object: obj,
+		Weight: weight,
+	}
+
+	resourceMutex.Lock()
+	defer resourceMutex.Unlock()
+
+	index, _ := slices.BinarySearchFunc(CleanupResources, weightedResource, func(a *WeightedResource, b *WeightedResource) int {
+		if a.Weight < b.Weight {
+			return -1
+		} else if a.Weight > b.Weight {
+			return 1
+		} else {
+			return 0
+		}
+	})
+
+	CleanupResources = slices.Insert(CleanupResources, index, weightedResource)
+}

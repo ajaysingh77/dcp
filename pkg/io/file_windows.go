@@ -1,8 +1,9 @@
 //go:build windows
 
-package kubeconfig
+package io
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"unsafe"
@@ -11,26 +12,25 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// Writes a kubeconfig file on Windows. If the process is running as an administrator, we want to ensure
-// that the kubeconfig file is only readable by other elevated processes. This is to ensure that unelevated
-// processes cannot connect to an elevated DCP to launch local processes. If the user is not running as admin,
-// then we just write the file using default behavior.
-func writeFile(path string, content []byte) error {
+// Open a file on Windows. If the process is running as an administrator, we want to ensure that
+// the file is only readable by other elevated processes. If not running as administrator, we
+// simply use the standard os.OpenFile function.
+func OpenFile(name string, flag int, perm os.FileMode) (*os.File, error) {
 	// Get the actual token for the process
 	var processToken windows.Token
 	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &processToken); err != nil {
-		return err
+		return nil, err
 	}
 	defer processToken.Close()
 
 	// Get the SID for the Administrators group
 	adminSid, err := process.GetBuiltInSid(windows.DOMAIN_ALIAS_RID_ADMINS)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() {
 		if err := windows.FreeSid(adminSid); err != nil {
-			panic(fmt.Errorf("could not free sid: %w", err))
+			fmt.Fprintln(os.Stderr, fmt.Errorf("could not free sid: %w", err))
 		}
 	}()
 
@@ -38,24 +38,23 @@ func writeFile(path string, content []byte) error {
 	adminToken := windows.Token(0)
 	isAdmin, err := adminToken.IsMember(adminSid)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	// If the user is not running as an admin, just write the file using default behavior
 	if !isAdmin {
-		return os.WriteFile(path, content, 0600)
+		return os.OpenFile(name, flag, perm)
 	}
 
 	// Get the user who ran the process so we can get the SID
 	tokenUser, err := processToken.GetTokenUser()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Get the SID for the Local System account
 	systemSid, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	var explicitEntries []windows.EXPLICIT_ACCESS
@@ -110,30 +109,21 @@ func writeFile(path string, content []byte) error {
 
 	acl, err := windows.ACLFromEntries(explicitEntries, nil)
 	if err != nil {
-		return fmt.Errorf("could not create acl: %w", err)
+		return nil, fmt.Errorf("could not create acl: %w", err)
 	}
 
 	sd, err := windows.NewSecurityDescriptor()
 	if err != nil {
-		return fmt.Errorf("could not create security descriptor: %w", err)
+		return nil, fmt.Errorf("could not create security descriptor: %w", err)
 	}
 
 	if err := sd.SetDACL(acl, true, false); err != nil {
-		return fmt.Errorf("could not set dacl: %w", err)
+		return nil, fmt.Errorf("could not set dacl: %w", err)
 	}
 
 	// Ensure that the Security Descriptor applies the ACL and does not inherit permissions from the parent directory
-	if err := sd.SetControl(windows.SE_DACL_PRESENT, windows.SE_DACL_PRESENT); err != nil {
-		return fmt.Errorf("could not set control flag: %w", err)
-	}
 	if err := sd.SetControl(windows.SE_DACL_PROTECTED, windows.SE_DACL_PROTECTED); err != nil {
-		return fmt.Errorf("could not set control flag: %w", err)
-	}
-	if err := sd.SetControl(windows.SE_DACL_AUTO_INHERITED, 0); err != nil {
-		return fmt.Errorf("could not set control flag: %w", err)
-	}
-	if err := sd.SetControl(windows.SE_DACL_AUTO_INHERIT_REQ, 0); err != nil {
-		return fmt.Errorf("could not set control flag: %w", err)
+		return nil, fmt.Errorf("could not set control flag: %w", err)
 	}
 
 	sa := &windows.SecurityAttributes{
@@ -141,26 +131,32 @@ func writeFile(path string, content []byte) error {
 		SecurityDescriptor: sd,
 	}
 
-	pathHandle, err := windows.UTF16PtrFromString(path)
+	pathHandle, err := windows.UTF16PtrFromString(name)
 	if err != nil {
-		return fmt.Errorf("could not create path handle: %w", err)
+		return nil, fmt.Errorf("could not create path handle: %w", err)
 	}
 
 	// Create the new file with the given ACL rules
 	fileHandle, err := windows.CreateFile(pathHandle, windows.GENERIC_WRITE, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, sa, windows.CREATE_ALWAYS, windows.FILE_ATTRIBUTE_NORMAL, 0)
 	if err != nil {
-		return fmt.Errorf("could not create file: %w", err)
+		return nil, fmt.Errorf("could not create file: %w", err)
 	}
-	defer func() {
-		if err := windows.CloseHandle(fileHandle); err != nil {
-			panic(fmt.Errorf("could not close file handle: %w", err))
-		}
-	}()
 
-	// Write the kubeconfig contents to the file
-	_, err = windows.Write(fileHandle, content)
+	return os.NewFile(uintptr(fileHandle), name), nil
+}
+
+// Write to a file on Windows. If the process is running as an administrator, we want to ensure that
+// the file is only readable by other elevated processes. If not running as an administrator, we
+// simply use the standard os.WriteFile function.
+func WriteFile(name string, data []byte, perm os.FileMode) error {
+	file, err := OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
 	if err != nil {
-		return fmt.Errorf("could not write to file: %w", err)
+		return err
+	}
+
+	_, err = file.Write(data)
+	if err1 := file.Close(); err1 != nil || err != nil {
+		return errors.Join(err, err1)
 	}
 
 	return nil

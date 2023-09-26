@@ -159,6 +159,7 @@ func (el *ExecutableReplicaSetList) GetItems() []ctrl_client.Object {
 
 func init() {
 	SchemeBuilder.Register(&ExecutableReplicaSet{}, &ExecutableReplicaSetList{})
+	SetCleanupPriority(&ExecutableReplicaSet{}, 10)
 }
 
 // Ensure types support interfaces expected by our API server

@@ -5,22 +5,23 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
-	kubeapiserver "k8s.io/apiserver/pkg/server"
 
 	"github.com/microsoft/usvc-apiserver/internal/appmgmt"
+	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
 	"github.com/microsoft/usvc-apiserver/internal/dcp/bootstrap"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
 
-var rootDir string
-var monitorPidInt64 int64 // Can't use process.Pid_t because the pflag package doesn't support nonstandard types
-var monitorInterval uint8
-var detach bool
+var (
+	rootDir string
+	detach  bool
+)
 
 func NewStartApiSrvCommand(log logger.Logger) (*cobra.Command, error) {
 	startApiSrvCmd := &cobra.Command{
@@ -35,9 +36,9 @@ func NewStartApiSrvCommand(log logger.Logger) (*cobra.Command, error) {
 	kubeconfig.EnsureKubeconfigPortFlag(startApiSrvCmd.Flags())
 
 	startApiSrvCmd.Flags().StringVarP(&rootDir, "root-dir", "r", "", "If present, tells DCP to use specific directory as the application root directory. Defaults to current working directory.")
-	startApiSrvCmd.Flags().Int64VarP(&monitorPidInt64, "monitor", "m", int64(process.UnknownPID), "If present, tells DCP to monitor a given process ID (PID) and gracefully shutdown if the monitored process exits for any reason.")
-	startApiSrvCmd.Flags().Uint8VarP(&monitorInterval, "monitor-interval", "i", 0, "If present, specifies the time in seconds between checks for the monitor PID.")
 	startApiSrvCmd.Flags().BoolVar(&detach, "detach", false, "If present, instructs DCP to fork itself as a detached process.")
+
+	cmds.AddMonitorFlags(startApiSrvCmd)
 
 	return startApiSrvCmd, nil
 }
@@ -45,6 +46,8 @@ func NewStartApiSrvCommand(log logger.Logger) (*cobra.Command, error) {
 func startApiSrv(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		log := log.WithName("start-apiserver")
+
+		ctx := cmds.Monitor(cmd.Context(), log.WithName("monitor"))
 
 		if detach {
 			args := make([]string, 0, len(os.Args)-2)
@@ -56,6 +59,8 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, args []string) erro
 			}
 
 			log.V(1).Info("Forking command", "cmd", os.Args[0], "args", args)
+
+			logger.PreserveSessionFolder() // The forked process will take care of cleaning up the session folder
 
 			forked := exec.Command(os.Args[0], args...)
 			process.ForkFromParent(forked)
@@ -88,36 +93,7 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, args []string) erro
 			return err
 		}
 
-		commandCtx, cancelCommandCtx := context.WithCancel(kubeapiserver.SetupSignalContext())
-		defer cancelCommandCtx()
-
-		// If a monitor PID is set, find the process and ensure we shutdown DCP if it exits
-		if monitorPidInt64 != int64(process.UnknownPID) {
-			monitorPid, err := process.Int64ToPidT(monitorPidInt64)
-			if err != nil {
-				return err
-			}
-
-			monitorProc, err := process.FindWaitableProcess(monitorPid)
-			if err != nil {
-				return err
-			}
-
-			if monitorInterval > 0 {
-				monitorProc.WaitPollInterval = time.Second * time.Duration(monitorInterval)
-			}
-
-			go func() {
-				defer cancelCommandCtx()
-				if err := monitorProc.Wait(commandCtx); err != nil {
-					log.Error(err, "error waiting for process", "pid", monitorPid)
-				} else {
-					log.Info("monitor process exited, shutting down", "pid", monitorPid)
-				}
-			}()
-		}
-
-		allExtensions, err := bootstrap.GetExtensions(commandCtx)
+		allExtensions, err := bootstrap.GetExtensions(ctx)
 		if err != nil {
 			return err
 		}
@@ -126,12 +102,12 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, args []string) erro
 			BeforeApiSrvShutdown: func() error {
 				// Shut down the application.
 				//
-				// Don't use commandCtx here--it is already cancelled when this function is called,
+				// Don't use ctx here--it is already cancelled when this function is called,
 				// so using it would result in immediate failure.
 				shutdownCtx, cancelShutdownCtx := context.WithTimeout(context.Background(), 1*time.Minute)
 				defer cancelShutdownCtx()
 				log.Info("Stopping the application...")
-				err := appmgmt.ShutdownApp(shutdownCtx, log)
+				err := appmgmt.ShutdownApp(shutdownCtx, log.WithName("shutdown").V(1))
 				if err != nil {
 					log.Error(err, "could not shut down the application gracefully")
 					return fmt.Errorf("could not shut down the application gracefully: %w", err)
@@ -142,11 +118,11 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, args []string) erro
 			},
 		}
 
-		invocationFlags := []string{"--kubeconfig", kubeconfigPath}
+		invocationFlags := []string{"--kubeconfig", kubeconfigPath, "--monitor", strconv.Itoa(os.Getpid())}
 		if verbosityArg := logger.GetVerbosityArg(cmd.Flags()); verbosityArg != "" {
 			invocationFlags = append(invocationFlags, verbosityArg)
 		}
-		err = bootstrap.DcpRun(commandCtx, rootDir, log, allExtensions, invocationFlags, runEvtHandlers)
+		err = bootstrap.DcpRun(ctx, rootDir, log, allExtensions, invocationFlags, runEvtHandlers)
 
 		return err
 	}

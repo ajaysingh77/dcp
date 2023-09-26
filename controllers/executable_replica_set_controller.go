@@ -5,11 +5,14 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -18,14 +21,16 @@ import (
 // ExecutableReplicaSetReconciler reconciles an ExecutableReplicaSet object
 type ExecutableReplicaSetReconciler struct {
 	ctrl_client.Client
-	Log logr.Logger
+	Log        logr.Logger
+	lastScaled syncmap.Map[types.NamespacedName, time.Time]
 
 	// Debouncer used to schedule reconciliations.
 	debouncer *reconcilerDebouncer[any]
 }
 
 const (
-	exeOwnerKey = ".metadata.controllerOwner" // client index key for child Executables
+	exeOwnerKey    = ".metadata.controllerOwner" // client index key for child Executables
+	scaleRateLimit = 2 * time.Second
 )
 
 var (
@@ -34,8 +39,9 @@ var (
 
 func NewExecutableReplicaSetReconciler(client ctrl_client.Client, log logr.Logger) *ExecutableReplicaSetReconciler {
 	r := ExecutableReplicaSetReconciler{
-		Client:    client,
-		debouncer: newReconcilerDebouncer[any](reconciliationDebounceDelay),
+		Client:     client,
+		debouncer:  newReconcilerDebouncer[any](reconciliationDebounceDelay),
+		lastScaled: syncmap.Map[types.NamespacedName, time.Time]{},
 	}
 
 	r.Log = log.WithValues("Controller", executableReplicaSetFinalizer)
@@ -118,6 +124,7 @@ func (r *ExecutableReplicaSetReconciler) updateReplicas(ctx context.Context, rep
 
 	numReplicas := int32(len(replicas.Items))
 	if replicaSet.Status.ObservedReplicas != numReplicas {
+		r.lastScaled.Store(replicaSet.NamespacedName(), time.Now())
 		replicaSet.Status.ObservedReplicas = numReplicas
 		change = statusChanged
 	}
@@ -248,6 +255,13 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 			if err != nil {
 				log.Error(err, "failed to list child Executable objects")
 				return ctrl.Result{}, err
+			}
+
+			if childExecutables.ItemCount() != uint32(replicaSet.Spec.Replicas) {
+				if lastUpdate, found := r.lastScaled.Load(replicaSet.NamespacedName()); found && lastUpdate.Add(scaleRateLimit).After(time.Now()) {
+					log.Info("replica count changed, but scaling is rate limited", "lastUpdate", lastUpdate)
+					return ctrl.Result{RequeueAfter: scaleRateLimit}, nil
+				}
 			}
 
 			change |= r.updateReplicas(ctx, &replicaSet, childExecutables, log)
