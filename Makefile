@@ -288,6 +288,9 @@ link-dcp: ## Links the dcp binary to /usr/local/bin (macOS/Linux ONLY). Use 'sud
 	ln -s -v $(DCP_DIR)/dcp$(bin_exe_suffix) /usr/local/bin/dcp$(bin_exe_suffix)
 endif
 
+proxy-version:
+	@echo $(TRAEFIK_VERSION)
+
 .PHONY: download-proxy
 download-proxy: traefik_zip := traefik_$(TRAEFIK_VERSION)_$(build_os)_$(build_arch)$(traefik_zip_suffix)
 download-proxy: | $(TOOL_BIN) ${OUTPUT_BIN}/ext/bin/
