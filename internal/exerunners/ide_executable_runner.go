@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
+	"github.com/microsoft/usvc-apiserver/internal/osutil"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -169,7 +171,8 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 
 	// Set up temp files for capturing stdout and stderr. These files (if successfully created)
 	// will be cleaned up by the Executable controller when the Executable is deleted.
-	stdOutFile, err := os.CreateTemp("", fmt.Sprintf("%s_out_*", exe.Name))
+
+	stdOutFile, err := usvc_io.OpenFile(filepath.Join(os.TempDir(), fmt.Sprintf("%s_out_%s", exe.Name, exe.Status.ExecutionID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionFileOwnerOnly)
 	if err != nil {
 		log.Error(err, "failed to create temporary file for capturing standard output data")
 		stdOutFile = nil
@@ -177,7 +180,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 		exe.Status.StdOutFile = stdOutFile.Name()
 	}
 
-	stdErrFile, err := os.CreateTemp("", fmt.Sprintf("%s_err_*", exe.Name))
+	stdErrFile, err := usvc_io.OpenFile(filepath.Join(os.TempDir(), fmt.Sprintf("%s_err_%s", exe.Name, exe.Status.ExecutionID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionFileOwnerOnly)
 	if err != nil {
 		log.Error(err, "failed to create temporary file for capturing standard error data")
 		stdErrFile = nil

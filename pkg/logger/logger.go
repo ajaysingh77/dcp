@@ -11,6 +11,8 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/go-logr/zapr"
+	"github.com/microsoft/usvc-apiserver/internal/osutil"
+	"github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/spf13/pflag"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -76,12 +78,12 @@ func getLogCore(name string, encoderConfig zapcore.EncoderConfig) (zapcore.Core,
 	}
 
 	// Attempt to create the relevant folder
-	if err := os.MkdirAll(logFolder, os.FileMode(0700)); err != nil {
+	if err := os.MkdirAll(logFolder, os.FileMode(osutil.PermissionFileOwnerAll)); err != nil {
 		return nil, fmt.Errorf("failed to create log folder: %v", err)
 	}
 
 	// Create a new log file in the output folder with <name>-<timestamp>-<pid> format
-	logOutput, err := os.Create(filepath.Join(logFolder, fmt.Sprintf("%s-%d-%d", name, time.Now().Unix(), os.Getpid())))
+	logOutput, err := io.OpenFile(filepath.Join(logFolder, fmt.Sprintf("%s-%d-%d", name, time.Now().Unix(), os.Getpid())), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionFileOwnerOnly)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create log file: %v", err)
 	}
