@@ -18,13 +18,13 @@ import (
 )
 
 func ShutdownApp(ctx context.Context, log logr.Logger) error {
-	shutdownCtx, shutdownCtxCancel := context.WithCancel(ctx)
-	defer shutdownCtxCancel()
-
 	if len(apiv1.CleanupResources) <= 0 {
 		log.Info("No resources to delete")
 		return nil
 	}
+
+	shutdownCtx, shutdownCtxCancel := context.WithCancel(ctx)
+	defer shutdownCtxCancel()
 
 	err := perftrace.CaptureShutdownProfileIfRequested(shutdownCtx, log)
 	if err != nil {
@@ -51,6 +51,10 @@ func ShutdownApp(ctx context.Context, log logr.Logger) error {
 
 	factory := dynamicinformer.NewDynamicSharedInformerFactory(dynamicClient, 5*time.Second)
 	defer factory.Shutdown()
+	// This is intentional; defer functions are executed in reverse order and we need to trigger
+	// cancellation on the individual informers before the factory is shut down, so we have to
+	// make sure a call to shutdownCtxCancel() happens BEFORE factory.Shutdown() is called.
+	defer shutdownCtxCancel()
 
 	currentWeight := apiv1.CleanupResources[0].Weight
 	batchIndex := 0
