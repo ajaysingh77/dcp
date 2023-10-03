@@ -12,6 +12,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
+	"github.com/microsoft/usvc-apiserver/internal/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
@@ -35,7 +36,7 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 		"env", cmd.Env,
 		"cwd", cmd.Dir)
 
-	stdOutFile, err := io.OpenFile(filepath.Join(os.TempDir(), fmt.Sprintf("%s_out_%s", exe.Name, exe.Status.ExecutionID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+	stdOutFile, err := io.OpenFile(filepath.Join(os.TempDir(), fmt.Sprintf("%s_out_%s", exe.Name, exe.Status.ExecutionID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionFileOwnerOnly)
 	if err != nil {
 		log.Error(err, "failed to create temporary file for capturing process standard output data")
 	} else {
@@ -43,7 +44,7 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 		exe.Status.StdOutFile = stdOutFile.Name()
 	}
 
-	stdErrFile, err := io.OpenFile(filepath.Join(os.TempDir(), fmt.Sprintf("%s_err_%s", exe.Name, exe.Status.ExecutionID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+	stdErrFile, err := io.OpenFile(filepath.Join(os.TempDir(), fmt.Sprintf("%s_err_%s", exe.Name, exe.Status.ExecutionID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionFileOwnerOnly)
 	if err != nil {
 		log.Error(err, "failed to create temporary file for capturing process standard error data")
 	} else {
