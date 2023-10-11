@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/microsoft/usvc-apiserver/pkg/process"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/stretchr/testify/require"
 )
 
@@ -95,7 +96,7 @@ func (e *TestProcessExecutor) StopProcess(pid process.Pid_t) error {
 	return e.stopProcessImpl(pid, KilledProcessExitCode)
 }
 
-// Called by tests
+// Called by tests to simulate a process exit with specific exit code.
 func (e *TestProcessExecutor) SimulateProcessExit(t *testing.T, pid process.Pid_t, exitCode int32) {
 	err := e.stopProcessImpl(pid, exitCode)
 	if err != nil {
@@ -103,31 +104,57 @@ func (e *TestProcessExecutor) SimulateProcessExit(t *testing.T, pid process.Pid_
 	}
 }
 
-func (e *TestProcessExecutor) FindAll(cmdPath string, cond func(pe ProcessExecution) bool) []ProcessExecution {
+// Finds all executions of a specific command.
+// The command is identified by path to the executable and a subset of its arguments (the first N arguments).
+// If lastArg parameter is not empty, it is matched against the last argument of the command.
+// Last parameter is a function that is called to verify that the command is the one we are waiting for.
+func (e *TestProcessExecutor) FindAll(
+	command []string,
+	lastArg string,
+	cond func(pe *ProcessExecution) bool,
+) []ProcessExecution {
 	e.m.RLock()
 	defer e.m.RUnlock()
 
 	retval := make([]ProcessExecution, 0)
+	if len(command) == 0 {
+		return retval
+	}
+
+	cmdPath := command[0]
 	usingAbsPath := path.IsAbs(cmdPath)
 
 	for _, pe := range e.Executions {
-		var found bool
 		if usingAbsPath {
-			found = pe.Cmd.Path == cmdPath
+			if pe.Cmd.Path != cmdPath {
+				continue // Path to executable does not match
+			}
 		} else {
-			found = strings.Contains(pe.Cmd.Path, cmdPath)
-		}
-
-		if found {
-			include := true
-			if cond != nil {
-				include = cond(pe)
-			}
-
-			if include {
-				retval = append(retval, pe)
+			if !strings.Contains(pe.Cmd.Path, cmdPath) {
+				continue // Path to executable does not contain the expected command name
 			}
 		}
+
+		args := pe.Cmd.Args
+
+		if len(args) < len(command) {
+			continue // Not enough arguments
+		}
+
+		if len(command) > 1 && !slices.StartsWith(args[1:], command[1:]) {
+			continue // First N arguments don't match
+		}
+
+		if lastArg != "" && args[len(args)-1] != lastArg {
+			continue // Last argument doesn't match
+		}
+
+		if cond != nil && !cond(&pe) {
+			continue // Condition doesn't match
+		}
+
+		// All criteria match
+		retval = append(retval, pe)
 	}
 
 	return retval

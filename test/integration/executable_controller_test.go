@@ -231,7 +231,7 @@ func TestExecutableDeletion(t *testing.T) {
 			},
 			verifyRunEnded: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) {
 				processKilled := func(_ context.Context) (bool, error) {
-					killedProcesses := processExecutor.FindAll(exe.Spec.ExecutablePath, func(pe ctrl_testutil.ProcessExecution) bool {
+					killedProcesses := processExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", func(pe *ctrl_testutil.ProcessExecution) bool {
 						return pe.Finished() && pe.ExitCode == ctrl_testutil.KilledProcessExitCode
 					})
 					return len(killedProcesses) == 1, nil
@@ -572,7 +572,7 @@ func ensureProcessRunning(ctx context.Context, cmdPath string) (process.Pid_t, e
 	pid := process.UnknownPID
 
 	processStarted := func(_ context.Context) (bool, error) {
-		runningProcessesWithPath := processExecutor.FindAll(cmdPath, func(pe ctrl_testutil.ProcessExecution) bool {
+		runningProcessesWithPath := processExecutor.FindAll([]string{cmdPath}, "", func(pe *ctrl_testutil.ProcessExecution) bool {
 			return pe.Running()
 		})
 
