@@ -119,6 +119,9 @@ const (
 	// Pending is the initial Container state. No attempt has been made to run the container yet.
 	ContainerStatePending ContainerState = "Pending"
 
+	// Container is in the process of starting
+	ContainerStateStarting ContainerState = "Starting"
+
 	// A start attempt was made, but it failed
 	ContainerStateFailedToStart ContainerState = "FailedToStart"
 
@@ -158,9 +161,6 @@ type ContainerStatus struct {
 	// Default is -1, meaning the exit code is not known, or the container is still running.
 	// +kubebuilder:default:=-1
 	ExitCode int32 `json:"exitCode,omitempty"`
-
-	// The ID of the controller that started the container
-	OwningController string `json:"owningController,omitempty"`
 
 	// A human-readable message that provides additional information about Container state.
 	Message string `json:"message,omitempty"`
