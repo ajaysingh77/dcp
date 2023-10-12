@@ -453,7 +453,7 @@ func TestClientExecutablePortForInjected(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	var expectedPort int32 = 7740
+	var expectedPort int32 = 7750
 
 	svc := apiv1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -475,8 +475,6 @@ func TestClientExecutablePortForInjected(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-client-executable-port-for-injected",
 			Namespace: metav1.NamespaceNone,
-			// No address and no port information
-			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s"}]`, svc.ObjectMeta.Name)},
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "path/to/test-client-executable-port-for-injected",

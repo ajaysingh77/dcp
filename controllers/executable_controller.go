@@ -128,14 +128,18 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
-			change |= r.updateRunState(&exe, log)
-			changeFromRun, reservedServicePorts := r.runExecutable(ctx, &exe, log)
-			change |= changeFromRun
+			change = r.updateRunState(&exe, log)
 
-			switch exe.Status.State {
-			case apiv1.ExecutableStateRunning:
-				ensureEndpointsForWorkload(r, ctx, &exe, reservedServicePorts, log)
-			default:
+			if change == noChange {
+				var reservedServicePorts map[types.NamespacedName]int32
+				var started bool
+				change, reservedServicePorts, started = r.ensureExecutableRunning(ctx, &exe, log)
+				if started {
+					ensureEndpointsForWorkload(r, ctx, &exe, reservedServicePorts, log)
+				}
+			}
+
+			if change != noChange && exe.Status.State != apiv1.ExecutableStateRunning {
 				removeEndpointsForWorkload(r, ctx, &exe, log)
 			}
 		}
@@ -190,26 +194,30 @@ func (r *ExecutableReconciler) OnRunChanged(runID RunID, pid process.Pid_t, exit
 	}
 }
 
-// Performs actual Executable startup and updates status with the appropriate data.
+// Performs actual Executable startup, as necessary, and updates status with the appropriate data.
 // If startup is successful, starts tracking the run.
-func (r *ExecutableReconciler) runExecutable(ctx context.Context, exe *apiv1.Executable, log logr.Logger) (objectChange, map[types.NamespacedName]int32) {
+// Returns:
+// - an indication whether Executable object was changed,
+// - information about any ports allocated for serving services (if not pre-defined by clients via service-producer annotation)
+// - an indication whether the Executable was actually started (and thus Endpoints need to be allocated)
+func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe *apiv1.Executable, log logr.Logger) (objectChange, map[types.NamespacedName]int32, bool) {
 	var err error
 
 	if !exe.Status.StartupTimestamp.IsZero() {
 		log.V(1).Info("Executable already started...", "ExecutionID", exe.Status.ExecutionID)
-		return noChange, nil
+		return noChange, nil, false
 	}
 
 	if exe.Done() {
 		log.V(1).Info("Executable reached done state, nothing to do...")
-		return noChange, nil
+		return noChange, nil, false
 	}
 
 	if _, rps, found := r.runs.FindByFirstKey(exe.NamespacedName()); found {
 		// We are already tracking a run for this Executable, ensure the status matches the current state.
 		log.V(1).Info("Executable already started...", "ExecutionID", exe.Status.ExecutionID)
 		rps.CopyTo(exe)
-		return statusChanged, nil
+		return statusChanged, nil, false
 	}
 
 	executionType := exe.Spec.ExecutionType
@@ -221,18 +229,18 @@ func (r *ExecutableReconciler) runExecutable(ctx context.Context, exe *apiv1.Exe
 		log.Error(fmt.Errorf("no runner found for execution type '%s'", executionType), "the Executable cannot be run and will be marked as finished")
 		exe.Status.State = apiv1.ExecutableStateFailedToStart
 		exe.Status.FinishTimestamp = metav1.Now()
-		return statusChanged, nil
+		return statusChanged, nil, false
 	}
 
 	reservedServicePorts, err := r.computeEffectiveEnvironment(ctx, exe, log)
 	if errors.Is(err, errServiceNotAssignedPort) {
 		log.Info("could not compute effective environment for the Executable because one of the services it uses does not have a port assigned yet")
-		return additionalReconciliationNeeded, nil
+		return additionalReconciliationNeeded, nil, false
 	} else if err != nil {
 		log.Error(err, "could not compute effective environment for the Executable")
 		exe.Status.State = apiv1.ExecutableStateFailedToStart
 		exe.Status.FinishTimestamp = metav1.Now()
-		return statusChanged, nil
+		return statusChanged, nil, false
 	}
 
 	runID, startWaitForRunCompletion, err := runner.StartRun(ctx, exe, r, log)
@@ -241,14 +249,14 @@ func (r *ExecutableReconciler) runExecutable(ctx context.Context, exe *apiv1.Exe
 		r.runs.Store(exe.NamespacedName(), runID, exe.Status)
 
 		startWaitForRunCompletion()
-		return statusChanged, reservedServicePorts
+		return statusChanged, reservedServicePorts, true
 	} else {
 		if exe.Status.State != apiv1.ExecutableStateFailedToStart {
 			// The executor did not mark the Executable as failed to start, so we should retry.
-			return additionalReconciliationNeeded, nil
+			return additionalReconciliationNeeded, nil, false
 		} else {
 			// The Executable failed to start and reached the final state.
-			return statusChanged, nil
+			return statusChanged, nil, false
 		}
 	}
 }

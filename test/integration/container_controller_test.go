@@ -398,29 +398,16 @@ func ensureContainerRunning(t *testing.T, ctx context.Context, image string, con
 		return err
 	}
 
-	// For that command, reply with a container ID
+	// Make sure we are ready for the container to be inspected
+	ensureContainerInspectResponse(t, image, containerID, created, ct.ContainerStatusRunning)
+
+	// Reply to "docker run" command with a container ID
 	_, err = dockerRunCmd.Cmd.Stdout.Write([]byte(containerID + "\n"))
 	if err != nil {
 		t.Errorf("Could not provide container ID to the controller: %v", err)
 		return err
 	}
 	processExecutor.SimulateProcessExit(t, dockerRunCmd.PID, 0)
-
-	// The reconciler will want to inspect the container
-	// Wait for corresponding "container inspect" command
-	containerInspectCmd, err := waitForDockerCommand(t, ctx, []string{"container", "inspect"}, containerID)
-	if err != nil {
-		return err
-	}
-
-	// Indicate that the container is running
-	inspectRes := getInspectedContainerJson(containerID, image, created, ct.ContainerStatusRunning) + "\n"
-	_, err = containerInspectCmd.Cmd.Stdout.Write([]byte(inspectRes))
-	if err != nil {
-		t.Errorf("Could not provide container inspection result: %v", err)
-		return err
-	}
-	processExecutor.SimulateProcessExit(t, containerInspectCmd.PID, 0)
 
 	return nil
 }
@@ -431,27 +418,15 @@ func simulateContainerExit(t *testing.T, ctx context.Context, image string, cont
 		return err
 	}
 
+	// The controller will want to inspect the exited container
+	ensureContainerInspectResponse(t, image, containerID, created, ct.ContainerStatusExited)
+
 	// Emit container Die event
 	_, err = eventsCmd.Cmd.Stdout.Write([]byte(getContainerEventJson(containerID, ct.EventActionDie) + "\n"))
 	if err != nil {
 		t.Errorf("Could not emit container Die event: %v", err)
 		return err
 	}
-
-	// The reconciler will want to inspect the container
-	containerInspectCmd, err := waitForDockerCommand(t, ctx, []string{"container", "inspect"}, containerID)
-	if err != nil {
-		return err
-	}
-
-	// Indicate that the container has exited
-	inspectRes := getInspectedContainerJson(containerID, image, created, ct.ContainerStatusExited) + "\n"
-	_, err = containerInspectCmd.Cmd.Stdout.Write([]byte(inspectRes))
-	if err != nil {
-		t.Errorf("Could not provide container inspection result: %v", err)
-		return err
-	}
-	processExecutor.SimulateProcessExit(t, containerInspectCmd.PID, 0)
 
 	return nil
 }
@@ -471,6 +446,25 @@ func ensureContainerDeleted(t *testing.T, ctx context.Context, containerID strin
 	processExecutor.SimulateProcessExit(t, removeCmd.PID, 0)
 
 	return nil
+}
+
+func ensureContainerInspectResponse(t *testing.T, image string, containerID string, created time.Time, status ct.ContainerStatus) {
+	inspectRes := getInspectedContainerJson(containerID, image, created, status) + "\n"
+	autoExec := ctrl_testutil.AutoExecution{
+		Condition: ctrl_testutil.ProcessSearchCriteria{
+			Command: []string{"docker", "container", "inspect"},
+			LastArg: containerID,
+			Cond:    (*ctrl_testutil.ProcessExecution).Running,
+		},
+		RunCommand: func(pe *ctrl_testutil.ProcessExecution) int32 {
+			_, err := pe.Cmd.Stdout.Write([]byte(inspectRes))
+			if err != nil {
+				t.Errorf("Could not provide container inspection result: %v", err)
+			}
+			return 0
+		},
+	}
+	processExecutor.InstallAutoExecution(autoExec)
 }
 
 func getInspectedContainerJson(containerID string, image string, created time.Time, status ct.ContainerStatus) string {
