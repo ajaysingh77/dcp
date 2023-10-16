@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 	"text/template"
 
 	"github.com/go-logr/logr"
@@ -33,8 +34,9 @@ import (
 type ExecutableReconciler struct {
 	ctrl_client.Client
 
-	Log               logr.Logger
-	ExecutableRunners map[apiv1.ExecutionType]ExecutableRunner
+	Log                 logr.Logger
+	reconciliationSeqNo uint32
+	ExecutableRunners   map[apiv1.ExecutionType]ExecutableRunner
 
 	// A map that stores information about running Executables,
 	// searchable by Executable name (first key), or run ID (second key).
@@ -86,7 +88,7 @@ Status will be updated based on the status of the corresponding run and the run 
 the Executable is deleted.
 */
 func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.WithValues("Executable", req.NamespacedName)
+	log := r.Log.WithValues("Executable", req.NamespacedName).WithValues("Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1))
 
 	r.debouncer.OnReconcile(req.NamespacedName)
 

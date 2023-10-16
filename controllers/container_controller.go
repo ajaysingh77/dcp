@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/go-logr/logr"
 	"github.com/smallnest/chanx"
@@ -50,8 +51,9 @@ type runningContainerData struct {
 
 type ContainerReconciler struct {
 	ctrl_client.Client
-	Log          logr.Logger
-	orchestrator ct.ContainerOrchestrator
+	Log                 logr.Logger
+	reconciliationSeqNo uint32
+	orchestrator        ct.ContainerOrchestrator
 
 	// Channel uset to trigger reconciliation when underlying containers change
 	notifyContainerChanged *chanx.UnboundedChan[ctrl_event.GenericEvent]
@@ -117,7 +119,7 @@ func (r *ContainerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.WithValues("ContainerName", req.NamespacedName)
+	log := r.Log.WithValues("ContainerName", req.NamespacedName).WithValues("Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1))
 
 	r.debouncer.OnReconcile(req.NamespacedName)
 

@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 
 	"github.com/go-logr/logr"
 	"github.com/smallnest/chanx"
@@ -49,10 +50,11 @@ const (
 
 type ServiceReconciler struct {
 	ctrl_client.Client
-	Log                logr.Logger
-	ProcessExecutor    process.Executor
-	ProxyConfigDir     string
-	proxyProcessStatus *maps.SynchronizedDualKeyMap[types.NamespacedName, process.Pid_t, ProxyProcessStatus]
+	Log                 logr.Logger
+	reconciliationSeqNo uint32
+	ProcessExecutor     process.Executor
+	ProxyConfigDir      string
+	proxyProcessStatus  *maps.SynchronizedDualKeyMap[types.NamespacedName, process.Pid_t, ProxyProcessStatus]
 
 	// Channel used to trigger reconciliation function when underlying run status changes.
 	notifyProxyRunChanged *chanx.UnboundedChan[ctrl_event.GenericEvent]
@@ -122,7 +124,7 @@ func (r *ServiceReconciler) requestReconcileForEndpoint(ctx context.Context, obj
 }
 
 func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.WithValues("ServiceName", req.NamespacedName)
+	log := r.Log.WithValues("ServiceName", req.NamespacedName).WithValues("Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1))
 
 	select {
 	case _, isOpen := <-ctx.Done():
