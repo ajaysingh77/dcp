@@ -387,7 +387,7 @@ func TestContainerDeletion(t *testing.T) {
 	require.NoError(t, err, "Container object could not be deleted")
 
 	t.Log("Check if corresponding container was deleted...")
-	_, err = waitForFinishedDockerCommand(t, ctx, []string{"container", "rm"}, containerID)
+	err = waitForDockerContainerRemoved(t, ctx, containerID)
 	require.NoError(t, err, "Container was not deleted as expected")
 
 	t.Log("Ensure that Container object really disappeared from the API server...")

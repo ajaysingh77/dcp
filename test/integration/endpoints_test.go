@@ -101,7 +101,7 @@ func TestEndpointCreatedAndDeletedForContainer(t *testing.T) {
 	require.NoError(t, err, "Could not delete Container")
 
 	t.Log("Check if corresponding container was deleted...")
-	_, err = waitForFinishedDockerCommand(t, ctx, []string{"container", "rm"}, containerID)
+	err = waitForDockerContainerRemoved(t, ctx, containerID)
 	require.NoError(t, err, "Container was not deleted as expected")
 
 	t.Log("Check if Endpoint deleted...")
