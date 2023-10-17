@@ -162,13 +162,17 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 // so we just memorize the PID and process exit code (if available) in the run status map,
 // and not attempt to modify any Kubernetes data.
 func (r *ExecutableReconciler) OnRunChanged(runID RunID, pid process.Pid_t, exitCode *int32, err error) {
-	name, ps, found := r.runs.FindBySecondKey(runID)
+	name, exeStatus, found := r.runs.FindBySecondKey(runID)
 
 	// It's possible we receive a notification about a run we are not tracking, but that means we
 	// no longer care about its status, so we can just ignore it.
 	if !found {
 		return
 	}
+
+	// The status object contains pointers and we are going to be modifying values pointed by them,
+	// so we need to make a copy to avoid data races with other controller methods.
+	ps := exeStatus.DeepCopy()
 
 	var effectiveExitCode *int32
 	if err != nil {
@@ -192,7 +196,7 @@ func (r *ExecutableReconciler) OnRunChanged(runID RunID, pid process.Pid_t, exit
 		ps.State = apiv1.ExecutableStateRunning
 	}
 
-	updated := r.runs.Update(name, runID, ps)
+	updated := r.runs.Update(name, runID, *ps)
 	if !updated {
 		// The Executable is being deleted, so we do not care about this run anymore.
 		return
