@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/go-logr/logr"
 	"github.com/smallnest/chanx"
@@ -50,8 +51,9 @@ type runningContainerData struct {
 
 type ContainerReconciler struct {
 	ctrl_client.Client
-	Log          logr.Logger
-	orchestrator ct.ContainerOrchestrator
+	Log                 logr.Logger
+	reconciliationSeqNo uint32
+	orchestrator        ct.ContainerOrchestrator
 
 	// Channel uset to trigger reconciliation when underlying containers change
 	notifyContainerChanged *chanx.UnboundedChan[ctrl_event.GenericEvent]
@@ -117,7 +119,7 @@ func (r *ContainerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.WithValues("ContainerName", req.NamespacedName)
+	log := r.Log.WithValues("ContainerName", req.NamespacedName).WithValues("Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1))
 
 	r.debouncer.OnReconcile(req.NamespacedName)
 
@@ -146,7 +148,11 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	var change objectChange
 	patch := ctrl_client.MergeFromWithOptions(container.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
-	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() {
+	deletionRequested := container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero()
+	if deletionRequested && container.Status.State != apiv1.ContainerStateStarting {
+		// Note: if the Container object is being deleted, but the correspoinding container is in the process of starting,
+		// we need the container startup to finish, before attemptin to delete everything.
+		// Otherwise we will be left with a dangling container that no one owns.
 		log.Info("Container object is being deleted...")
 		r.deleteContainer(ctx, &container, log)
 		change = deleteFinalizer(&container, containerFinalizer)
@@ -158,10 +164,12 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if change == noChange {
 			change = r.manageContainer(ctx, &container, log)
 
-			switch {
-			case container.Status.State == apiv1.ContainerStateRunning:
+			switch container.Status.State {
+			case apiv1.ContainerStateRunning:
 				ensureEndpointsForWorkload(r, ctx, &container, nil, log)
-			case container.Status.State != apiv1.ContainerStatePending:
+			case apiv1.ContainerStatePending, apiv1.ContainerStateStarting:
+				break // do nothing
+			default:
 				removeEndpointsForWorkload(r, ctx, &container, log)
 			}
 		}
@@ -176,6 +184,7 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 	containerID, _, found := r.runningContainers.FindBySecondKey(container.NamespacedName())
 	if !found {
 		containerID = container.Status.ContainerID
+		log.V(1).Info("running container data missing, using container ID from Container object status", "ContainerID", containerID)
 	}
 
 	// Since the container is being removed, we want to remove it from runningContainers map now
@@ -185,9 +194,11 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 
 	if containerID == "" {
 		// This can happen if the container was never started -- nothing to do
+		log.V(1).Info("running container ID is not available; proceeding with Container object deletion...")
 		return
 	}
 
+	log.V(1).Info("calling container orchestrator to remove the container...", "ContainerID", containerID)
 	_, err := r.orchestrator.RemoveContainers(ctx, []string{containerID}, true /*force*/)
 	if err != nil {
 		log.Error(err, "could not remove the running container corresponding to Container object", "ContainerID", containerID)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 	"text/template"
 
 	"github.com/go-logr/logr"
@@ -33,8 +34,9 @@ import (
 type ExecutableReconciler struct {
 	ctrl_client.Client
 
-	Log               logr.Logger
-	ExecutableRunners map[apiv1.ExecutionType]ExecutableRunner
+	Log                 logr.Logger
+	reconciliationSeqNo uint32
+	ExecutableRunners   map[apiv1.ExecutionType]ExecutableRunner
 
 	// A map that stores information about running Executables,
 	// searchable by Executable name (first key), or run ID (second key).
@@ -86,7 +88,7 @@ Status will be updated based on the status of the corresponding run and the run 
 the Executable is deleted.
 */
 func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.WithValues("Executable", req.NamespacedName)
+	log := r.Log.WithValues("Executable", req.NamespacedName).WithValues("Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1))
 
 	r.debouncer.OnReconcile(req.NamespacedName)
 
@@ -115,6 +117,7 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	var change objectChange
+	var onSuccessfulSave func() = nil
 	patch := ctrl_client.MergeFromWithOptions(exe.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
 	if exe.DeletionTimestamp != nil && !exe.DeletionTimestamp.IsZero() {
@@ -128,7 +131,7 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
-			change = r.updateRunState(&exe, log)
+			change, onSuccessfulSave = r.updateRunState(&exe, log)
 
 			if change == noChange {
 				var reservedServicePorts map[types.NamespacedName]int32
@@ -148,6 +151,9 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	result, err := saveChanges(r, ctx, &exe, patch, change, log)
 	if exe.Done() {
 		log.V(1).Info("Executable reached done state")
+	}
+	if err == nil && onSuccessfulSave != nil {
+		onSuccessfulSave()
 	}
 	return result, err
 }
@@ -183,7 +189,11 @@ func (r *ExecutableReconciler) OnRunChanged(runID RunID, pid process.Pid_t, exit
 		ps.State = apiv1.ExecutableStateRunning
 	}
 
-	r.runs.Store(name, runID, ps)
+	updated := r.runs.Update(name, runID, ps)
+	if !updated {
+		// The Executable is being deleted, so we do not care about this run anymore.
+		return
+	}
 
 	// Schedule reconciliation for corresponding executable
 	scheduleErr := r.debouncer.ReconciliationNeeded(name, runID, r.scheduleExecutableReconciliation)
@@ -288,38 +298,44 @@ func (r *ExecutableReconciler) stopExecutable(ctx context.Context, exe *apiv1.Ex
 
 // Called by the main reconciler function, this function will update the Executable run state
 // based on run state change notifications we have received.
-func (r *ExecutableReconciler) updateRunState(exe *apiv1.Executable, log logr.Logger) objectChange {
+// Returns whether the Executable object was changed, and a function that should be called
+// when changes to the Executable object are successfully saved.
+func (r *ExecutableReconciler) updateRunState(exe *apiv1.Executable, log logr.Logger) (objectChange, func()) {
 	var change objectChange = noChange
+	var onSuccessfulSave func() = nil
 
 	runID := RunID(exe.Status.ExecutionID)
 	if _, ps, found := r.runs.FindBySecondKey(runID); found {
 		if ps.State != exe.Status.State || ps.PID != exe.Status.PID {
 			log.Info("Executable run changed", "RunID", runID, "PID", ps.PID, "State", ps.State, "ExitCode", ps.ExitCode)
 			exe.UpdateRunningStatus(ps.PID, ps.ExitCode, ps.State)
+			change = statusChanged
 
 			if ps.State != apiv1.ExecutableStateRunning {
-				// The executable is no longer running, so we stop tracking it.
-				r.runs.DeleteBySecondKey(runID)
+				onSuccessfulSave = func() {
+					// The executable is no longer running, so we can delete associated data,
+					// but only if the Executable object is successfully saved.
+					// Otherwise we will need this data when we re-try to update run state upon next reconciliation.
+					r.runs.DeleteBySecondKey(runID)
+				}
 			}
-
-			change = statusChanged
 		}
 	}
 
-	return change
+	return change, onSuccessfulSave
 }
 
 func (r *ExecutableReconciler) deleteOutputFiles(exe *apiv1.Executable, log logr.Logger) {
 	// Do not bother updating the Executable object--this method is called when the object is being deleted.
 
 	if exe.Status.StdOutFile != "" {
-		if err := os.Remove(exe.Status.StdOutFile); err != nil {
+		if err := os.Remove(exe.Status.StdOutFile); err != nil && !errors.Is(err, os.ErrNotExist) {
 			log.Error(err, "could not remove process's standard output file", "path", exe.Status.StdOutFile)
 		}
 	}
 
 	if exe.Status.StdErrFile != "" {
-		if err := os.Remove(exe.Status.StdErrFile); err != nil {
+		if err := os.Remove(exe.Status.StdErrFile); err != nil && !errors.Is(err, os.ErrNotExist) {
 			log.Error(err, "could not remove process's standard error file", "path", exe.Status.StdErrFile)
 		}
 	}

@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 
 	"github.com/go-logr/logr"
 	"github.com/smallnest/chanx"
@@ -49,10 +50,11 @@ const (
 
 type ServiceReconciler struct {
 	ctrl_client.Client
-	Log                logr.Logger
-	ProcessExecutor    process.Executor
-	ProxyConfigDir     string
-	proxyProcessStatus *maps.SynchronizedDualKeyMap[types.NamespacedName, process.Pid_t, ProxyProcessStatus]
+	Log                 logr.Logger
+	reconciliationSeqNo uint32
+	ProcessExecutor     process.Executor
+	ProxyConfigDir      string
+	proxyProcessStatus  *maps.SynchronizedDualKeyMap[types.NamespacedName, process.Pid_t, ProxyProcessStatus]
 
 	// Channel used to trigger reconciliation function when underlying run status changes.
 	notifyProxyRunChanged *chanx.UnboundedChan[ctrl_event.GenericEvent]
@@ -122,7 +124,7 @@ func (r *ServiceReconciler) requestReconcileForEndpoint(ctx context.Context, obj
 }
 
 func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.WithValues("ServiceName", req.NamespacedName)
+	log := r.Log.WithValues("ServiceName", req.NamespacedName).WithValues("Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1))
 
 	select {
 	case _, isOpen := <-ctx.Done():
@@ -137,6 +139,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.Get(ctx, req.NamespacedName, &svc); err != nil {
 		if apimachinery_errors.IsNotFound(err) {
 			log.Info("the Service object does not exist yet or was deleted")
+			r.proxyProcessStatus.DeleteByFirstKey(req.NamespacedName)
 			return ctrl.Result{}, nil
 		} else {
 			log.Error(err, "failed to Get() the Service object")
@@ -165,6 +168,8 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 }
 
 func (r *ServiceReconciler) deleteService(ctx context.Context, svc *apiv1.Service, log logr.Logger) error {
+	r.proxyProcessStatus.DeleteByFirstKey(svc.NamespacedName())
+
 	if err := r.stopProxyIfNeeded(ctx, svc); err != nil {
 		log.Error(err, "could not stop the proxy")
 		return err
@@ -344,8 +349,6 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 			Name:      svc.ObjectMeta.Name,
 		}
 
-		// Delete if it exists, then store anew
-		r.proxyProcessStatus.DeleteByFirstKey(namespacedName)
 		r.proxyProcessStatus.Store(namespacedName, pid, ProxyProcessStatusRunning)
 
 		startWaitForProcessExit()
@@ -363,11 +366,14 @@ func (r *ServiceReconciler) OnProcessExited(pid process.Pid_t, exitCode int32, e
 	namespacedName, _, found := r.proxyProcessStatus.FindBySecondKey(pid)
 
 	if !found {
-		// Not a process we care about
-		return
+		return // Not a process we care about
 	}
 
-	r.proxyProcessStatus.Store(namespacedName, pid, ProxyProcessStatusExited)
+	updated := r.proxyProcessStatus.Update(namespacedName, pid, ProxyProcessStatusExited)
+	if !updated {
+		return // The Service object has been deleted, so we do not care about the proxy process anymore.
+	}
+
 	r.Log.Info(fmt.Sprintf("proxy process for service %s exited with code %d", namespacedName, exitCode))
 
 	// Schedule reconciliation for the service
