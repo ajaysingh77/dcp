@@ -166,7 +166,7 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 			switch container.Status.State {
 			case apiv1.ContainerStateRunning:
-				ensureEndpointsForWorkload(r, ctx, &container, nil, log)
+				ensureEndpointsForWorkload(ctx, r, &container, nil, log)
 			case apiv1.ContainerStatePending, apiv1.ContainerStateStarting:
 				break // do nothing
 			default:
