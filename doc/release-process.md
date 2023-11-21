@@ -11,9 +11,9 @@ The project uses [GitVersion](https://gitversion.net/) to generate predictable v
 1. Ensure you have the latest branch history by running `git fetch`
 1. Create a new release branch from `origin/main` named `release/<version>` where `<version>` is the intended version of the release (`git checkout -b release/<version> origin/main`).
    * If `<version>` is different than the current version reflected by builds from `main` (for example, main builds are at `0.1.27-alpha.10`, but the release is intended to be `0.2.0`) then the new release branch should also be tagged as `v0.2.0-rc.1` at the same time it is first pushed to GitHub. This will ensure that the release branch builds will have the correct version number.
-1. Push the new release branch (and tag if applicable) to GitHub.
+1. Push the new release branch (and tag if applicable) to GitHub by running `git push origin`
 1. Any further changes during the release process should be made as PRs against the `release` branch.
-1. Open two PRs to merge the new `release` branch into `production` and `main`. Title the PRs `Merge release/<version> into production` and `Merge release/<version> into main` to make it easy to tell them apart.
+1. Open two PRs to merge the new `release` branch into `production` and `main`. If there are no changes made to the release branch, the PR to `main` can be skipped. Title the PRs `Merge release/<version> into production` and `Merge release/<version> into main` to make it easy to tell them apart.
 1. Once we're ready to complete the release, DO use the `Merge pull request` strategy to complete the PRs. Do NOT use `Squash and merge` as this will confuse the merge process for subsequent release branch PRs.
    * If a `release` branch PR is accidentally `squash` merged, we have to run `git merge -s ours origin/production` when initially creating the next new release branch to prevent incorrect merge behavior.
 1. After the PR is merged, pull the updated `production` locally and tag it with the appropriate version number (eg. `v0.1.27`, `v0.2.0`, etc.) and push the tag to GitHub (`git push --tags`).
