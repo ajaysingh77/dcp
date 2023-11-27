@@ -10,6 +10,7 @@ import (
 
 	"github.com/microsoft/usvc-apiserver/internal/dcpd/commands"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
+	"github.com/microsoft/usvc-apiserver/pkg/telemetry"
 )
 
 const (
@@ -23,6 +24,9 @@ func main() {
 	defer log.BeforeExit(func(value interface{}) { os.Exit(errPanic) })
 
 	ctx := kubeapiserver.SetupSignalContext()
+
+	telemetrySystem := telemetry.NewTelemetrySystem()
+	defer telemetrySystem.Shutdown(ctx)
 
 	root, err := commands.NewRootCmd(log)
 	if err != nil {
