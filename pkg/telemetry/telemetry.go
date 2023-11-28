@@ -35,7 +35,7 @@ func (ts TelemetrySystem) Shutdown(ctx context.Context) {
 	ts.exporter.Shutdown(ctx)
 }
 
-func CallWithTelemetryAndErrorHandling[TResult any](tracer trace.Tracer, spanName string, parentCtx context.Context, fn func(ctx context.Context) (TResult, error)) (TResult, error) {
+func CallWithTelemetry[TResult any](tracer trace.Tracer, spanName string, parentCtx context.Context, fn func(ctx context.Context) (TResult, error)) (TResult, error) {
 	spanCtx, span := tracer.Start(parentCtx, spanName)
 	defer span.End()
 
@@ -47,7 +47,7 @@ func CallWithTelemetryAndErrorHandling[TResult any](tracer trace.Tracer, spanNam
 	return result, err
 }
 
-func CallWithTelemetryAndErrorHandlingNoResult(tracer trace.Tracer, spanName string, parentCtx context.Context, fn func(ctx context.Context) error) error {
+func CallWithTelemetryNoResult(tracer trace.Tracer, spanName string, parentCtx context.Context, fn func(ctx context.Context) error) error {
 	spanCtx, span := tracer.Start(parentCtx, spanName)
 	defer span.End()
 

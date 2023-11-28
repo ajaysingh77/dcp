@@ -223,7 +223,7 @@ func newReconcilerWithTelemetry(inner reconcilerWithSetupWithManager) reconciler
 }
 
 func (r reconcilerWithTelemetry) Reconcile(parentCtx context.Context, req reconcile.Request) (reconcile.Result, error) {
-	return telemetry.CallWithTelemetryAndErrorHandling(r.tracer, "Reconcile", parentCtx, func(ctx context.Context) (reconcile.Result, error) { return r.inner.Reconcile(ctx, req) })
+	return telemetry.CallWithTelemetry(r.tracer, "Reconcile", parentCtx, func(ctx context.Context) (reconcile.Result, error) { return r.inner.Reconcile(ctx, req) })
 }
 
 func (r reconcilerWithTelemetry) SetupWithManager(mgr ctrl_manager.Manager) error {
