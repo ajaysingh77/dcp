@@ -1163,6 +1163,26 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableStatus(ref common.Referenc
 							},
 						},
 					},
+					"effectiveArgs": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Effective values of launch arguments to be passed to the Executable, after all substitutions are applied.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
 				},
 				Required: []string{"state"},
 			},
