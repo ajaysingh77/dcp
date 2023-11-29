@@ -9,8 +9,8 @@ import (
 	kubeapiserver "k8s.io/apiserver/pkg/server"
 
 	"github.com/microsoft/usvc-apiserver/internal/dcpctrl/commands"
+	"github.com/microsoft/usvc-apiserver/internal/telemetry"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
-	"github.com/microsoft/usvc-apiserver/pkg/telemetry"
 )
 
 const (

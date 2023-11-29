@@ -36,12 +36,12 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/osutil"
+	"github.com/microsoft/usvc-apiserver/internal/telemetry"
 	ourio "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
-	"github.com/microsoft/usvc-apiserver/pkg/telemetry"
 )
 
 type ProxyProcessStatus int32
