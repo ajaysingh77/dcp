@@ -60,10 +60,14 @@ func CallWithTelemetryNoResult(tracer trace.Tracer, spanName string, parentCtx c
 	return err
 }
 
-func SetAttribute(ctx context.Context, key string, value interface{}) {
+type TelemetryAttribute interface {
+	int | int64 | bool | float64 | string | []int | []int64 | []bool | []float64 | []string
+}
+
+func SetAttribute[T TelemetryAttribute](ctx context.Context, key string, value T) {
 	span := trace.SpanFromContext(ctx)
 
-	switch v := value.(type) {
+	switch v := (any)(value).(type) {
 	case int:
 		span.SetAttributes(attribute.Int(key, v))
 	case int64:
@@ -86,6 +90,6 @@ func SetAttribute(ctx context.Context, key string, value interface{}) {
 		span.SetAttributes(attribute.StringSlice(key, v))
 	default:
 		// This should never happen
-		panic(fmt.Sprintf("unknown telemetry type for key %s", key))
+		fmt.Printf("unknown telemetry type for key %s", key)
 	}
 }
