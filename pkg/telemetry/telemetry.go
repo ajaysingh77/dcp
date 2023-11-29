@@ -89,8 +89,3 @@ func SetAttribute(ctx context.Context, key string, value interface{}) {
 		panic(fmt.Sprintf("unknown telemetry type for key %s", key))
 	}
 }
-
-func AddEvent(ctx context.Context, name string, options ...trace.EventOption) {
-	span := trace.SpanFromContext(ctx)
-	span.AddEvent(name, options...)
-}

@@ -11,8 +11,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -21,7 +19,6 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
-	"github.com/microsoft/usvc-apiserver/pkg/telemetry"
 )
 
 type objectChange int
@@ -38,13 +35,11 @@ const (
 	reconciliationDebounceDelay   = 500 * time.Millisecond
 )
 
-func ensureFinalizer(ctx context.Context, obj metav1.Object, finalizer string, log logr.Logger) objectChange {
+func ensureFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objectChange {
 	finalizers := obj.GetFinalizers()
 	if slices.Contains(finalizers, finalizer) {
 		return noChange
 	}
-
-	telemetry.AddEvent(ctx, "FinalizerAdded", trace.WithAttributes(attribute.String("Finalizer", finalizer)))
 
 	finalizers = append(finalizers, finalizer)
 	obj.SetFinalizers(finalizers)
@@ -52,14 +47,12 @@ func ensureFinalizer(ctx context.Context, obj metav1.Object, finalizer string, l
 	return metadataChanged
 }
 
-func deleteFinalizer(ctx context.Context, obj metav1.Object, finalizer string, log logr.Logger) objectChange {
+func deleteFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objectChange {
 	finalizers := obj.GetFinalizers()
 	i := slices.Index(finalizers, finalizer)
 	if i == -1 {
 		return noChange
 	}
-
-	telemetry.AddEvent(ctx, "FinalizerRemoved", trace.WithAttributes(attribute.String("Finalizer", finalizer)))
 
 	finalizers = append(finalizers[:i], finalizers[i+1:]...)
 	obj.SetFinalizers(finalizers)
@@ -146,7 +139,6 @@ func saveChanges[T ObjectStruct, PCT PCopyableObjectStruct[T]](
 		return ctrl.Result{}, nil
 
 	case (change & statusChanged) != 0:
-		telemetry.AddEvent(ctx, "StatusChanged")
 		update = obj.DeepCopy()
 		err = client.Status().Patch(ctx, update, patch)
 		if err != nil {
@@ -163,7 +155,6 @@ func saveChanges[T ObjectStruct, PCT PCopyableObjectStruct[T]](
 		}
 
 	case (change & (metadataChanged | specChanged)) != 0:
-		telemetry.AddEvent(ctx, "MetadataOrSpecChanged")
 		update = obj.DeepCopy()
 		err = client.Patch(ctx, update, patch)
 		if err != nil {

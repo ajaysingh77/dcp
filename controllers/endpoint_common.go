@@ -17,7 +17,6 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
-	"github.com/microsoft/usvc-apiserver/pkg/telemetry"
 )
 
 const (
@@ -103,7 +102,6 @@ func ensureEndpointsForWorkload(ctx context.Context, r EndpointOwner, owner ctrl
 		}
 
 		log.V(1).Info("New Endpoint created", "Endpoint", endpoint, "ServiceName", serviceProducer.ServiceName)
-		telemetry.AddEvent(ctx, "EndpointCreated")
 
 		workloadEndpointCache.Store(sweKey, true)
 	}
@@ -126,11 +124,7 @@ func removeEndpointsForWorkload(r EndpointOwner, ctx context.Context, owner ctrl
 		}
 
 		workloadEndpointCache.Delete(sweKey)
-
-		telemetry.AddEvent(ctx, "EndpointRemoved")
 	}
-
-	log.V(1).Info("All Endpoints removed", "Workload", owner)
 }
 
 func getServiceProducersForObject(owner ctrl_client.Object, log logr.Logger) ([]ServiceProducer, error) {

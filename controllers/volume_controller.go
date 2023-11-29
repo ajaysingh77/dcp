@@ -16,7 +16,6 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
-	"github.com/microsoft/usvc-apiserver/pkg/telemetry"
 )
 
 type VolumeReconciler struct {
@@ -80,10 +79,10 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			// deleteVolume() logged the error already
 			change = additionalReconciliationNeeded
 		} else {
-			change = deleteFinalizer(ctx, &vol, volumeFinalizer, log)
+			change = deleteFinalizer(&vol, volumeFinalizer, log)
 		}
 	} else {
-		change = ensureFinalizer(ctx, &vol, volumeFinalizer, log)
+		change = ensureFinalizer(&vol, volumeFinalizer, log)
 		change |= r.ensureVolume(ctx, vol.Spec.Name, log)
 	}
 
@@ -135,6 +134,5 @@ func (r *VolumeReconciler) ensureVolume(ctx context.Context, volumeName string, 
 	}
 
 	log.Info("volume created")
-	telemetry.AddEvent(ctx, "VolumeCreated")
 	return noChange
 }
