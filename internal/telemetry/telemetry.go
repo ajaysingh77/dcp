@@ -7,19 +7,28 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 )
 
 type TelemetrySystem struct {
 	TracerProvider trace.TracerProvider
-	exporter       sdktrace.SpanExporter
+	MeterProvider  sdkmetric.MeterProvider
+	spanExporter   sdktrace.SpanExporter
+	metricExporter sdkmetric.Exporter
 }
 
 func NewTelemetrySystem() TelemetrySystem {
 	tp := trace.NewNoopTracerProvider()
-	exp, err := newTelemetryExporter()
+	spanExp, err := newTelemetryExporter()
 
+	if err != nil {
+		panic(err)
+	}
+
+	mp := sdkmetric.NewNoopMeterProvider()
+	metricExp, err := newMetricExporter()
 	if err != nil {
 		panic(err)
 	}
@@ -28,12 +37,14 @@ func NewTelemetrySystem() TelemetrySystem {
 
 	return TelemetrySystem{
 		TracerProvider: tp,
-		exporter:       exp,
+		spanExporter:   spanExp,
+		metricExporter: metricExp,
 	}
 }
 
 func (ts TelemetrySystem) Shutdown(ctx context.Context) {
-	_ = ts.exporter.Shutdown(ctx) // TODO: Best effort?
+	_ = ts.spanExporter.Shutdown(ctx)   // TODO: Best effort?
+	_ = ts.metricExporter.Shutdown(ctx) // TODO: Best effort?
 }
 
 func CallWithTelemetry[TResult any](tracer trace.Tracer, spanName string, parentCtx context.Context, fn func(ctx context.Context) (TResult, error)) (TResult, error) {
