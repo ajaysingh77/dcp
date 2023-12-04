@@ -18,8 +18,6 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/smallnest/chanx"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap/zapcore"
 	"gopkg.in/yaml.v3"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
@@ -444,7 +442,7 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 		startWaitForProcessExit()
 
 		r.Log.Info(fmt.Sprintf("proxy process with PID %d started for service %s", pid, namespacedName))
-		telemetry.AddEvent(ctx, "ProxyStarted", trace.WithAttributes(attribute.Int64("PID", int64(pid))))
+		telemetry.AddEvent(ctx, "ProxyStarted")
 	}
 
 	return proxyAddress, proxyPort, nil
@@ -512,7 +510,7 @@ func (r *ServiceReconciler) stopProxyIfNeeded(ctx context.Context, svc *apiv1.Se
 		return err
 	}
 
-	telemetry.AddEvent(ctx, "ProxyStopped", trace.WithAttributes(attribute.Int64("PID", int64(proxyProcessId))))
+	telemetry.AddEvent(ctx, "ProxyStopped")
 
 	return nil
 }
