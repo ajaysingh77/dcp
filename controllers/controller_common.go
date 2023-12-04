@@ -146,6 +146,7 @@ func saveChanges[T ObjectStruct, PCT PCopyableObjectStruct[T]](
 		return ctrl.Result{}, nil
 
 	case (change & statusChanged) != 0:
+		telemetry.AddEvent(ctx, "StatusChanged")
 		update = obj.DeepCopy()
 		err = client.Status().Patch(ctx, update, patch)
 		if err != nil {
@@ -162,6 +163,7 @@ func saveChanges[T ObjectStruct, PCT PCopyableObjectStruct[T]](
 		}
 
 	case (change & (metadataChanged | specChanged)) != 0:
+		telemetry.AddEvent(ctx, "MetadataOrSpecChanged")
 		update = obj.DeepCopy()
 		err = client.Patch(ctx, update, patch)
 		if err != nil {
