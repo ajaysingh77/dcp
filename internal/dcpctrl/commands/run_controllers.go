@@ -222,8 +222,8 @@ func newReconcilerWithTelemetry(controllerName string, inner reconcilerWithSetup
 
 func (r reconcilerWithTelemetry) Reconcile(parentCtx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	return telemetry.CallWithTelemetry(r.tracer, "Reconcile", parentCtx, func(ctx context.Context) (reconcile.Result, error) {
-		telemetry.SetAttribute(ctx, "ObjectNamespace", req.Namespace) // TODO hash this?
-		telemetry.SetAttribute(ctx, "ObjectName", req.Name)           // TODO hash this?
+		telemetry.SetAttribute(ctx, "ObjectNamespace", telemetry.HashValue(req.Namespace))
+		telemetry.SetAttribute(ctx, "ObjectName", telemetry.HashValue(req.Name))
 		return r.inner.Reconcile(ctx, req)
 	})
 }

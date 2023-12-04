@@ -152,6 +152,8 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
+	telemetry.SetAttribute(ctx, "ObjectUID", string(svc.ObjectMeta.UID))
+
 	var change objectChange
 	patch := ctrl_client.MergeFromWithOptions(svc.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 

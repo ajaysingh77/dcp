@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-logr/logr"
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/internal/telemetry"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -248,6 +249,8 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 			return ctrl.Result{}, err
 		}
 	}
+
+	telemetry.SetAttribute(ctx, "ObjectUID", string(replicaSet.ObjectMeta.UID))
 
 	var change objectChange
 	patch := ctrl_client.MergeFromWithOptions(replicaSet.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})

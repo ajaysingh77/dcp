@@ -123,3 +123,8 @@ func AddEvent(ctx context.Context, name string, options ...trace.EventOption) {
 	span := trace.SpanFromContext(ctx)
 	span.AddEvent(name, options...)
 }
+
+func HashValue(value string) string {
+	// TODO: implement
+	return value
+}

@@ -25,6 +25,7 @@ import (
 	ctrl_source "sigs.k8s.io/controller-runtime/pkg/source"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/internal/telemetry"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
@@ -114,6 +115,8 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return ctrl.Result{}, err
 		}
 	}
+
+	telemetry.SetAttribute(ctx, "ObjectUID", string(exe.ObjectMeta.UID))
 
 	log = log.WithValues("State", exe.Status.State).WithValues("ExecutionID", exe.Status.ExecutionID)
 
