@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"time"
@@ -125,6 +126,8 @@ func AddEvent(ctx context.Context, name string, options ...trace.EventOption) {
 }
 
 func HashValue(value string) string {
-	// TODO: implement
-	return value
+	hash := sha256.New()
+	hash.Write([]byte(value))
+	hashBytes := hash.Sum(nil)
+	return fmt.Sprintf("%x", hashBytes)
 }
