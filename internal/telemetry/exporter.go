@@ -2,14 +2,16 @@ package telemetry
 
 import (
 	"context"
+	"io"
 
+	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/trace"
 )
 
 func newTelemetryExporter() (trace.SpanExporter, error) {
-	return discardExporter{}, nil
+	return stdouttrace.New(stdouttrace.WithPrettyPrint(), stdouttrace.WithWriter(io.Discard))
 }
 
 func newMetricExporter() (sdkmetric.Exporter, error) {
