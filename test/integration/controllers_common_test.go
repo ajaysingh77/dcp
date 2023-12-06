@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -149,16 +150,22 @@ func startTestEnvironment(ctx context.Context, log logger.Logger) (func(), error
 			apiv1.ExecutionTypeIDE:     ideRunner,
 		},
 	)
-	if err = execR.SetupWithManager(mgr); err != nil {
+	var execRBuilder *builder.Builder
+	if execRBuilder, err = execR.SetupWithManagerIncomplete(mgr); err != nil {
 		return nil, fmt.Errorf("failed to initialize Executable reconciler: %w", err)
+	} else if err = execRBuilder.Complete(execR); err != nil {
+		return nil, fmt.Errorf("failed to complete Executable reconciler setup: %w", err)
 	}
 
 	execrsR := controllers.NewExecutableReplicaSetReconciler(
 		mgr.GetClient(),
 		ctrl.Log.WithName("ExecutableReplicaSetReconciler"),
 	)
-	if err = execrsR.SetupWithManager(mgr); err != nil {
+	var execrsRBuilder *builder.Builder
+	if execrsRBuilder, err = execrsR.SetupWithManagerIncomplete(mgr); err != nil {
 		return nil, fmt.Errorf("failed to initialize ExecutableReplicaSet reconciler: %w", err)
+	} else if err = execrsRBuilder.Complete(execrsR); err != nil {
+		return nil, fmt.Errorf("failed to complete ExecutableReplicaSet reconciler setup: %w", err)
 	}
 
 	containerR := controllers.NewContainerReconciler(
@@ -167,8 +174,11 @@ func startTestEnvironment(ctx context.Context, log logger.Logger) (func(), error
 		ctrl.Log.WithName("ContainerReconciler"),
 		dockerOrchestrator,
 	)
-	if err = containerR.SetupWithManager(mgr); err != nil {
+	var containerRBuilder *builder.Builder
+	if containerRBuilder, err = containerR.SetupWithManagerIncomplete(mgr); err != nil {
 		return nil, fmt.Errorf("failed to initialize Container reconciler: %w", err)
+	} else if err = containerRBuilder.Complete(containerR); err != nil {
+		return nil, fmt.Errorf("failed to complete Container reconciler setup: %w", err)
 	}
 
 	volumeR := controllers.NewVolumeReconciler(
@@ -176,8 +186,11 @@ func startTestEnvironment(ctx context.Context, log logger.Logger) (func(), error
 		ctrl.Log.WithName("VolumeReconciler"),
 		dockerOrchestrator,
 	)
-	if err = volumeR.SetupWithManager(mgr); err != nil {
+	var volumeRBuilder *builder.Builder
+	if volumeRBuilder, err = volumeR.SetupWithManagerIncomplete(mgr); err != nil {
 		return nil, fmt.Errorf("failed to initialize ContainerVolume reconciler: %w", err)
+	} else if err = volumeRBuilder.Complete(volumeR); err != nil {
+		return nil, fmt.Errorf("failed to complete ContainerVolume reconciler setup: %w", err)
 	}
 
 	serviceR := controllers.NewServiceReconciler(
@@ -186,8 +199,11 @@ func startTestEnvironment(ctx context.Context, log logger.Logger) (func(), error
 		ctrl.Log.WithName("ServiceReconciler"),
 		processExecutor,
 	)
-	if err = serviceR.SetupWithManager(mgr); err != nil {
+	var serviceRBuilder *builder.Builder
+	if serviceRBuilder, err = serviceR.SetupWithManagerIncomplete(mgr); err != nil {
 		return nil, fmt.Errorf("failed to initialize Service reconciler: %w", err)
+	} else if err = serviceRBuilder.Complete(serviceR); err != nil {
+		return nil, fmt.Errorf("failed to complete Service reconciler setup: %w", err)
 	}
 
 	if err = controllers.SetupEndpointIndexWithManager(mgr); err != nil {
