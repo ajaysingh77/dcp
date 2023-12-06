@@ -2,14 +2,14 @@ package telemetry
 
 import (
 	"context"
-	// "fmt"
-	// "os"
-	// "path/filepath"
-	// "time"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
 
-	// "github.com/microsoft/usvc-apiserver/internal/osutil"
-	// "github.com/microsoft/usvc-apiserver/pkg/io"
-	// "github.com/microsoft/usvc-apiserver/pkg/logger"
+	"github.com/microsoft/usvc-apiserver/internal/osutil"
+	"github.com/microsoft/usvc-apiserver/pkg/io"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -17,21 +17,20 @@ import (
 )
 
 func newTelemetryExporter() (sdktrace.SpanExporter, error) {
-	// logFolder, err := logger.EnsureDetailedLogsFolder()
+	logFolder, err := logger.EnsureDetailedLogsFolder()
 
-	// if err != nil {
-	// 	return nil, err
-	// }
+	if err != nil {
+		return nil, err
+	}
 
-	// telemetryFileName := fmt.Sprintf("telemetry-%d-%d.json", time.Now().Unix(), os.Getpid())
-	// telemetryFile, err := io.OpenFile(filepath.Join(logFolder, telemetryFileName), os.O_RDWR|os.O_CREATE|os.O_EXCL|os.O_TRUNC, osutil.PermissionOnlyOwnerReadWrite)
+	telemetryFileName := fmt.Sprintf("telemetry-%d-%d.json", time.Now().Unix(), os.Getpid())
+	telemetryFile, err := io.OpenFile(filepath.Join(logFolder, telemetryFileName), os.O_RDWR|os.O_CREATE|os.O_EXCL|os.O_TRUNC, osutil.PermissionOnlyOwnerReadWrite)
 
-	// if err != nil {
-	// 	return nil, err
-	// }
+	if err != nil {
+		return nil, err
+	}
 
-	return stdouttrace.New(stdouttrace.WithPrettyPrint() /*, stdouttrace.WithWriter(telemetryFile)*/)
-	//return discardExporter{}, nil
+	return stdouttrace.New(stdouttrace.WithPrettyPrint(), stdouttrace.WithWriter(telemetryFile))
 }
 
 func newMetricExporter() (sdkmetric.Exporter, error) {
