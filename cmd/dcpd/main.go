@@ -26,9 +26,7 @@ func main() {
 	ctx := kubeapiserver.SetupSignalContext()
 
 	telemetrySystem := telemetry.GetTelemetrySystem()
-	defer func() {
-		_ = telemetrySystem.Shutdown(ctx)
-	}()
+	defer func() { _ = telemetrySystem.Shutdown(ctx) }()
 
 	root, err := commands.NewRootCmd(log)
 	if err != nil {
