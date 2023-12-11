@@ -74,14 +74,14 @@ type ContainerOrchestrator interface {
 
 	// Stops containers identified by given list of IDs or names.
 	// Returns list of stopped containers. If some containers are not found, an error will be reported,
-	// but containers that were found will be removed (this is NOT and all-or-noting operation).
+	// but containers that were found will be stopped (this is NOT an all-or-noting operation).
 	//
 	// secondsToKill is the time to wait for the container to gracefully exit before killing it (default 10).
 	StopContainers(ctx context.Context, containers []string, secondsToKill uint) ([]string, error)
 
 	// Removes containers identified by given list of IDs or names.
 	// Returns list of removed containers. If some containers are not found, an error will be reported,
-	// but containers that were found will be removed (this is NOT and all-or-noting operation).
+	// but containers that were found will be removed (this is NOT an all-or-noting operation).
 	RemoveContainers(ctx context.Context, containers []string, force bool) ([]string, error)
 
 	// Subscribes to events about container state changes

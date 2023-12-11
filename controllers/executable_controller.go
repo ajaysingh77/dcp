@@ -128,10 +128,9 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if exe.DeletionTimestamp != nil && !exe.DeletionTimestamp.IsZero() && !exe.Starting() {
 		// Remove the finalizer if deletion has been requested and the Executable has completed initial startup
 		log.Info("Executable is being deleted...")
-		r.stopExecutable(ctx, &exe, log)
+		r.releaseExecutableResources(ctx, &exe, log)
 		change = deleteFinalizer(&exe, executableFinalizer, log)
-		r.deleteOutputFiles(&exe, log)
-		removeEndpointsForWorkload(r, ctx, &exe, log)
+
 	} else {
 		change = ensureFinalizer(&exe, executableFinalizer, log)
 
@@ -265,6 +264,14 @@ func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe 
 		return noChange
 	}
 
+	if exe.Spec.Stop {
+		if exe.Status.FinishTimestamp.IsZero() {
+			log.V(1).Info("Executable launched with finished as desired state; marking it as finished...")
+			exe.Status.State = apiv1.ExecutableStateFailedToStart
+			exe.Status.FinishTimestamp = metav1.Now()
+		}
+	}
+
 	if _, runInfo, found := r.runs.FindByFirstKey(exe.NamespacedName()); found {
 		if runInfo.exeState == apiv1.ExecutableStateStarting {
 			// We are in the process of starting the run, so we should wait for it to complete.
@@ -367,14 +374,9 @@ func (r *ExecutableReconciler) stopExecutable(ctx context.Context, exe *apiv1.Ex
 		// Either we never attempted to start the Executable, or we already attempted to stop the process,
 		// and the current reconciliation loop is just catching up to some other changes.
 		// Either way there is nothing to do.
-		log.V(1).Info("run data is not available; proceeding with Executable object deletion...")
+		log.V(1).Info("run data is not available, nothing to stop...")
 		return
 	}
-
-	// We are about to terminate the run. Since the run is not allowed to complete normally,
-	// we are not interested in its exit code (it will indicate a failure,
-	// but it is a failure induced by the Executable user), so we stop tracking the run now.
-	r.runs.DeleteBySecondKey(runID)
 
 	runner, found := r.ExecutableRunners[exe.Spec.ExecutionType]
 	if !found {
@@ -391,6 +393,22 @@ func (r *ExecutableReconciler) stopExecutable(ctx context.Context, exe *apiv1.Ex
 	}
 }
 
+func (r *ExecutableReconciler) releaseExecutableResources(ctx context.Context, exe *apiv1.Executable, log logr.Logger) {
+	var runID RunID = RunID(exe.Status.ExecutionID)
+	if runID == "" || exe.Done() {
+		return // Nothing to do--the Executable is not running
+	}
+
+	r.stopExecutable(ctx, exe, log)
+
+	// We are about to terminate the run. Since the run is not allowed to complete normally,
+	// we are not interested in its exit code (it will indicate a failure,
+	// but it is a failure induced by the Executable user), so we stop tracking the run now.
+	r.runs.DeleteBySecondKey(runID)
+	removeEndpointsForWorkload(r, ctx, exe, log)
+	r.deleteOutputFiles(exe, log)
+}
+
 // Called by the main reconciler function, this function will update the Executable run state
 // based on run state change notifications we have received.
 // Returns whether the Executable object was changed, and a function that should be called
@@ -403,6 +421,13 @@ func (r *ExecutableReconciler) updateRunState(ctx context.Context, exe *apiv1.Ex
 		// We haven't started the run yet, or Executable is being deleted and the run was terminated.
 		// Either way, nothing to do.
 		return noChange, onSuccessfulSave
+	}
+
+	if exe.Spec.Stop {
+		// If we think the executable is still running, we should attempt to stop it.
+		if runInfo.exeState == apiv1.ExecutableStateRunning {
+			r.stopExecutable(ctx, exe, log)
+		}
 	}
 
 	change := runInfo.ApplyTo(exe)

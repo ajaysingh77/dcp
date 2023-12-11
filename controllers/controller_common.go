@@ -127,7 +127,26 @@ func saveChanges[T ObjectStruct, PCT PCopyableObjectStruct[T]](
 	change objectChange,
 	log logr.Logger,
 ) (ctrl.Result, error) {
+	return saveChangesWithCustomReconciliationDelay[T, PCT](
+		client,
+		ctx,
+		obj,
+		patch,
+		change,
+		additionalReconciliationDelay,
+		log,
+	)
+}
 
+func saveChangesWithCustomReconciliationDelay[T ObjectStruct, PCT PCopyableObjectStruct[T]](
+	client ctrl_client.Client,
+	ctx context.Context,
+	obj PCT,
+	patch ctrl_client.Patch,
+	change objectChange,
+	customReconciliationDelay time.Duration,
+	log logr.Logger,
+) (ctrl.Result, error) {
 	var update PCT
 	var err error
 	kind := obj.GetObjectKind().GroupVersionKind().Kind
@@ -174,7 +193,7 @@ func saveChanges[T ObjectStruct, PCT PCopyableObjectStruct[T]](
 
 	if (change & additionalReconciliationNeeded) != 0 {
 		log.V(1).Info(fmt.Sprintf("scheduling additional reconciliation for %s...", kind))
-		return ctrl.Result{RequeueAfter: additionalReconciliationDelay}, nil
+		return ctrl.Result{RequeueAfter: customReconciliationDelay}, nil
 	} else {
 		return ctrl.Result{}, nil
 	}

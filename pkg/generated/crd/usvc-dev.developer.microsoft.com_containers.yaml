@@ -101,6 +101,10 @@ spec:
               restartPolicy:
                 description: Container restart policy
                 type: string
+              stop:
+                default: false
+                description: Should the controller attempt to stop the container?
+                type: boolean
               volumeMounts:
                 description: Consumed volume information
                 items:
