@@ -5,6 +5,9 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -23,10 +26,12 @@ type TelemetrySystem struct {
 	metricExporter sdkmetric.Exporter
 }
 
-var instance TelemetrySystem
+var instance *TelemetrySystem
+var once sync.Once
 
-func InitTelemetrySystem(logName string) TelemetrySystem {
-	if instance.TracerProvider == nil {
+func GetTelemetrySystem() *TelemetrySystem {
+	once.Do(func() {
+		logName := filepath.Base(os.Args[0])
 		spanExp, err := newTelemetryExporter(logName)
 		if err != nil {
 			panic(err)
@@ -49,14 +54,15 @@ func InitTelemetrySystem(logName string) TelemetrySystem {
 		)
 
 		otel.SetTracerProvider(tp)
+		otel.SetMeterProvider(mp)
 
-		instance = TelemetrySystem{
+		instance = &TelemetrySystem{
 			TracerProvider: tp,
 			MeterProvider:  mp,
 			spanExporter:   spanExp,
 			metricExporter: metricExp,
 		}
-	}
+	})
 
 	return instance
 }

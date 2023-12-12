@@ -12,7 +12,6 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.uber.org/zap/zapcore"
 )
@@ -50,7 +49,7 @@ func (discardExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnl
 	return nil
 }
 
-func (discardExporter) Export(context.Context, metricdata.ResourceMetrics) error {
+func (discardExporter) Export(context.Context, sdkmetric.ResourceMetrics) error {
 	return nil
 }
 

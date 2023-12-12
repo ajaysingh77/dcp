@@ -24,13 +24,16 @@ func main() {
 
 	ctx := kubeapiserver.SetupSignalContext()
 
-	telemetrySystem := telemetry.InitTelemetrySystem("dcpctrl")
-	defer func() { _ = telemetrySystem.Shutdown(ctx) }()
+	telemetrySystem := telemetry.GetTelemetrySystem()
 
 	root := commands.NewRootCommand(log)
 	err := root.ExecuteContext(ctx)
+
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		_ = telemetrySystem.Shutdown(ctx)
 		os.Exit(errCommandError)
 	}
+
+	_ = telemetrySystem.Shutdown(ctx)
 }
