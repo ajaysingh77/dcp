@@ -100,6 +100,10 @@ type ExecutableSpec struct {
 	// The execution type for the Executable.
 	// +kubebuilder:default:=Process
 	ExecutionType ExecutionType `json:"executionType,omitempty"`
+
+	// Should the controller attempt to stop the Executable
+	// +kubebuilder:default:=false
+	Stop bool `json:"stop,omitempty"`
 }
 
 // ExecutableStatus describes the status of an Executable.
@@ -209,7 +213,20 @@ func (e *Executable) NamespacedName() types.NamespacedName {
 
 func (e *Executable) Validate(ctx context.Context) field.ErrorList {
 	// TODO: implement validation https://github.com/microsoft/usvc-stdtypes/issues/2
-	return nil
+	errorList := field.ErrorList{}
+
+	return errorList
+}
+
+func (e *Executable) ValidateUpdate(ctx context.Context, obj runtime.Object) field.ErrorList {
+	errorList := field.ErrorList{}
+
+	oldExe := obj.(*Executable)
+	if oldExe.Spec.Stop && e.Spec.Stop != oldExe.Spec.Stop {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "stop"), "Cannot unset stop property once it is set."))
+	}
+
+	return errorList
 }
 
 func (e *Executable) Starting() bool {
@@ -259,3 +276,4 @@ var _ apiserver_resource.ObjectWithStatusSubResource = (*Executable)(nil)
 var _ apiserver_resource.StatusSubResource = (*ExecutableStatus)(nil)
 var _ apiserver_resourcerest.ShortNamesProvider = (*Executable)(nil)
 var _ apiserver_resourcestrategy.Validater = (*Executable)(nil)
+var _ apiserver_resourcestrategy.ValidateUpdater = (*Executable)(nil)

@@ -111,6 +111,10 @@ type ContainerSpec struct {
 
 	// Arguments to pass to the command
 	Args []string `json:"args,omitempty"`
+
+	// Should the controller attempt to stop the container?
+	// +kubebuilder:default:=false
+	Stop bool `json:"stop,omitempty"`
 }
 
 type ContainerState string
@@ -237,8 +241,21 @@ func (e *Container) NamespacedName() types.NamespacedName {
 }
 
 func (e *Container) Validate(ctx context.Context) field.ErrorList {
-	// TODO: implement validation https://github.com/microsoft/usvc-apiserver/issues/2
-	return nil
+	// TODO: implement validation https://github.com/microsoft/usvc-stdtypes/issues/2
+	errorList := field.ErrorList{}
+
+	return errorList
+}
+
+func (e *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) field.ErrorList {
+	errorList := field.ErrorList{}
+
+	oldContainer := obj.(*Container)
+	if oldContainer.Spec.Stop && e.Spec.Stop != oldContainer.Spec.Stop {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "stop"), "Cannot unset stop property once it is set."))
+	}
+
+	return errorList
 }
 
 // ContainerList contains a list of Executable instances
@@ -279,3 +296,4 @@ var _ apiserver_resource.ObjectWithStatusSubResource = (*Container)(nil)
 var _ apiserver_resource.StatusSubResource = (*ContainerStatus)(nil)
 var _ apiserver_resourcerest.ShortNamesProvider = (*Container)(nil)
 var _ apiserver_resourcestrategy.Validater = (*Container)(nil)
+var _ apiserver_resourcestrategy.ValidateUpdater = (*Container)(nil)

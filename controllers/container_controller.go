@@ -206,6 +206,23 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return result, err
 }
 
+func (r *ContainerReconciler) stopContainer(ctx context.Context, container *apiv1.Container, log logr.Logger) {
+	// This method is called only when we never attempted to start the container,
+	// or if the has already finished starting and we know the outcome.
+
+	containerID, _, found := r.runningContainers.FindBySecondKey(container.NamespacedName())
+	if !found {
+		log.V(1).Info("running container data is not available; nothing to stop")
+		return
+	}
+
+	log.V(1).Info("calling container orchestrator to stop the container...", "ContainerID", containerID)
+	_, err := r.orchestrator.StopContainers(ctx, []string{containerID}, 10)
+	if err != nil {
+		log.Error(err, "could not stop the running container corresponding to Container object", "ContainerID", containerID)
+	}
+}
+
 func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *apiv1.Container, log logr.Logger) {
 	// This method is called only when we never attempted to start the container,
 	// or if the container has already finished starting and we know the outcome.
@@ -241,6 +258,14 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 			// Just wait a bit for the cache to catch up and reconcile again
 			return additionalReconciliationNeeded
 		} else {
+			if container.Spec.Stop {
+				// The container was started with a desired state of stopped, don't attempt to start
+				container.Status.State = apiv1.ContainerStateFailedToStart
+				container.Status.FinishTimestamp = metav1.Now()
+
+				return statusChanged
+			}
+
 			// This is brand new Container and we need to start it.
 			r.ensureContainerWatch(log)
 
@@ -304,7 +329,14 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 			return statusChanged
 		} else {
 			inspected := res[0]
-			return r.updateContainerStatus(container, &inspected)
+			changed := r.updateContainerStatus(container, &inspected)
+			if container.Status.State == apiv1.ContainerStateRunning && container.Spec.Stop {
+				r.stopContainer(ctx, container, log)
+				container.Status.State = apiv1.ContainerStateExited
+				container.Status.FinishTimestamp = metav1.Now()
+				return statusChanged
+			}
+			return changed
 		}
 
 	default:

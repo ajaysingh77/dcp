@@ -338,6 +338,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 							},
 						},
 					},
+					"stop": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Should the controller attempt to stop the container?",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 				},
 				Required: []string{"image"},
 			},
@@ -947,6 +954,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetSpec(ref common.
 							Format:      "int32",
 						},
 					},
+					"stopOnScaleDown": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Should the replica be soft deleted on scale down instead of deleted?",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 					"template": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Template describing the configuration of child Executable objects created by the ExecutableReplicaSet",
@@ -1106,6 +1120,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref common.ReferenceC
 						SchemaProps: spec.SchemaProps{
 							Description: "The execution type for the Executable.",
 							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"stop": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Should the controller attempt to stop the Executable",
+							Type:        []string{"boolean"},
 							Format:      "",
 						},
 					},

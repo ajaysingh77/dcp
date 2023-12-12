@@ -266,8 +266,32 @@ func waitForDockerCommand(t *testing.T, ctx context.Context, command []string, l
 	return pe, err
 }
 
-func waitForDockerContainerRemoved(t *testing.T, ctx context.Context, containerID string) error {
+func waitForDockerContainerStopped(t *testing.T, ctx context.Context, containerID string) error {
+	haveExpectedCommand := func(_ context.Context) (bool, error) {
+		commands := processExecutor.FindAll(
+			[]string{"docker", "container", "stop"},
+			containerID,
+			(*ctrl_testutil.ProcessExecution).Finished,
+		)
 
+		if len(commands) > 0 {
+			// It is OK (and kind of hard to avoid for edge cases) for the controller to issue a rm command
+			// for the same container more than once.
+			return true, nil
+		} else {
+			return false, nil
+		}
+	}
+
+	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, haveExpectedCommand)
+	if err != nil {
+		return fmt.Errorf("expected docker stop command (container ID: '%s') was not issued: %v", containerID, err)
+	}
+
+	return nil
+}
+
+func waitForDockerContainerRemoved(t *testing.T, ctx context.Context, containerID string) error {
 	haveExpectedCommand := func(_ context.Context) (bool, error) {
 		commands := processExecutor.FindAll(
 			[]string{"docker", "container", "rm"},

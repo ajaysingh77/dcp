@@ -201,6 +201,117 @@ func TestExecutableExitCodeCaptured(t *testing.T) {
 	}
 }
 
+// Ensure the run is terminated if stop is set to true
+func TestExecutableStopState(t *testing.T) {
+	type testcase struct {
+		description      string
+		exe              *apiv1.Executable
+		verifyExeRunning func(ctx context.Context, t *testing.T, exe *apiv1.Executable)
+		verifyRunEnded   func(ctx context.Context, t *testing.T, exe *apiv1.Executable)
+	}
+
+	testcases := []testcase{
+		{
+			description: "verify process-based Executable run is terminated",
+			exe: &apiv1.Executable{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "executable-stop-state-process",
+					Namespace: metav1.NamespaceNone,
+				},
+				Spec: apiv1.ExecutableSpec{
+					ExecutablePath: "path/to/executable-stop-state-process",
+				},
+			},
+			verifyExeRunning: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) {
+				_, err := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
+				if err != nil {
+					t.Fatalf("Process could not be started: %v", err)
+				}
+			},
+			verifyRunEnded: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) {
+				processKilled := func(_ context.Context) (bool, error) {
+					killedProcesses := processExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", func(pe *ctrl_testutil.ProcessExecution) bool {
+						return pe.Finished() && pe.ExitCode == ctrl_testutil.KilledProcessExitCode
+					})
+					return len(killedProcesses) == 1, nil
+				}
+				err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, processKilled)
+				require.NoError(t, err, "Process was not terminated as expected")
+			},
+		},
+		{
+			description: "verify IDE-based Executable run is terminated",
+			exe: &apiv1.Executable{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "executable-stop-state-ide",
+					Namespace: metav1.NamespaceNone,
+				},
+				Spec: apiv1.ExecutableSpec{
+					ExecutablePath: "path/to/executable-stop-state-ide",
+					ExecutionType:  apiv1.ExecutionTypeIDE,
+				},
+			},
+			verifyExeRunning: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) {
+				if _, err := ensureIdeRunSessionStarted(ctx, exe.Spec.ExecutablePath); err != nil {
+					t.Fatalf("IDE run session could not be started: %v", err)
+				}
+			},
+			verifyRunEnded: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) {
+				runEnded := func(_ context.Context) (bool, error) {
+					endedRuns := ideRunner.FindAll(exe.Spec.ExecutablePath, func(run ctrl_testutil.TestIdeRun) bool {
+						return run.Finished() && run.ExitCode == ctrl_testutil.KilledProcessExitCode
+					})
+					return len(endedRuns) == 1, nil
+				}
+				err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, runEnded)
+				require.NoError(t, err, "The IDE run was not terminated as expected")
+			},
+		},
+	}
+
+	t.Parallel()
+
+	for _, tc := range testcases {
+		tc := tc // capture range variable for use in closures/goroutines
+
+		t.Run(tc.description, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+
+			t.Logf("Creating Executable '%s'", tc.exe.ObjectMeta.Name)
+			if err := client.Create(ctx, tc.exe); err != nil {
+				t.Fatalf("Could not create Executable: %v", err)
+			}
+
+			t.Logf("Waiting for Executable '%s' run to start...", tc.exe.ObjectMeta.Name)
+			tc.verifyExeRunning(ctx, t, tc.exe)
+
+			updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(tc.exe), func(currentExe *apiv1.Executable) (bool, error) {
+				return currentExe.Status.State != "", nil
+			})
+
+			t.Logf("Setting Executable '%s' stop to 'true'...", tc.exe.ObjectMeta.Name)
+			exePatch := updatedExe.DeepCopy()
+			exePatch.Spec.Stop = true
+			if err := client.Patch(ctx, exePatch, ctrl_client.MergeFrom(updatedExe)); err != nil {
+				t.Fatalf("Unable to update Executable: %v", err)
+			}
+
+			t.Logf("Waiting for process associated with Executable '%s' to be killed...", tc.exe.ObjectMeta.Name)
+			tc.verifyRunEnded(ctx, t, tc.exe)
+
+			updatedExe = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(tc.exe), func(currentExe *apiv1.Executable) (bool, error) {
+				return currentExe.Status.State == apiv1.ExecutableStateFinished, nil
+			})
+
+			if err := client.Delete(ctx, updatedExe); err != nil {
+				t.Fatalf("Unable to delete Executable: %v", err)
+			}
+		})
+	}
+}
+
 // Ensure the run is terminated if Executable is deleted
 func TestExecutableDeletion(t *testing.T) {
 	type testcase struct {

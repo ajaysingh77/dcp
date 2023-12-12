@@ -352,6 +352,61 @@ func TestContainerStartWithPorts(t *testing.T) {
 	require.NoError(t, err, "Container '%s' was not started as expected", ctr.ObjectMeta.Name)
 }
 
+func TestContainerStop(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-stop-state"
+	const imageName = testName + "-image"
+	containerID := testName + "-" + testutil.GetRandLetters(t, 6)
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+		},
+	}
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container")
+
+	t.Logf("Check if corresponding container has started '%s'...", ctr.ObjectMeta.Name)
+	creationTime := time.Now().UTC()
+	err = ensureContainerRunning(t, ctx, ctr.Spec.Image, containerID, creationTime)
+	require.NoError(t, err, "Container was not started as expected")
+
+	ensureContainerInspectResponse(t, imageName, containerID, creationTime, ct.ContainerStatusRunning)
+	ensureContainerStopResponse(t, containerID)
+
+	t.Logf("Stopping Container object '%s'...", ctr.ObjectMeta.Name)
+	containerPatch := ctr.DeepCopy()
+	containerPatch.Spec.Stop = true
+	err = client.Patch(ctx, containerPatch, ctrl_client.MergeFrom(&ctr))
+	require.NoError(t, err, "Container object could not be patched")
+
+	t.Logf("Check if corresponding container was deleted '%s'...", ctr.ObjectMeta.Name)
+	err = waitForDockerContainerStopped(t, ctx, containerID)
+	require.NoError(t, err, "Container was not stopped as expected")
+
+	ensureContainerDeletionResponse(t, containerID)
+
+	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
+	err = client.Delete(ctx, &ctr)
+	require.NoError(t, err, "Container object could not be deleted")
+
+	t.Logf("Check if corresponding container was deleted '%s'...", ctr.ObjectMeta.Name)
+	err = waitForDockerContainerRemoved(t, ctx, containerID)
+	require.NoError(t, err, "Container was not deleted as expected")
+
+	t.Logf("Ensure that Container object really disappeared from the API server, '%s'...", ctr.ObjectMeta.Name)
+	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&ctr))
+}
+
 func TestContainerDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -375,22 +430,22 @@ func TestContainerDeletion(t *testing.T) {
 	err := client.Create(ctx, &ctr)
 	require.NoError(t, err, "Could not create a Container")
 
-	t.Log("Check if corresponding container has started...")
+	t.Logf("Check if corresponding container has started '%s'...", ctr.ObjectMeta.Name)
 	creationTime := time.Now().UTC()
 	err = ensureContainerRunning(t, ctx, ctr.Spec.Image, containerID, creationTime)
 	require.NoError(t, err, "Container was not started as expected")
 
 	ensureContainerDeletionResponse(t, containerID)
 
-	t.Log("Deleting Container object...")
+	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
 	err = client.Delete(ctx, &ctr)
 	require.NoError(t, err, "Container object could not be deleted")
 
-	t.Log("Check if corresponding container was deleted...")
+	t.Logf("Check if corresponding container was deleted '%s'...", ctr.ObjectMeta.Name)
 	err = waitForDockerContainerRemoved(t, ctx, containerID)
 	require.NoError(t, err, "Container was not deleted as expected")
 
-	t.Log("Ensure that Container object really disappeared from the API server...")
+	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
 	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&ctr))
 }
 
@@ -676,6 +731,24 @@ func simulateContainerEvent(t *testing.T, ctx context.Context, image string, con
 	return nil
 }
 
+func ensureContainerStopResponse(t *testing.T, containerID string) {
+	autoExec := ctrl_testutil.AutoExecution{
+		Condition: ctrl_testutil.ProcessSearchCriteria{
+			Command: []string{"docker", "container", "stop"},
+			LastArg: containerID,
+			Cond:    (*ctrl_testutil.ProcessExecution).Running,
+		},
+		RunCommand: func(pe *ctrl_testutil.ProcessExecution) int32 {
+			_, err := pe.Cmd.Stdout.Write([]byte(containerID + "\n"))
+			if err != nil {
+				t.Errorf("Could not simulate container stop: %v", err)
+			}
+			return 0
+		},
+	}
+	processExecutor.InstallAutoExecution(autoExec)
+}
+
 func ensureContainerDeletionResponse(t *testing.T, containerID string) {
 	autoExec := ctrl_testutil.AutoExecution{
 		Condition: ctrl_testutil.ProcessSearchCriteria{
@@ -742,7 +815,7 @@ func getContainerEventJson(containerID string, action ct.EventAction) string {
 		"Action": "%s",
 		"Actor": {
 			"ID": "%s"
-		} 
+		}
 	}`, ct.EventSourceContainer, action, containerID)
 	return strings.ReplaceAll(retval, "\n", " ")
 }
