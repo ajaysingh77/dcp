@@ -99,7 +99,7 @@ func (r *ExecutableReplicaSetReconciler) SetupWithManagerIncomplete(mgr ctrl.Man
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1.ExecutableReplicaSet{}).
 		Owns(&apiv1.Executable{}).
-		WithOptions(controller.Options{CacheSyncTimeout: 30 * time.Second})
+		WithOptions(controller.Options{CacheSyncTimeout: 30 * time.Second}), nil
 }
 
 // Create a new Executable replica for the given ExecutableReplicaSet
@@ -344,14 +344,14 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 
 		// Deletion has been requested and the running replicas have been drained.
 		log.Info("ExecutableReplicaSet is being deleted...")
-		change = deleteFinalizer(ctx, &replicaSet, executableReplicaSetFinalizer, log)
+		change = deleteFinalizer(&replicaSet, executableReplicaSetFinalizer, log)
 		// Removing the finalizer will unblock the deletion of the ExecutableReplicaSet object.
 		// Status update will fail, because the object will no longer be there, so suppress it.
 		change &= ^statusChanged
 		onSuccessfulSave = func() { r.runningReplicaSets.Delete(replicaSet.NamespacedName()) }
 	} else {
 		// We haven't been deleted or still have existing replicas, update our running replicas.
-		change = ensureFinalizer(ctx, &replicaSet, executableReplicaSetFinalizer, log)
+		change = ensureFinalizer(&replicaSet, executableReplicaSetFinalizer, log)
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
 			// List the active child Executable replicas
