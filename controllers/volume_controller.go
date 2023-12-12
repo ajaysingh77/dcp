@@ -12,12 +12,10 @@ import (
 	"github.com/go-logr/logr"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
-	"github.com/microsoft/usvc-apiserver/internal/telemetry"
 )
 
 type VolumeReconciler struct {
@@ -40,9 +38,10 @@ func NewVolumeReconciler(client ctrl_client.Client, log logr.Logger, orchestrato
 	return &r
 }
 
-func (r *VolumeReconciler) SetupWithManagerIncomplete(mgr ctrl.Manager) (*builder.Builder, error) {
+func (r *VolumeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&apiv1.ContainerVolume{}), nil
+		For(&apiv1.ContainerVolume{}).
+		Complete(r)
 }
 
 func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -69,8 +68,6 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			return ctrl.Result{}, err
 		}
 	}
-
-	telemetry.SetAttribute(ctx, "ObjectUID", string(vol.ObjectMeta.UID))
 
 	var change objectChange
 	patch := ctrl_client.MergeFromWithOptions(vol.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})

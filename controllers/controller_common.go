@@ -19,7 +19,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/microsoft/usvc-apiserver/internal/telemetry"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
@@ -160,7 +159,6 @@ func saveChangesWithCustomReconciliationDelay[T ObjectStruct, PCT PCopyableObjec
 		return ctrl.Result{}, nil
 
 	case (change & statusChanged) != 0:
-		telemetry.AddEvent(ctx, "StatusChanged")
 		update = obj.DeepCopy()
 		err = client.Status().Patch(ctx, update, patch)
 		if err != nil {
@@ -177,7 +175,6 @@ func saveChangesWithCustomReconciliationDelay[T ObjectStruct, PCT PCopyableObjec
 		}
 
 	case (change & (metadataChanged | specChanged)) != 0:
-		telemetry.AddEvent(ctx, "MetadataOrSpecChanged")
 		update = obj.DeepCopy()
 		err = client.Patch(ctx, update, patch)
 		if err != nil {
@@ -196,7 +193,6 @@ func saveChangesWithCustomReconciliationDelay[T ObjectStruct, PCT PCopyableObjec
 
 	if (change & additionalReconciliationNeeded) != 0 {
 		log.V(1).Info(fmt.Sprintf("scheduling additional reconciliation for %s...", kind))
-		telemetry.AddEvent(ctx, "AdditionalReconciliationNeeded")
 		return ctrl.Result{RequeueAfter: customReconciliationDelay}, nil
 	} else {
 		return ctrl.Result{}, nil

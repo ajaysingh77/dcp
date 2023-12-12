@@ -15,7 +15,6 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/internal/telemetry"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
@@ -118,7 +117,6 @@ func ensureEndpointsForWorkload(ctx context.Context, r EndpointOwner, owner dcpM
 		}
 
 		log.V(1).Info("New Endpoint created", "Endpoint", endpoint, "ServiceName", serviceProducer.ServiceName)
-		telemetry.AddEvent(ctx, "EndpointCreated")
 
 		workloadEndpointCache.Store(sweKey, true)
 	}
@@ -144,8 +142,6 @@ func removeEndpointsForWorkload(r EndpointOwner, ctx context.Context, owner dcpM
 		}
 
 		workloadEndpointCache.Delete(sweKey)
-
-		telemetry.AddEvent(ctx, "EndpointRemoved")
 	}
 }
 

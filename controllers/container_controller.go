@@ -17,7 +17,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	ctrl_event "sigs.k8s.io/controller-runtime/pkg/event"
 	ctrl_handler "sigs.k8s.io/controller-runtime/pkg/handler"
@@ -26,7 +25,6 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
-	"github.com/microsoft/usvc-apiserver/internal/telemetry"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
@@ -124,7 +122,7 @@ func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Clie
 	return &r
 }
 
-func (r *ContainerReconciler) SetupWithManagerIncomplete(mgr ctrl.Manager) (*builder.Builder, error) {
+func (r *ContainerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	src := ctrl_source.Channel{
 		Source: r.notifyContainerChanged.Out,
 	}
@@ -132,7 +130,8 @@ func (r *ContainerReconciler) SetupWithManagerIncomplete(mgr ctrl.Manager) (*bui
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1.Container{}).
 		Owns(&apiv1.Endpoint{}).
-		WatchesRawSource(&src, &ctrl_handler.EnqueueRequestForObject{}), nil
+		WatchesRawSource(&src, &ctrl_handler.EnqueueRequestForObject{}).
+		Complete(r)
 }
 
 func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -161,8 +160,6 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, err
 		}
 	}
-
-	telemetry.SetAttribute(ctx, "ObjectUID", string(container.ObjectMeta.UID))
 
 	var change objectChange
 	patch := ctrl_client.MergeFromWithOptions(container.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})

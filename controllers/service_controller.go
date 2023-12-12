@@ -36,7 +36,6 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/osutil"
-	"github.com/microsoft/usvc-apiserver/internal/telemetry"
 	ourio "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
@@ -83,13 +82,13 @@ func NewServiceReconciler(lifetimeCtx context.Context, client ctrl_client.Client
 	return &r
 }
 
-func (r *ServiceReconciler) SetupWithManagerIncomplete(mgr ctrl.Manager) (*builder.Builder, error) {
+func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &apiv1.Endpoint{}, ".metadata.serviceNamespace", func(rawObj ctrl_client.Object) []string {
 		endpoint := rawObj.(*apiv1.Endpoint)
 		return []string{endpoint.Spec.ServiceNamespace}
 	}); err != nil {
 		r.Log.Error(err, "failed to create serviceNamespace index for Endpoint")
-		return nil, err
+		return err
 	}
 
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &apiv1.Endpoint{}, ".metadata.serviceName", func(rawObj ctrl_client.Object) []string {
@@ -97,7 +96,7 @@ func (r *ServiceReconciler) SetupWithManagerIncomplete(mgr ctrl.Manager) (*build
 		return []string{endpoint.Spec.ServiceName}
 	}); err != nil {
 		r.Log.Error(err, "failed to create serviceName index for Endpoint")
-		return nil, err
+		return err
 	}
 
 	src := ctrl_source.Channel{
@@ -107,7 +106,8 @@ func (r *ServiceReconciler) SetupWithManagerIncomplete(mgr ctrl.Manager) (*build
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1.Service{}).
 		Watches(&apiv1.Endpoint{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForEndpoint), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
-		WatchesRawSource(&src, &handler.EnqueueRequestForObject{}), nil
+		WatchesRawSource(&src, &handler.EnqueueRequestForObject{}).
+		Complete(r)
 }
 
 func (r *ServiceReconciler) requestReconcileForEndpoint(ctx context.Context, obj ctrl_client.Object) []reconcile.Request {
@@ -148,8 +148,6 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			return ctrl.Result{}, err
 		}
 	}
-
-	telemetry.SetAttribute(ctx, "ObjectUID", string(svc.ObjectMeta.UID))
 
 	var change objectChange
 	patch := ctrl_client.MergeFromWithOptions(svc.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
@@ -212,9 +210,6 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 	} else {
 		svc.Status.State = apiv1.ServiceStateReady
 	}
-
-	telemetry.SetAttribute(ctx, "allocationMode", string(svc.Spec.AddressAllocationMode))
-	telemetry.SetAttribute(ctx, "endpoints", len(serviceEndpoints.Items))
 
 	if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeProxyless {
 		// If using Proxyless allocation mode
@@ -445,7 +440,6 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 		startWaitForProcessExit()
 
 		r.Log.Info(fmt.Sprintf("proxy process with PID %d started for service %s", pid, namespacedName))
-		telemetry.AddEvent(ctx, "ProxyStarted")
 	}
 
 	return proxyAddress, proxyPort, nil
@@ -512,8 +506,6 @@ func (r *ServiceReconciler) stopProxyIfNeeded(ctx context.Context, svc *apiv1.Se
 	if err := r.ProcessExecutor.StopProcess(proxyProcessId); err != nil {
 		return err
 	}
-
-	telemetry.AddEvent(ctx, "ProxyStopped")
 
 	return nil
 }
