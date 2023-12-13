@@ -7,7 +7,6 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/telemetry"
-	"go.opentelemetry.io/otel/metric/instrument"
 	"go.opentelemetry.io/otel/metric/instrument/syncint64"
 )
 
@@ -21,53 +20,13 @@ var (
 
 func init() {
 	ts := telemetry.GetTelemetrySystem()
-	var err error
 	svcCtrlMeter := ts.MeterProvider.Meter("service-controller")
 
-	proxylessServiceCounter, err = svcCtrlMeter.SyncInt64().UpDownCounter(
-		"proxylessServices",
-		instrument.WithDescription("Number of services that do not use a proxy"),
-		instrument.WithUnit("{service}"),
-	)
-	if err != nil {
-		panic(err)
-	}
-
-	proxiedServiceCounter, err = svcCtrlMeter.SyncInt64().UpDownCounter(
-		"proxiedServices",
-		instrument.WithDescription("Number of services that use a proxy"),
-		instrument.WithUnit("{service}"),
-	)
-	if err != nil {
-		panic(err)
-	}
-
-	tcpServiceCounter, err = svcCtrlMeter.SyncInt64().UpDownCounter(
-		"tcpServices",
-		instrument.WithDescription("Number of services that use TCP"),
-		instrument.WithUnit("{service}"),
-	)
-	if err != nil {
-		panic(err)
-	}
-
-	udpServiceCounter, err = svcCtrlMeter.SyncInt64().UpDownCounter(
-		"udpServices",
-		instrument.WithDescription("Number of services that use UDP"),
-		instrument.WithUnit("{service}"),
-	)
-	if err != nil {
-		panic(err)
-	}
-
-	proxyRestartCounter, err = svcCtrlMeter.SyncInt64().Counter(
-		"proxyRestarts",
-		instrument.WithDescription("Number of times a proxy has been restarted"),
-		instrument.WithUnit("{service}"),
-	)
-	if err != nil {
-		panic(err)
-	}
+	proxylessServiceCounter = newInt64UpDownCounter(svcCtrlMeter, "proxylessServices", "Number of services that do not use a proxy")
+	proxiedServiceCounter = newInt64UpDownCounter(svcCtrlMeter, "proxiedServices", "Number of services that use a proxy")
+	tcpServiceCounter = newInt64UpDownCounter(svcCtrlMeter, "tcpServices", "Number of services that use TCP")
+	udpServiceCounter = newInt64UpDownCounter(svcCtrlMeter, "udpServices", "Number of services that use UDP")
+	proxyRestartCounter = newInt64Counter(svcCtrlMeter, "proxyRestarts", "Number of times the proxy has been restarted")
 }
 
 func serviceCounters(ctx context.Context, service *apiv1.Service, addend int64) {
