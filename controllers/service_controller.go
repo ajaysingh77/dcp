@@ -143,7 +143,6 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	svc := apiv1.Service{}
-	telemetry.CallWithTelemetry
 	if err := r.Get(ctx, req.NamespacedName, &svc); err != nil {
 		if apimachinery_errors.IsNotFound(err) {
 			log.Info("the Service object does not exist yet or was deleted")
