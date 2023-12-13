@@ -69,7 +69,8 @@ func GetTelemetrySystem() *TelemetrySystem {
 }
 
 func GetTracer(tracerName string) trace.Tracer {
-	return otel.Tracer(tracerName)
+	ts := GetTelemetrySystem()
+	return ts.TracerProvider.Tracer(tracerName)
 }
 
 func GetMeter(meterName string) metric.Meter {
