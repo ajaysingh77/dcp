@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -32,7 +33,7 @@ var once sync.Once
 func GetTelemetrySystem() *TelemetrySystem {
 	once.Do(func() {
 		logName := filepath.Base(os.Args[0])
-		spanExp, err := newTelemetryExporter(logName)
+		spanExp, err := newTraceExporter(logName)
 		if err != nil {
 			panic(err)
 		}
@@ -54,6 +55,7 @@ func GetTelemetrySystem() *TelemetrySystem {
 		)
 
 		otel.SetTracerProvider(tp)
+		// otel.SetMeterProvider(mp) // TODO: Not supported in otel 1.10.0
 
 		instance = &TelemetrySystem{
 			TracerProvider: tp,
@@ -64,6 +66,15 @@ func GetTelemetrySystem() *TelemetrySystem {
 	})
 
 	return instance
+}
+
+func GetTracer(tracerName string) trace.Tracer {
+	return otel.Tracer(tracerName)
+}
+
+func GetMeter(meterName string) metric.Meter {
+	ts := GetTelemetrySystem()
+	return ts.MeterProvider.Meter(meterName)
 }
 
 func (ts TelemetrySystem) Shutdown(ctx context.Context) error {

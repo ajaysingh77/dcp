@@ -18,7 +18,7 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-func newTelemetryExporter(logName string) (sdktrace.SpanExporter, error) {
+func newTraceExporter(logName string) (sdktrace.SpanExporter, error) {
 	logLevel, err := logger.GetDebugLogLevel()
 
 	if err == nil && logLevel == zapcore.DebugLevel {
