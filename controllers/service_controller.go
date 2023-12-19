@@ -179,7 +179,7 @@ func (r *ServiceReconciler) deleteService(ctx context.Context, svc *apiv1.Servic
 		return err
 	}
 
-	err := r.deleteServiceConfigFile(svc.ObjectMeta.Name)
+	err := r.deleteServiceConfigFile(svc)
 	if err != nil {
 		log.Error(err, "could not delete the service config file")
 		return err
@@ -510,13 +510,12 @@ func (r *ServiceReconciler) stopProxyIfNeeded(ctx context.Context, svc *apiv1.Se
 	return nil
 }
 
-func (r *ServiceReconciler) getServiceConfigFilePath(serviceName string) string {
-	return filepath.Join(r.ProxyConfigDir, fmt.Sprintf("%s.yaml", serviceName))
+func (r *ServiceReconciler) getServiceConfigFilePath(svc *apiv1.Service) string {
+	return filepath.Join(r.ProxyConfigDir, fmt.Sprintf("%s-%s.yaml", svc.ObjectMeta.Name, svc.ObjectMeta.UID))
 }
 
 func (r *ServiceReconciler) ensureServiceConfigFile(svc *apiv1.Service, endpoints *apiv1.EndpointList) (string, error) {
-	serviceName := svc.ObjectMeta.Name
-	svcConfigFilePath := r.getServiceConfigFilePath(serviceName)
+	svcConfigFilePath := r.getServiceConfigFilePath(svc)
 
 	if err := ensureDir(filepath.Dir(svcConfigFilePath)); err != nil {
 		return svcConfigFilePath, err
@@ -532,8 +531,8 @@ func (r *ServiceReconciler) ensureServiceConfigFile(svc *apiv1.Service, endpoint
 	return svcConfigFilePath, writeObjectYamlToFile(svcConfigFilePath, proxyConfig)
 }
 
-func (r *ServiceReconciler) deleteServiceConfigFile(name string) error {
-	configFilePath := r.getServiceConfigFilePath(name)
+func (r *ServiceReconciler) deleteServiceConfigFile(svc *apiv1.Service) error {
+	configFilePath := r.getServiceConfigFilePath(svc)
 
 	// Remove the config file
 	if err := os.Remove(configFilePath); errors.Is(err, fs.ErrNotExist) {
