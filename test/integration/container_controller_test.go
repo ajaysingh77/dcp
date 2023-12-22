@@ -20,6 +20,38 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
+func TestInvalidContainerName(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "invalid-container-name",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			ContainerName: "%%%INVALIDNAME%%%",
+			Image:         "invalid-container-name-image",
+		},
+	}
+
+	require.Len(t, ctr.Validate(ctx), 1, "Expected validation error for invalid container name")
+
+	ctr = apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "valid-container-name",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			ContainerName: "a-1.2_34",
+			Image:         "valid-container-name-image",
+		},
+	}
+
+	require.Len(t, ctr.Validate(ctx), 0, "Unexpected validation error for valid container name")
+}
+
 // Ensure a container instance is started when new Container object appears
 func TestContainerInstanceStarts(t *testing.T) {
 	t.Parallel()

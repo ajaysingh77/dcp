@@ -252,6 +252,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 							Format:      "",
 						},
 					},
+					"containerName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Optional container name",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"volumeMounts": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Consumed volume information",
@@ -371,6 +378,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerStatus(ref common.Reference
 					"containerId": {
 						SchemaProps: spec.SchemaProps{
 							Description: "ID of the Container (if an attempt to start the Container was made)",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"containerName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name of the Container (if an attempt to start the Container was made)",
 							Type:        []string{"string"},
 							Format:      "",
 						},

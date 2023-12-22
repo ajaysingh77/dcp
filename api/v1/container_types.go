@@ -2,6 +2,8 @@ package v1
 
 import (
 	"context"
+	"fmt"
+	"regexp"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -17,6 +19,10 @@ import (
 
 	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 )
+
+// See: https://github.com/moby/moby/blob/master/daemon/names/names.go
+var validContainerName = `^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`
+var validContainerNameRegexp = regexp.MustCompile(validContainerName)
 
 type ContainerRestartPolicy string
 
@@ -91,6 +97,9 @@ type ContainerSpec struct {
 	// Container image
 	Image string `json:"image"`
 
+	// Optional container name
+	ContainerName string `json:"containerName,omitempty"`
+
 	// Consumed volume information
 	VolumeMounts []VolumeMount `json:"volumeMounts,omitempty"`
 
@@ -154,6 +163,9 @@ type ContainerStatus struct {
 
 	// ID of the Container (if an attempt to start the Container was made)
 	ContainerID string `json:"containerId,omitempty"`
+
+	// Name of the Container (if an attempt to start the Container was made)
+	ContainerName string `json:"containerName,omitempty"`
 
 	// Timestamp of the Container start attempt
 	StartupTimestamp metav1.Time `json:"startupTimestamp,omitempty"`
@@ -241,8 +253,12 @@ func (e *Container) NamespacedName() types.NamespacedName {
 }
 
 func (e *Container) Validate(ctx context.Context) field.ErrorList {
-	// TODO: implement validation https://github.com/microsoft/usvc-stdtypes/issues/2
 	errorList := field.ErrorList{}
+
+	// Validate the object name to ensure it is a valid container name
+	if e.Spec.ContainerName != "" && !validContainerNameRegexp.MatchString(e.Spec.ContainerName) {
+		errorList = append(errorList, field.Invalid(field.NewPath("spec", "containerName"), e.NamespacedName().Name, fmt.Sprintf("containerName property must match regex '%s'", validContainerName)))
+	}
 
 	return errorList
 }
@@ -251,8 +267,13 @@ func (e *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 	errorList := field.ErrorList{}
 
 	oldContainer := obj.(*Container)
+
 	if oldContainer.Spec.Stop && e.Spec.Stop != oldContainer.Spec.Stop {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "stop"), "Cannot unset stop property once it is set."))
+	}
+
+	if oldContainer.Spec.ContainerName != e.Spec.ContainerName {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "containerName"), "Cannot change containerName property after creation."))
 	}
 
 	return errorList

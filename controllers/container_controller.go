@@ -380,7 +380,13 @@ func (r *ContainerReconciler) startContainer(ctx context.Context, container *api
 			goto finishStartupAttempt
 		}
 
-		containerID, err = r.orchestrator.RunContainer(ctx, ct.RunContainerOptions{ContainerSpec: *rcd.runSpec})
+		containerID, err = r.orchestrator.RunContainer(
+			ctx,
+			ct.RunContainerOptions{
+				Name:          container.Spec.ContainerName,
+				ContainerSpec: *rcd.runSpec,
+			},
+		)
 
 		if err != nil {
 			log.Error(err, "could not start the container")
@@ -415,6 +421,8 @@ func (r *ContainerReconciler) startContainer(ctx context.Context, container *api
 func (r *ContainerReconciler) updateContainerStatus(container *apiv1.Container, inspected *ct.InspectedContainer) objectChange {
 	status := container.Status
 	oldState := status.State
+
+	status.ContainerName = strings.TrimLeft(inspected.Name, "/")
 
 	switch inspected.Status {
 	case ct.ContainerStatusCreated, ct.ContainerStatusRunning, ct.ContainerStatusRestarting:

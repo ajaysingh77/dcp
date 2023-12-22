@@ -43,6 +43,9 @@ spec:
               command:
                 description: Command to run in the container
                 type: string
+              containerName:
+                description: Optional container name
+                type: string
               env:
                 description: Environment settings
                 items:
@@ -137,6 +140,10 @@ spec:
             properties:
               containerId:
                 description: ID of the Container (if an attempt to start the Container
+                  was made)
+                type: string
+              containerName:
+                description: Name of the Container (if an attempt to start the Container
                   was made)
                 type: string
               effectiveArgs:
