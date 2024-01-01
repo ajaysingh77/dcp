@@ -21,9 +21,7 @@ func TestInvalidProxyMode(t *testing.T) {
 	t.Parallel()
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	defer cancelFunc()
-	proxy, err := NewProxy("tcp", "", 0, ctx, logr.Discard())
-	require.Nil(t, proxy)
-	require.Error(t, err)
+	require.Panics(t, func() { NewProxy("tcp", "", 0, ctx, logr.Discard()) })
 }
 
 func TestTCPModeProxy(t *testing.T) {
@@ -219,9 +217,8 @@ func TestRandomEndpointSelection(t *testing.T) {
 	const tries = 20
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
-	proxy, err := NewProxy(apiv1.TCP, "127.0.0.1", 0, ctx, logr.Discard())
+	proxy := NewProxy(apiv1.TCP, "127.0.0.1", 0, ctx, logr.Discard())
 	require.NotNil(t, proxy)
-	require.NoError(t, err)
 	defer cancelFunc()
 
 	config := &ProxyConfig{
@@ -267,11 +264,10 @@ func setupTcpServer(t *testing.T, port int32) (net.Listener, int) {
 
 func setupTcpProxy(t *testing.T, ctx context.Context) *Proxy {
 	// For debugging you can replace logr.Discard() with logger.New("testName").Logger and set DCP_DIAGNOSTICS_LOG_LEVEL=debug
-	proxy, err := NewProxy(apiv1.TCP, "127.0.0.1", 0, ctx, logr.Discard())
+	proxy := NewProxy(apiv1.TCP, "127.0.0.1", 0, ctx, logr.Discard())
 	require.NotNil(t, proxy)
-	require.NoError(t, err)
 
-	err = proxy.Start()
+	err := proxy.Start()
 	require.NoError(t, err)
 	require.Equal(t, "127.0.0.1", proxy.EffectiveAddress)
 	require.Greater(t, proxy.EffectivePort, int32(0))
@@ -314,11 +310,10 @@ func setupUdpServer(t *testing.T, port int32) (net.PacketConn, int) {
 }
 
 func setupUdpProxy(t *testing.T, ctx context.Context) *Proxy {
-	proxy, err := NewProxy(apiv1.UDP, "127.0.0.1", 0, ctx, logr.Discard())
+	proxy := NewProxy(apiv1.UDP, "127.0.0.1", 0, ctx, logr.Discard())
 	require.NotNil(t, proxy)
-	require.NoError(t, err)
 
-	err = proxy.Start()
+	err := proxy.Start()
 	require.NoError(t, err)
 	require.Equal(t, "127.0.0.1", proxy.EffectiveAddress)
 	require.Greater(t, proxy.EffectivePort, int32(0))

@@ -117,9 +117,9 @@ type Proxy struct {
 //
 // If the address is empty, the proxy will listen on localhost. The effectiveAddress field will contain the actual listened-on IPv4 or IPv6 address.
 // If the port is 0, the proxy will listen on a random port. The effectivePort field will contain the actual listened-on port.
-func NewProxy(mode apiv1.PortProtocol, listenAddress string, listenPort int32, lifetimeCtx context.Context, log logr.Logger) (*Proxy, error) {
+func NewProxy(mode apiv1.PortProtocol, listenAddress string, listenPort int32, lifetimeCtx context.Context, log logr.Logger) *Proxy {
 	if mode != apiv1.TCP && mode != apiv1.UDP {
-		return nil, fmt.Errorf("unsupported proxy mode: %s", mode)
+		panic(fmt.Errorf("unsupported proxy mode: %s", mode))
 	}
 
 	p := Proxy{
@@ -138,7 +138,7 @@ func NewProxy(mode apiv1.PortProtocol, listenAddress string, listenPort int32, l
 		lock:        &sync.Mutex{},
 	}
 
-	return &p, nil
+	return &p
 }
 
 func (p *Proxy) Start() error {
