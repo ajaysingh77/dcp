@@ -18,6 +18,7 @@ import (
 	"github.com/smallnest/chanx"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	"github.com/microsoft/usvc-apiserver/pkg/queue"
@@ -59,6 +60,7 @@ const (
 	ProxyStateRunning  ProxyState = 0x2
 	ProxyStateFailed   ProxyState = 0x4
 	ProxyStateFinished ProxyState = 0x8
+	ProxyStateAny      ProxyState = 0xFFFFFFFF
 )
 
 func (s ProxyState) String() string {
@@ -154,20 +156,22 @@ func (p *Proxy) Start() error {
 	if p.mode == apiv1.TCP {
 		tcpListener, err := lc.Listen(p.lifetimeCtx, "tcp", fmt.Sprintf("%s:%d", p.ListenAddress, p.ListenPort))
 		if err != nil {
-			return errors.Join(err, p.setState(ProxyStateRunning, ProxyStateFailed))
+			_ = p.setState(ProxyStateAny, ProxyStateFailed)
+			return err
 		}
 
-		p.EffectiveAddress = tcpListener.Addr().(*net.TCPAddr).IP.String()
+		p.EffectiveAddress = networking.IpToString(tcpListener.Addr().(*net.TCPAddr).IP)
 		p.EffectivePort = int32(tcpListener.Addr().(*net.TCPAddr).Port)
 
 		go p.runTCP(tcpListener)
 	} else if p.mode == apiv1.UDP {
 		udpListener, err := lc.ListenPacket(p.lifetimeCtx, "udp", fmt.Sprintf("%s:%d", p.ListenAddress, p.ListenPort))
 		if err != nil {
-			return errors.Join(err, p.setState(ProxyStateRunning, ProxyStateFailed))
+			_ = p.setState(ProxyStateAny, ProxyStateFailed)
+			return err
 		}
 
-		p.EffectiveAddress = udpListener.LocalAddr().(*net.UDPAddr).IP.String()
+		p.EffectiveAddress = networking.IpToString(udpListener.LocalAddr().(*net.UDPAddr).IP)
 		p.EffectivePort = int32(udpListener.LocalAddr().(*net.UDPAddr).Port)
 
 		go p.runUDP(udpListener)
@@ -224,9 +228,7 @@ func (p *Proxy) stop(listener io.Closer) {
 		p.log.Error(err, errMsg)
 	}
 
-	if err := p.setState(ProxyStateRunning, ProxyStateFinished); err != nil {
-		p.log.Error(err, errMsg)
-	}
+	_ = p.setState(ProxyStateAny, ProxyStateFinished)
 }
 
 func (p *Proxy) runTCP(tcpListener net.Listener) {

@@ -342,6 +342,10 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 		}
 	}
 
+	// We do not want to use the passed-in logger for the proxy because it has reconciliation-specific data
+	// which does not make sense in the context of the proxy.
+	proxyLog := r.Log.WithValues("ServiceName", svc.NamespacedName())
+
 	if proxyAddress == "localhost" {
 		// Bind to all applicable IPs (IPv4 and IPv6) for the proxy address
 		ips, err := net.LookupIP(proxyAddress)
@@ -353,25 +357,14 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 		}
 
 		for _, ip := range ips {
-			var proxyInstanceAddress string
-
-			if ip4 := ip.To4(); len(ip4) == net.IPv4len {
-				proxyInstanceAddress = ip4.String()
-			} else if ip6 := ip.To16(); len(ip6) == net.IPv6len {
-				proxyInstanceAddress = fmt.Sprintf("[%s]", ip6.String())
-			} else {
-				// Fallback to just the IP address as a raw string
-				proxyInstanceAddress = ip.String()
-			}
-
+			proxyInstanceAddress := networking.IpToString(ip)
 			proxyPort, portAllocationErr := getProxyPort(proxyInstanceAddress)
-
 			if portAllocationErr != nil {
 				err = errors.Join(err, portAllocationErr)
 			} else {
 				proxyCtx, cancelFunc := context.WithCancel(r.lifetimeCtx)
 				proxies = append(proxies, proxyInstanceData{
-					proxy:     proxy.NewProxy(svc.Spec.Protocol, proxyInstanceAddress, proxyPort, proxyCtx, log),
+					proxy:     proxy.NewProxy(svc.Spec.Protocol, proxyInstanceAddress, proxyPort, proxyCtx, proxyLog),
 					stopProxy: cancelFunc,
 				})
 			}
@@ -385,7 +378,7 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 		} else {
 			proxyCtx, cancelFunc := context.WithCancel(r.lifetimeCtx)
 			proxies = append(proxies, proxyInstanceData{
-				proxy:     proxy.NewProxy(svc.Spec.Protocol, proxyAddress, proxyPort, proxyCtx, log),
+				proxy:     proxy.NewProxy(svc.Spec.Protocol, proxyAddress, proxyPort, proxyCtx, proxyLog),
 				stopProxy: cancelFunc,
 			})
 		}
