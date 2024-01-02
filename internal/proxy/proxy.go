@@ -324,35 +324,38 @@ func (p *Proxy) handleTCPConnection(incoming net.Conn, config *ProxyConfig) erro
 		// Do not close incoming connection
 		return fmt.Errorf("%w: %w", errTcpDialFailed, err)
 	} else {
-		go p.copyStream(incoming, outgoing, func() error { return incoming.Close() })
-		go p.copyStream(outgoing, incoming, func() error { return outgoing.Close() })
+		connectionCtx, connectionCtxCancel := context.WithCancel(p.lifetimeCtx)
+		_ = context.AfterFunc(connectionCtx, func() {
+			_ = incoming.Close()
+			_ = outgoing.Close()
+		})
+		go p.copyStream(connectionCtx, connectionCtxCancel, incoming, outgoing)
+		go p.copyStream(connectionCtx, connectionCtxCancel, outgoing, incoming)
 		return nil
 	}
 }
 
-func (p *Proxy) copyStream(incoming, outgoing net.Conn, onExit func() error) {
-	onExitLoggingError := func() {
-		if err := onExit(); err != nil {
-			p.log.Error(err, "Error closing connection")
-		}
-	}
+// There are many reasons why a network I/O operation may fail, and the failures are reported differently by different APIs
+// and on different platforms. That is why we generally do not log errors from those operations exept in specific circumstances,
+// such as DNS name resolution or initial connection establishment. In all other cases we just shut down the communication stream
+// and let the client(s) retry.
+
+func (p *Proxy) copyStream(ctx context.Context, cancel context.CancelFunc, incoming, outgoing net.Conn) {
+	defer cancel()
 
 	for {
-		if p.lifetimeCtx.Err() != nil {
-			_ = onExit()
+		if ctx.Err() != nil {
 			return
 		}
 
 		deadline := time.Now().Add(p.readWriteTimeout)
 
 		if err := incoming.SetReadDeadline(deadline); err != nil {
-			p.log.Error(err, "Error setting read deadline for TCP connection")
-			onExitLoggingError()
+			p.log.V(1).Info(fmt.Sprintf("Error setting read deadline for TCP connection: %s", err.Error()))
 			return
 		}
 		if err := outgoing.SetWriteDeadline(deadline); err != nil {
-			p.log.Error(err, "Error setting write deadline for TCP connection")
-			onExitLoggingError()
+			p.log.V(1).Info(fmt.Sprintf("Error setting write deadline for TCP connection: %s", err.Error()))
 			return
 		}
 
@@ -365,13 +368,11 @@ func (p *Proxy) copyStream(incoming, outgoing net.Conn, onExit func() error) {
 				// This is expected regularly, so don't log it
 				continue
 			} else {
-				p.log.Error(err, "Error copying TCP stream")
-				onExitLoggingError()
+				p.log.V(1).Info(fmt.Sprintf("Error copying TCP stream: %s", err.Error()))
 				return
 			}
 		} else if bytesWritten == 0 {
 			// Connection has closed normally
-			_ = onExit()
 			return
 		}
 	}
@@ -412,11 +413,11 @@ func (p *Proxy) runUDP(udpListener net.PacketConn) {
 		}
 
 		// ReadFrom will block for at most 3 seconds before hitting the deadline, at which point it will
-		// return an error. This is expected so it won't be logged, and as long as the lifetimeCtx
+		// return an error. This is expected so we do not bail out, and as long as the connection context
 		// is still active, the deadline will be refreshed.
+
 		bytesRead, addr, err := udpListener.ReadFrom(buffer)
 		if errors.Is(err, os.ErrDeadlineExceeded) {
-			// This is expected regularly, don't log
 			continue
 		} else if err != nil {
 			p.log.Info("Error reading UDP packet from proxy UDP connection", err)
@@ -545,18 +546,21 @@ func (p *Proxy) streamClientPackets(
 
 				if err := streamListener.SetWriteDeadline(time.Now().Add(p.readWriteTimeout)); err != nil {
 					p.log.V(1).Info("Error setting write deadline for UDP endpoint connection", "Error", err.Error(), "EndpointAddress", endpointAddr.String())
-					continue
+					p.shutdownUDPStream(stream.clientAddr)
+					return
 				}
 
 				written, err := streamListener.WriteTo(buf, endpointAddr)
 				if err != nil {
 					// Handle write deadline exceeded like any other (unexpected) error for UDP connections
 					p.log.V(1).Info("Error writing to UDP endpoint connection", "Error", err.Error(), "EndpointAddress", endpointAddr.String())
-					continue
+					p.shutdownUDPStream(stream.clientAddr)
+					return
 				}
 				if written != len(buf) {
 					p.log.V(1).Info("UDP endpoint connection write did not transmit the whole packet", "BytesSubmitted", len(buf), "BytesWritten", written, "EndpointAddress", endpointAddr.String())
-					continue
+					p.shutdownUDPStream(stream.clientAddr)
+					return
 				}
 
 				stream.lastUsed.TryAdvancingTo(time.Now())
@@ -579,35 +583,41 @@ func (p *Proxy) streamEndpointPackets(
 		}
 
 		if err := streamListener.SetReadDeadline(time.Now().Add(p.readWriteTimeout)); err != nil {
-			p.log.Error(err, "Error setting read deadline for UDP endpoint connection", "EndpointConnectionAddress", streamListener.LocalAddr().String())
+			p.log.V(1).Info("Error setting read deadline for UDP endpoint connection", "Error", err.Error(), "EndpointConnectionAddress", streamListener.LocalAddr().String())
 			p.shutdownUDPStream(stream.clientAddr)
 			return
 		}
 
 		bytesRead, _, err := streamListener.ReadFrom(buffer)
 		if errors.Is(err, os.ErrDeadlineExceeded) {
-			// This is expected regularly, don't log
 			continue
 		} else if err != nil {
-			p.log.Info("Error reading UDP packet from proxy UDP connection", err)
-		} else {
-			if err := proxyConn.SetWriteDeadline(time.Now().Add(p.readWriteTimeout)); err != nil {
-				p.log.V(1).Info("Error setting write deadline for UDP proxy connection", "Error", err.Error(), "ClientAddress", stream.clientAddr.String())
-				p.shutdownUDPStream(stream.clientAddr)
-				return
-			}
-
-			written, err := proxyConn.WriteTo(buffer[:bytesRead], stream.clientAddr)
-			if err != nil {
-				// Handle write deadline exceeded like any other (unexpected) error for UDP connections
-				p.log.V(1).Info("Error writing to UDP proxy connection", "Error", err.Error(), "ClientAddress", stream.clientAddr.String())
-			}
-			if written != len(buffer[:bytesRead]) {
-				p.log.V(1).Info("UDP proxy connection write did not transmit the whole packet", "BytesSubmitted", len(buffer[:bytesRead]), "BytesWritten", written, "ClientAddress", stream.clientAddr.String())
-			}
-
-			stream.lastUsed.TryAdvancingTo(time.Now())
+			p.log.Info("Error reading UDP packet from proxy UDP connection", "Error", err.Error(), "EndpointConnectionAddress", streamListener.LocalAddr().String())
+			p.shutdownUDPStream(stream.clientAddr)
+			return
 		}
+
+		if err := proxyConn.SetWriteDeadline(time.Now().Add(p.readWriteTimeout)); err != nil {
+			p.log.V(1).Info("Error setting write deadline for UDP proxy connection", "Error", err.Error(), "ClientAddress", stream.clientAddr.String())
+			p.shutdownUDPStream(stream.clientAddr)
+			return
+		}
+
+		written, err := proxyConn.WriteTo(buffer[:bytesRead], stream.clientAddr)
+		if err != nil {
+			// Handle write deadline exceeded like any other (unexpected) error for UDP connections
+			p.log.V(1).Info("Error writing to UDP proxy connection", "Error", err.Error(), "ClientAddress", stream.clientAddr.String())
+			p.shutdownUDPStream(stream.clientAddr)
+			return
+		}
+		if written != len(buffer[:bytesRead]) {
+			p.log.V(1).Info("UDP proxy connection write did not transmit the whole packet", "BytesSubmitted", len(buffer[:bytesRead]), "BytesWritten", written, "ClientAddress", stream.clientAddr.String())
+			p.shutdownUDPStream(stream.clientAddr)
+			return
+		}
+
+		stream.lastUsed.TryAdvancingTo(time.Now())
+
 	}
 }
 
