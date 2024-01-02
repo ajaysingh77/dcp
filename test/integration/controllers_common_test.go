@@ -48,7 +48,9 @@ func TestMain(m *testing.M) {
 	log.SetLevel(zapcore.ErrorLevel)
 	ctrl.SetLogger(log.V(1))
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(
+		context.WithValue(context.Background(), controllers.ServiceReconcilerProxyHandling, controllers.DoNotStartProxies),
+	)
 
 	flush, err := startTestEnvironment(ctx, log)
 	if err != nil {

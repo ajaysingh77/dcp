@@ -19,6 +19,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
+	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	"github.com/microsoft/usvc-apiserver/pkg/queue"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
@@ -51,25 +52,24 @@ type Endpoint struct {
 	Port    int32  `yaml:"port"`
 }
 
-type proxyState uint32
+type ProxyState uint32
 
 const (
-	proxyStateInitial  proxyState = 0x1
-	proxyStateRunning  proxyState = 0x2
-	proxyStateFailed   proxyState = 0x4
-	proxyStateFinished proxyState = 0x8
-	proxyStateAny      proxyState = 0xFFFFFFFF
+	ProxyStateInitial  ProxyState = 0x1
+	ProxyStateRunning  ProxyState = 0x2
+	ProxyStateFailed   ProxyState = 0x4
+	ProxyStateFinished ProxyState = 0x8
 )
 
-func (s proxyState) String() string {
+func (s ProxyState) String() string {
 	switch s {
-	case proxyStateInitial:
+	case ProxyStateInitial:
 		return "Initial"
-	case proxyStateRunning:
+	case ProxyStateRunning:
 		return "Running"
-	case proxyStateFailed:
+	case ProxyStateFailed:
 		return "Failed"
-	case proxyStateFinished:
+	case ProxyStateFinished:
 		return "Finished"
 	default:
 		return "Unknown"
@@ -89,14 +89,14 @@ type udpStream struct {
 
 type Proxy struct {
 	mode          apiv1.PortProtocol
-	listenAddress string
-	listenPort    int32
+	ListenAddress string
+	ListenPort    int32
 
 	EffectiveAddress string
 	EffectivePort    int32
 
 	endpointConfigLoadedChannel *chanx.UnboundedChan[ProxyConfig]
-	configurationApplied        chan struct{}
+	configurationApplied        *concurrency.AutoResetEvent
 	readWriteTimeout            time.Duration
 	connectionTimeout           time.Duration
 
@@ -104,7 +104,7 @@ type Proxy struct {
 
 	lifetimeCtx context.Context
 	log         logr.Logger
-	state       proxyState
+	state       ProxyState
 	lock        sync.Locker
 }
 
@@ -124,17 +124,17 @@ func NewProxy(mode apiv1.PortProtocol, listenAddress string, listenPort int32, l
 
 	p := Proxy{
 		mode:          mode,
-		listenAddress: listenAddress,
-		listenPort:    listenPort,
+		ListenAddress: listenAddress,
+		ListenPort:    listenPort,
 
 		endpointConfigLoadedChannel: chanx.NewUnboundedChan[ProxyConfig](lifetimeCtx, 1),
-		configurationApplied:        make(chan struct{}),
+		configurationApplied:        concurrency.NewAutoResetEvent(false),
 		readWriteTimeout:            DefaultReadWriteTimeout,
 		connectionTimeout:           DefaultConnectionTimeout,
 
 		lifetimeCtx: lifetimeCtx,
 		log:         log,
-		state:       proxyStateInitial,
+		state:       ProxyStateInitial,
 		lock:        &sync.Mutex{},
 	}
 
@@ -142,19 +142,19 @@ func NewProxy(mode apiv1.PortProtocol, listenAddress string, listenPort int32, l
 }
 
 func (p *Proxy) Start() error {
-	if err := p.setState(proxyStateInitial, proxyStateRunning); err != nil {
+	if err := p.setState(ProxyStateInitial, ProxyStateRunning); err != nil {
 		return fmt.Errorf("proxy cannot be started: %w", err)
 	}
 
-	if p.listenAddress == "" {
-		p.listenAddress = "localhost"
+	if p.ListenAddress == "" {
+		p.ListenAddress = "localhost"
 	}
 
 	lc := net.ListenConfig{}
 	if p.mode == apiv1.TCP {
-		tcpListener, err := lc.Listen(p.lifetimeCtx, "tcp", fmt.Sprintf("%s:%d", p.listenAddress, p.listenPort))
+		tcpListener, err := lc.Listen(p.lifetimeCtx, "tcp", fmt.Sprintf("%s:%d", p.ListenAddress, p.ListenPort))
 		if err != nil {
-			return errors.Join(err, p.setState(proxyStateRunning, proxyStateFailed))
+			return errors.Join(err, p.setState(ProxyStateRunning, ProxyStateFailed))
 		}
 
 		p.EffectiveAddress = tcpListener.Addr().(*net.TCPAddr).IP.String()
@@ -162,9 +162,9 @@ func (p *Proxy) Start() error {
 
 		go p.runTCP(tcpListener)
 	} else if p.mode == apiv1.UDP {
-		udpListener, err := lc.ListenPacket(p.lifetimeCtx, "udp", fmt.Sprintf("%s:%d", p.listenAddress, p.listenPort))
+		udpListener, err := lc.ListenPacket(p.lifetimeCtx, "udp", fmt.Sprintf("%s:%d", p.ListenAddress, p.ListenPort))
 		if err != nil {
-			return errors.Join(err, p.setState(proxyStateRunning, proxyStateFailed))
+			return errors.Join(err, p.setState(ProxyStateRunning, ProxyStateFailed))
 		}
 
 		p.EffectiveAddress = udpListener.LocalAddr().(*net.UDPAddr).IP.String()
@@ -177,31 +177,33 @@ func (p *Proxy) Start() error {
 }
 
 func (p *Proxy) Configure(newConfig ProxyConfig) error {
-	state := p.getState()
-	if state == proxyStateFailed {
+	state := p.State()
+	if state == ProxyStateFailed {
 		return fmt.Errorf("proxy cannot be configured in Failed state")
 	}
 
 	// Configuration applied after the proxy has finished will not be effective,
 	// but the call to Configure might come during shutdown, so we do not return an error in that case.
-	if state != proxyStateFinished {
+	if state != ProxyStateFinished {
 		p.endpointConfigLoadedChannel.In <- newConfig.Clone()
 		if p.mode == apiv1.UDP {
 			p.shutdownAllUDPStreams()
 		}
-		<-p.configurationApplied
+		if state == ProxyStateRunning {
+			<-p.configurationApplied.WaitChannel()
+		}
 	}
 
 	return nil
 }
 
-func (p *Proxy) getState() proxyState {
+func (p *Proxy) State() ProxyState {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 	return p.state
 }
 
-func (p *Proxy) setState(expectedState, newState proxyState) error {
+func (p *Proxy) setState(expectedState, newState ProxyState) error {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 	if p.state == newState {
@@ -222,18 +224,18 @@ func (p *Proxy) stop(listener io.Closer) {
 		p.log.Error(err, errMsg)
 	}
 
-	if err := p.setState(proxyStateRunning, proxyStateFinished); err != nil {
+	if err := p.setState(ProxyStateRunning, ProxyStateFinished); err != nil {
 		p.log.Error(err, errMsg)
 	}
 }
 
 func (p *Proxy) runTCP(tcpListener net.Listener) {
-	defer close(p.configurationApplied) // Make sure that Configure() calls return after the proxy has stopped
+	defer p.configurationApplied.SetAndFreeze() // Make sure that Configure() calls return after the proxy has stopped
 	defer p.stop(tcpListener)
 
 	// Wait until the config has been loaded the first time before accepting any connections
 	config := <-p.endpointConfigLoadedChannel.Out
-	p.configurationApplied <- struct{}{}
+	p.configurationApplied.Set()
 
 	// Make a channel that will receive a connection when one is accepted
 	connectionChannel := chanx.NewUnboundedChan[net.Conn](p.lifetimeCtx, 1)
@@ -264,7 +266,7 @@ func (p *Proxy) runTCP(tcpListener net.Listener) {
 			if p.lifetimeCtx.Err() != nil {
 				return
 			}
-			p.configurationApplied <- struct{}{}
+			p.configurationApplied.Set()
 			p.log.V(1).Info("Configuration changed; new configuration will be applied to future connections...")
 
 		case incoming := <-connectionChannel.Out:
@@ -374,13 +376,13 @@ func (p *Proxy) copyStream(incoming, outgoing net.Conn, onExit func() error) {
 }
 
 func (p *Proxy) runUDP(udpListener net.PacketConn) {
-	defer close(p.configurationApplied) // Make sure that Configure() calls return after the proxy has stopped
+	defer p.configurationApplied.SetAndFreeze() // Make sure that Configure() calls return after the proxy has stopped
 	defer p.stop(udpListener)
 	defer p.shutdownAllUDPStreams()
 
 	// Wait until the config file has been loaded the first time before accepting any packets
 	config := <-p.endpointConfigLoadedChannel.Out
-	p.configurationApplied <- struct{}{}
+	p.configurationApplied.Set()
 
 	buffer := make([]byte, UdpPacketBufferSize)
 
@@ -391,7 +393,7 @@ func (p *Proxy) runUDP(udpListener net.PacketConn) {
 				return
 			}
 			p.tryStartExistingUDPStreams(config, udpListener)
-			p.configurationApplied <- struct{}{}
+			p.configurationApplied.Set()
 			p.log.V(1).Info("Configuration changed; new configuration will be applied to future packets...")
 
 		default:
@@ -466,7 +468,7 @@ func (p *Proxy) tryStartingUDPStream(stream udpStream, proxyConn net.PacketConn,
 
 	lc := net.ListenConfig{}
 	ctx, cancel := context.WithCancel(p.lifetimeCtx)
-	streamListener, err := lc.ListenPacket(ctx, "udp", fmt.Sprintf("%s:", p.listenAddress))
+	streamListener, err := lc.ListenPacket(ctx, "udp", fmt.Sprintf("%s:", p.ListenAddress))
 	if err != nil {
 		p.log.Error(err, "Could not create an endpoint listener for client", "ClientAddr", stream.clientAddr.String())
 		cancel()

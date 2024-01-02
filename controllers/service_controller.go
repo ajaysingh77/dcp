@@ -33,6 +33,14 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 
+type ProxyHandlingOptionValue string
+
+const (
+	// Used by tests to disable starting the proxy (proxies are created, but not started)
+	ServiceReconcilerProxyHandling = ControllerContextOption("ServiceReconcilerProxyHandling")
+	DoNotStartProxies              = ProxyHandlingOptionValue("do-not-start-proxies")
+)
+
 type proxyInstanceData struct {
 	proxy     *proxy.Proxy
 	stopProxy context.CancelFunc
@@ -296,12 +304,7 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 	serviceProxyData, found := r.proxyData.Load(svc.NamespacedName())
 
 	if found {
-		// Make sure the status reflects the real world
-		// We might bind to multiple addresses if the address specified by the spec is "localhost".
-		// It should not matter which proxy we pick here, so we just pick the first one.
-		// We do not want to use just "localhost", because then the port will be ambiguous.
-		svc.Status.EffectivePort = serviceProxyData[0].proxy.EffectivePort
-		svc.Status.EffectiveAddress = serviceProxyData[0].proxy.EffectiveAddress
+		svc.Status.EffectiveAddress, svc.Status.EffectivePort = r.getEffectiveAddressAndPort(serviceProxyData)
 		return nil
 	}
 
@@ -399,24 +402,58 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 		return fmt.Errorf("cound not create the proxy for the service: %w", err)
 	}
 
-	for _, proxyInstanceData := range proxies {
-		err := proxyInstanceData.proxy.Start()
-		if err != nil {
-			stopAllProxies()
-			return fmt.Errorf("cound not start the proxy for the service: %w", err)
+	if !r.noProxyStartOption() {
+		for _, proxyInstanceData := range proxies {
+			err := proxyInstanceData.proxy.Start()
+			if err != nil {
+				stopAllProxies()
+				return fmt.Errorf("cound not start the proxy for the service: %w", err)
+			}
 		}
 	}
 
-	r.proxyData.Store(svc.NamespacedName(), proxies)
-
-	// See the comment at the beginning of the method for why we pick the first proxy
-	// to report the effective address and port.
-	svc.Status.EffectivePort = serviceProxyData[0].proxy.EffectivePort
-	svc.Status.EffectiveAddress = serviceProxyData[0].proxy.EffectiveAddress
+	svc.Status.EffectiveAddress, svc.Status.EffectivePort = r.getEffectiveAddressAndPort(proxies)
 	r.Log.Info("service proxy started",
 		"EffectiveAddress", svc.Status.EffectiveAddress,
 		"EffectivePort", svc.Status.EffectivePort,
 	)
 
+	r.proxyData.Store(svc.NamespacedName(), proxies)
+
 	return nil
+}
+
+func (r *ServiceReconciler) noProxyStartOption() bool {
+	if v := r.lifetimeCtx.Value(ServiceReconcilerProxyHandling); v != nil {
+		if ph, ok := v.(ProxyHandlingOptionValue); ok && ph == DoNotStartProxies {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (r *ServiceReconciler) getEffectiveAddressAndPort(proxies []proxyInstanceData) (string, int32) {
+	if len(proxies) == 0 {
+		return "", 0
+	}
+
+	if r.noProxyStartOption() {
+		// This happens only when the reconciler is running under test harness (integration tests).
+		// Since the proxy is not actually started, we are going to report the proxy listen address/port
+		// (from proxy initialization data) as the effective address/port.
+		return proxies[0].proxy.ListenAddress, proxies[0].proxy.ListenPort
+	}
+
+	// We might bind to multiple addresses if the address specified by the service spec is "localhost".
+	// It should not matter which proxy we pick here, so we just pick the first one.
+	// We do not want to use just "localhost", because then the port could be ambiguous.
+
+	for _, pd := range proxies {
+		if pd.proxy.State() == proxy.ProxyStateRunning {
+			return proxies[0].proxy.EffectiveAddress, proxies[0].proxy.EffectivePort
+		}
+	}
+
+	return "", 0
 }

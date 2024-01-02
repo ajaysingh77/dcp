@@ -6,6 +6,8 @@ package queue
 
 import (
 	"sync"
+
+	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 )
 
 // Minimum size of the queue buffer. Must be a power of 2.
@@ -18,7 +20,7 @@ type ConcurrentBoundedQueue[T any] struct {
 	buf      []T
 	capacity int
 	len      int
-	newData  chan struct{}
+	newData  *concurrency.AutoResetEvent
 }
 
 func NewConcurrentBoundedQueue[T any](capacity int) *ConcurrentBoundedQueue[T] {
@@ -36,14 +38,14 @@ func NewConcurrentBoundedQueue[T any](capacity int) *ConcurrentBoundedQueue[T] {
 		lock:     &sync.Mutex{},
 		capacity: effectiveCapacity,
 		buf:      make([]T, bufSize),
-		newData:  make(chan struct{}, 1),
+		newData:  concurrency.NewAutoResetEvent(false),
 	}
 }
 
 func (q *ConcurrentBoundedQueue[T]) Enqueue(v T) {
 	q.lock.Lock()
 	defer q.lock.Unlock()
-	defer q.signalNewData()
+	defer q.newData.Set()
 
 	if q.len == q.capacity {
 		// At capacity, discard the oldest item
@@ -88,20 +90,11 @@ func (q *ConcurrentBoundedQueue[T]) Dequeue() (T, bool) {
 }
 
 func (q *ConcurrentBoundedQueue[T]) NewData() <-chan struct{} {
-	return q.newData
+	return q.newData.WaitChannel()
 }
 
 func (q *ConcurrentBoundedQueue[T]) next(i int) int {
 	return (i + 1) % len(q.buf)
-}
-
-func (q *ConcurrentBoundedQueue[T]) signalNewData() {
-	// Ensures that the channel has value in it, so if someone is waiting, they will be notified,
-	// but do so in a non-blocking way.
-	select {
-	case q.newData <- struct{}{}:
-	default:
-	}
 }
 
 func (q *ConcurrentBoundedQueue[T]) resize() {
