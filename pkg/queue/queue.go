@@ -1,6 +1,6 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 
-// Package queue implmeents a generic, thread-safe, bounded queue using single lock and a circular buffer, dynamically sized.
+// Package queue implements a generic, thread-safe, bounded queue using single lock and a circular buffer, dynamically sized.
 // CONSIDER: a lock-free implementation might perform better.
 package queue
 
