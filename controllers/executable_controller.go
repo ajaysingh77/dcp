@@ -289,7 +289,7 @@ func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe 
 	reservedServicePorts := make(map[types.NamespacedName]int32)
 
 	err := r.computeEffectiveEnvironment(ctx, exe, reservedServicePorts, log)
-	if isServiceNotAssignedPort(err) {
+	if isTransientTemplateError(err) {
 		log.Info("could not compute effective environment for the Executable, retrying startup...", "Cause", err.Error())
 		return additionalReconciliationNeeded
 	} else if err != nil {
@@ -300,7 +300,7 @@ func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe 
 	}
 
 	err = r.computeEffectiveInvocationArgs(ctx, exe, reservedServicePorts, log)
-	if isServiceNotAssignedPort(err) {
+	if isTransientTemplateError(err) {
 		log.Info("could not compute effective invocation arguments for the Executable, retrying startup...", "Cause", err.Error())
 		return additionalReconciliationNeeded
 	} else if err != nil {

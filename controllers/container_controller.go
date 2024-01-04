@@ -383,7 +383,7 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 
 				return statusChanged
 			}
-		} else if isServiceNotAssignedPort(rcd.startupError) {
+		} else if isTransientTemplateError(rcd.startupError) {
 			log.Info("scheduling another startup attempt for the container...")
 			r.runningContainers.DeleteBySecondKey(container.NamespacedName())
 			err := r.createContainer(ctx, container, log, startupRetryDelay)
@@ -481,7 +481,7 @@ func (r *ContainerReconciler) createContainer(ctx context.Context, container *ap
 
 		err := r.computeEffectiveEnvironment(startupCtx, container, rcd, log)
 		if err != nil {
-			if isServiceNotAssignedPort(err) {
+			if isTransientTemplateError(err) {
 				log.Info("could not compute effective environment for the Container, retrying startup...", "Cause", err.Error())
 			} else {
 				log.Error(err, "could not compute effective environment for the Container")
@@ -493,7 +493,7 @@ func (r *ContainerReconciler) createContainer(ctx context.Context, container *ap
 
 		err = r.computeEffectiveInvocationArgs(startupCtx, container, rcd, log)
 		if err != nil {
-			if isServiceNotAssignedPort(err) {
+			if isTransientTemplateError(err) {
 				log.Info("could not compute effective invocation arguments for the Container, retrying startup...", "Cause", err.Error())
 			} else {
 				log.Error(err, "could not compute effective invocation arguments for the Container")
@@ -995,12 +995,6 @@ func (r *ContainerReconciler) createEndpoint(
 	endpointName, err := MakeUniqueName(owner.GetName())
 	if err != nil {
 		log.Error(err, "could not generate unique name for Endpoint object")
-		return nil, err
-	}
-
-	if serviceProducer.Address != "" {
-		err = fmt.Errorf("address cannot be specified for Container objects")
-		log.Error(err, serviceProducerIsInvalid)
 		return nil, err
 	}
 

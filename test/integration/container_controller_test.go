@@ -574,3 +574,100 @@ func TestContainerMultipleServingPortsInjected(t *testing.T) {
 	t.Logf("Ensure the Status.EffectiveArgs for Container '%s' contains the injected port...", ctr.ObjectMeta.Name)
 	require.Equal(t, updatedCtr.Status.EffectiveArgs[0], expectedArg, "The Container '%s' startup parameters do not include expected port for service B. The startup parameters are %v", ctr.ObjectMeta.Name, updatedCtr.Status.EffectiveArgs)
 }
+
+func TestContainerServingAddressInjected(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "test-container-serving-address-injected"
+	const ServiceIPAddr = "127.63.29.2"
+	const ContainerIPAddr = "127.63.29.3"
+
+	svc := apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-svc",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ServiceSpec{
+			Protocol: apiv1.TCP,
+			Address:  ServiceIPAddr,
+			Port:     26003,
+		},
+	}
+
+	t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+	err := client.Create(ctx, &svc)
+	require.NoError(t, err, "Could not create Service '%s'", svc.ObjectMeta.Name)
+
+	const ContainerPort = 26004
+	var spAnn strings.Builder
+	spAnn.WriteString("[")
+	spAnn.WriteString(fmt.Sprintf(`{ "serviceName":"%s", "address": "%s", "port": %d }`, svc.ObjectMeta.Name, ContainerIPAddr, ContainerPort))
+	spAnn.WriteString("]")
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        testName + "-server",
+			Namespace:   metav1.NamespaceNone,
+			Annotations: map[string]string{"service-producer": spAnn.String()},
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: testName + "-image",
+			Ports: []apiv1.ContainerPort{
+				{ContainerPort: ContainerPort},
+			},
+			Env: []apiv1.EnvVar{
+				{
+					Name:  "SERVICE_ADDRESS",
+					Value: fmt.Sprintf(`{{- addressFor "%s" -}}`, svc.ObjectMeta.Name),
+				},
+			},
+			Args: []string{
+				fmt.Sprintf(`--serving-address={{- addressForServing "%s" -}}`, svc.ObjectMeta.Name),
+			},
+		},
+	}
+
+	t.Logf("Creating Container '%s'...", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create Container '%s'", ctr.ObjectMeta.Name)
+
+	t.Logf("Ensure that Container '%s' is started with the expected ports, env vars, and startup args...", ctr.ObjectMeta.Name)
+	expectedArg := fmt.Sprintf("--serving-address=%s", ContainerIPAddr)
+	expectedEnvVar := fmt.Sprintf("SERVICE_ADDRESS=%s", ServiceIPAddr)
+
+	_, err = ctrl_testutil.WaitForCommand(processExecutor, ctx, []string{"docker", "run"}, expectedArg, func(pe *ctrl_testutil.ProcessExecution) bool {
+		if !pe.Running() {
+			return false
+		}
+		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", fmt.Sprintf("127.0.0.1::%d", ContainerPort)}) == -1 {
+			return false
+		}
+		if slices.SeqIndex(pe.Cmd.Args, []string{"-e", expectedEnvVar}) == -1 {
+			return false
+		}
+		// The expected argument is checked via "lastArg" parameter of the WaitForCommand() function above
+		return true
+	})
+	require.NoError(t, err, "Could not find the expected 'docker run' command")
+
+	t.Log("Complete the container startup sequence...")
+	creationTime := time.Now().UTC()
+	containerID := testName + "-" + testutil.GetRandLetters(t, 6)
+	err = ensureContainerRunningWithArg(t, ctx, ctr.Spec.Image, expectedArg, containerID, creationTime)
+	require.NoError(t, err, "Container '%s' was not started as expected", ctr.ObjectMeta.Name)
+
+	t.Logf("Ensure the Status.EffectiveEnv for Container '%s' contains the injected address information...", ctr.ObjectMeta.Name)
+	updatedCtr := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {
+		return len(currentCtr.Status.EffectiveEnv) > 0, nil
+	})
+	effectiveEnv := slices.Map[apiv1.EnvVar, string](updatedCtr.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+		return fmt.Sprintf("%s=%s", v.Name, v.Value)
+	})
+	require.True(t, slices.Contains(effectiveEnv, expectedEnvVar), "The Container '%s' effective environment does not contain expected address information for service '%s'. The effective environemtn is %v", ctr.ObjectMeta.Name, svc.ObjectMeta.Name, effectiveEnv)
+
+	t.Logf("Ensure the Status.EffectiveArgs for Container '%s' contains the injected address information...", ctr.ObjectMeta.Name)
+	require.Equal(t, updatedCtr.Status.EffectiveArgs[0], expectedArg, "The Container '%s' startup parameters do not include expected address information for service '%s'. The startup parameters are %v", ctr.ObjectMeta.Name, svc.ObjectMeta.Name, updatedCtr.Status.EffectiveArgs)
+}
+
