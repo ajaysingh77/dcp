@@ -395,7 +395,7 @@ func (r *NetworkReconciler) ensureNetworkWatch(network *apiv1.ContainerNetwork, 
 	r.networkEvtCh = chanx.NewUnboundedChan[ct.EventMessage](r.lifetimeCtx, containerEventChanInitialCapacity)
 
 	r.networkEvtWorkerStop = make(chan struct{})
-	go r.networkEventWorker(r.networkEvtWorkerStop)
+	go r.networkEventWorker(r.networkEvtWorkerStop, r.networkEvtCh.Out)
 
 	log.V(1).Info("subscribing to container events...")
 	sub, err := r.orchestrator.WatchNetworks(r.networkEvtCh.In)
@@ -428,10 +428,10 @@ func (r *NetworkReconciler) releaseNetworkWatch(network *apiv1.ContainerNetwork,
 	r.cancelNetworkWatch()
 }
 
-func (r *NetworkReconciler) networkEventWorker(stopCh chan struct{}) {
+func (r *NetworkReconciler) networkEventWorker(stopCh chan struct{}, eventCh <-chan ct.EventMessage) {
 	for {
 		select {
-		case em := <-r.networkEvtCh.Out:
+		case em := <-eventCh:
 			if em.Source != ct.EventSourceNetwork {
 				continue
 			}

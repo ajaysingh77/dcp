@@ -850,7 +850,7 @@ func (r *ContainerReconciler) ensureContainerWatch(container *apiv1.Container, l
 	r.networkEvtCh = chanx.NewUnboundedChan[ct.EventMessage](r.lifetimeCtx, containerEventChanInitialCapacity)
 
 	r.containerEvtWorkerStop = make(chan struct{})
-	go r.containerEventWorker(r.containerEvtWorkerStop)
+	go r.containerEventWorker(r.containerEvtWorkerStop, r.containerEvtCh.Out, r.networkEvtCh.Out)
 
 	log.V(1).Info("subscribing to container events...")
 	containerSub, containerSubErr := r.orchestrator.WatchContainers(r.containerEvtCh.In)
@@ -888,16 +888,20 @@ func (r *ContainerReconciler) releaseContainerWatch(container *apiv1.Container, 
 	r.cancelContainerWatch()
 }
 
-func (r *ContainerReconciler) containerEventWorker(stopCh chan struct{}) {
+func (r *ContainerReconciler) containerEventWorker(
+	stopCh chan struct{},
+	containerEvtCh <-chan ct.EventMessage,
+	networkEvtCh <-chan ct.EventMessage,
+) {
 	for {
 		select {
-		case cem := <-r.containerEvtCh.Out:
+		case cem := <-containerEvtCh:
 			if cem.Source != ct.EventSourceContainer {
 				continue
 			}
 
 			r.processContainerEvent(cem)
-		case nem := <-r.networkEvtCh.Out:
+		case nem := <-networkEvtCh:
 			if nem.Source != ct.EventSourceNetwork {
 				continue
 			}
