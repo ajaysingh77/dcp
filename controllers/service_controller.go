@@ -134,13 +134,9 @@ func (r *ServiceReconciler) requestReconcileForEndpoint(ctx context.Context, obj
 func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log.WithValues("ServiceName", req.NamespacedName).WithValues("Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1))
 
-	select {
-	case _, isOpen := <-ctx.Done():
-		if !isOpen {
-			log.Info("Request context expired, nothing to do...")
-			return ctrl.Result{}, nil
-		}
-	default: // not done, proceed
+	if ctx.Err() != nil {
+		log.V(1).Info("Request context expired, nothing to do...")
+		return ctrl.Result{}, nil
 	}
 
 	svc := apiv1.Service{}

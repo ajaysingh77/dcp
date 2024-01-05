@@ -124,6 +124,21 @@ type ContainerSpec struct {
 	// Should the controller attempt to stop the container?
 	// +kubebuilder:default:=false
 	Stop bool `json:"stop,omitempty"`
+
+	// ContaineNetworks resources the container should be attached to. If omitted or nil, the container will
+	// be attached to the default network and the controller will not manage network connections.
+	// +listType:=atomic
+	Networks *[]ContainerNetworkConnectionConfig `json:"networks,omitempty"`
+}
+
+// +k8s:openapi-gen=true
+type ContainerNetworkConnectionConfig struct {
+	// Name of the network to connect to
+	Name string `json:"name"`
+
+	// Aliases of the container on the network
+	// +listType:=atomic
+	Aliases []string `json:"aliases,omitempty"`
 }
 
 type ContainerState string
@@ -183,13 +198,16 @@ type ContainerStatus struct {
 	Message string `json:"message,omitempty"`
 
 	// Effective values of environment variables, after all substitutions are applied.
-	// +listType=map
-	// +listMapKey=name
+	// +listType:=map
+	// +listMapKey:=name
 	EffectiveEnv []EnvVar `json:"effectiveEnv,omitempty"`
 
 	// Effective values of launch arguments to be passed to the Container, after all substitutions are applied.
-	// +listType=atomic
+	// +listType:=atomic
 	EffectiveArgs []string `json:"effectiveArgs,omitempty"`
+
+	// List of ContainerNetworks the Container is connected to
+	Networks []string `json:"networks,omitempty"`
 }
 
 func (cs ContainerStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResource) {
@@ -270,6 +288,14 @@ func (e *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 
 	if oldContainer.Spec.Stop && e.Spec.Stop != oldContainer.Spec.Stop {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "stop"), "Cannot unset stop property once it is set."))
+	}
+
+	if oldContainer.Spec.Networks != nil && e.Spec.Networks == nil {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "networks"), "Cannot set networks property to null if it was initialized with a list value."))
+	}
+
+	if oldContainer.Spec.Networks == nil && e.Spec.Networks != nil {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "networks"), "Cannot set networks property to a list value if it was initialized as null."))
 	}
 
 	if oldContainer.Spec.ContainerName != e.Spec.ContainerName {

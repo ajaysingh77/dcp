@@ -7,16 +7,14 @@ import (
 	"testing"
 	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
-	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
-
-	"github.com/stretchr/testify/require"
-
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
+	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func TestServiceProxyStartedAndStopped(t *testing.T) {
@@ -202,9 +200,7 @@ func TestServiceDelayedCreation(t *testing.T) {
 	require.NoError(t, err, "Could not create the Container")
 
 	t.Log("Check if corresponding container has started...")
-	creationTime := time.Now().UTC()
-	containerID := container.ObjectMeta.Name + "-" + testutil.GetRandLetters(t, 6)
-	err = ensureContainerRunning(t, ctx, container.Spec.Image, containerID, creationTime)
+	_, _ = ensureContainerRunning(t, ctx, &container)
 	require.NoError(t, err, "Container was not started as expected")
 
 	svc := apiv1.Service{
@@ -339,9 +335,7 @@ func TestServiceConsumableAfterLatePortAllocation(t *testing.T) {
 	})
 
 	t.Logf("Complete the Container '%s' startup sequence...", ctr.ObjectMeta.Name)
-	creationTime := time.Now().UTC()
-	containerID := testName + "-ctr-" + testutil.GetRandLetters(t, 6)
-	err = ensureContainerRunning(t, ctx, ctr.Spec.Image, containerID, creationTime)
+	_, _ = ensureContainerRunning(t, ctx, &ctr)
 	require.NoError(t, err, "Container '%s' was not started as expected", ctr.ObjectMeta.Name)
 
 	t.Logf("Ensure Executable '%s' is running and has the Service port injected...", exe.ObjectMeta.Name)
@@ -429,7 +423,6 @@ func TestServiceProxyless(t *testing.T) {
 	defer cancel()
 
 	svcName := "test-service-proxyless"
-	containerID := svcName + "-" + testutil.GetRandLetters(t, 6)
 
 	svc := apiv1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -468,8 +461,7 @@ func TestServiceProxyless(t *testing.T) {
 	require.NoError(t, err, "Could not create the Container %s", container.ObjectMeta.Name)
 
 	t.Logf("Check if corresponding container %s has started...", container.ObjectMeta.Name)
-	creationTime := time.Now().UTC()
-	err = ensureContainerRunning(t, ctx, container.Spec.Image, containerID, creationTime)
+	_, _ = ensureContainerRunning(t, ctx, &container)
 	require.NoError(t, err, "Container %s was not started as expected", container.ObjectMeta.Name)
 
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&svc), func(s *apiv1.Service) (bool, error) {

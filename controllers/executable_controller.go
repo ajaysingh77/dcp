@@ -93,13 +93,9 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	r.debouncer.OnReconcile(req.NamespacedName)
 
 	// Check to see if the request context has already expired
-	select {
-	case _, isOpen := <-ctx.Done():
-		if !isOpen {
-			log.V(1).Info("Request context expired, nothing to do...")
-			return ctrl.Result{}, nil
-		}
-	default: // not done, proceed
+	if ctx.Err() != nil {
+		log.V(1).Info("Request context expired, nothing to do...")
+		return ctrl.Result{}, nil
 	}
 
 	// Retrieve the Executable object
