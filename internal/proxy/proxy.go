@@ -232,6 +232,13 @@ func (p *Proxy) stop(listener io.Closer) {
 }
 
 func (p *Proxy) runTCP(tcpListener net.Listener) {
+	var parkedConnections []net.Conn
+
+	defer func() {
+		for _, conn := range parkedConnections {
+			_ = conn.Close()
+		}
+	}()
 	defer p.configurationApplied.SetAndFreeze() // Make sure that Configure() calls return after the proxy has stopped
 	defer p.stop(tcpListener)
 
@@ -271,37 +278,51 @@ func (p *Proxy) runTCP(tcpListener net.Listener) {
 			p.configurationApplied.Set()
 			p.log.V(1).Info("Configuration changed; new configuration will be applied to future connections...")
 
+			if len(config.Endpoints) >= 0 {
+				for _, conn := range parkedConnections {
+					go p.handleTCPConnection(config, conn)
+				}
+				parkedConnections = nil
+			}
+
 		case incoming := <-connectionChannel.Out:
 			if p.lifetimeCtx.Err() != nil {
 				return
 			}
 
-			// Pass the config (copy value) to the goroutine to avoid data races.
-			go func(currentConfig ProxyConfig) {
-				err := resiliency.Retry(p.lifetimeCtx, func() error {
-					connectionErr := p.handleTCPConnection(incoming, &currentConfig)
-					if errors.Is(connectionErr, errTcpDialFailed) {
-						// Retryable error, incoming connection still alive
-						return connectionErr
-					} else {
-						// Fatal error, incoming connection is closed
-						return resiliency.Permanent(connectionErr)
-					}
-				})
-
-				if err != nil {
-					p.log.Info("Error handling TCP connection", err)
-				} else {
-					p.log.V(1).Info(fmt.Sprintf("TCP connection from %s is alive", incoming.RemoteAddr().String()))
-				}
-			}(config)
+			if len(config.Endpoints) == 0 {
+				p.log.V(1).Info("No endpoints configured, parking connection...")
+				parkedConnections = append(parkedConnections, incoming)
+			} else {
+				// Pass the config (copy value) to the goroutine to avoid data races.
+				go p.handleTCPConnection(config, incoming)
+			}
 		}
 	}
 }
 
 var errTcpDialFailed = errors.New("Could not establish TCP connection to endpoint")
 
-func (p *Proxy) handleTCPConnection(incoming net.Conn, config *ProxyConfig) error {
+func (p *Proxy) handleTCPConnection(currentConfig ProxyConfig, incoming net.Conn) {
+	err := resiliency.Retry(p.lifetimeCtx, func() error {
+		streamErr := p.startTCPStream(incoming, &currentConfig)
+		if errors.Is(streamErr, errTcpDialFailed) {
+			// Retryable error, incoming connection still alive
+			return streamErr
+		} else {
+			// Fatal error, incoming connection is closed
+			return resiliency.Permanent(streamErr)
+		}
+	})
+
+	if err != nil {
+		p.log.Info("Error handling TCP connection", err)
+	} else {
+		p.log.V(1).Info(fmt.Sprintf("TCP connection from %s is alive", incoming.RemoteAddr().String()))
+	}
+}
+
+func (p *Proxy) startTCPStream(incoming net.Conn, config *ProxyConfig) error {
 	if p.lifetimeCtx.Err() != nil {
 		_ = incoming.Close()
 		return nil

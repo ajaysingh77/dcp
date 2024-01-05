@@ -236,9 +236,14 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 			change |= additionalReconciliationNeeded
 		} else {
 			serviceProxyData, found := r.proxyData.Load(svc.NamespacedName())
-
-			if found && len(serviceEndpoints.Items) > 0 {
-				svc.Status.State = apiv1.ServiceStateReady
+			if !found {
+				// Should never happen if startProxyIfNeeded() succeeded
+				log.Error(errors.New("proxy data not found"), "could not configure the proxy")
+				change |= additionalReconciliationNeeded
+			} else {
+				if len(serviceEndpoints.Items) > 0 {
+					svc.Status.State = apiv1.ServiceStateReady
+				}
 
 				config := proxy.ProxyConfig{
 					Endpoints: []proxy.Endpoint{},
@@ -309,7 +314,6 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 	}
 
 	// Reset the overall status for the service
-	r.proxyData.Delete(svc.NamespacedName())
 	svc.Status.ProxyProcessPid = apiv1.UnknownPID
 	svc.Status.EffectiveAddress = ""
 	svc.Status.EffectivePort = 0

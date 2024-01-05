@@ -639,7 +639,7 @@ func TestContainerServingAddressInjected(t *testing.T) {
 
 	_, inspected := ensureContainerRunning(t, ctx, &ctr)
 	require.Contains(t, inspected.Args, expectedArg, "expected the container to have the startup arg %s", expectedArg)
-	require.Equal(t, fmt.Sprintf("%s", ServiceIPAddr), inspected.Env["SERVICE_ADDRESS"], "expected the container to have the env var %s", expectedEnvVar)
+	require.Equal(t, ServiceIPAddr, inspected.Env["SERVICE_ADDRESS"], "expected the container to have the env var %s", expectedEnvVar)
 	validatePorts(t, inspected, []apiv1.ContainerPort{
 		{ContainerPort: ContainerPort, HostIP: "127.0.0.1"},
 	})
