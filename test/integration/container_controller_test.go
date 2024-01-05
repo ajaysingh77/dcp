@@ -637,26 +637,12 @@ func TestContainerServingAddressInjected(t *testing.T) {
 	expectedArg := fmt.Sprintf("--serving-address=%s", ContainerIPAddr)
 	expectedEnvVar := fmt.Sprintf("SERVICE_ADDRESS=%s", ServiceIPAddr)
 
-	_, err = ctrl_testutil.WaitForCommand(processExecutor, ctx, []string{"docker", "run"}, expectedArg, func(pe *ctrl_testutil.ProcessExecution) bool {
-		if !pe.Running() {
-			return false
-		}
-		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", fmt.Sprintf("127.0.0.1::%d", ContainerPort)}) == -1 {
-			return false
-		}
-		if slices.SeqIndex(pe.Cmd.Args, []string{"-e", expectedEnvVar}) == -1 {
-			return false
-		}
-		// The expected argument is checked via "lastArg" parameter of the WaitForCommand() function above
-		return true
+	_, inspected := ensureContainerRunning(t, ctx, &ctr)
+	require.Contains(t, inspected.Args, expectedArg, "expected the container to have the startup arg %s", expectedArg)
+	require.Equal(t, fmt.Sprintf("%s", ServiceIPAddr), inspected.Env["SERVICE_ADDRESS"], "expected the container to have the env var %s", expectedEnvVar)
+	validatePorts(t, inspected, []apiv1.ContainerPort{
+		{ContainerPort: ContainerPort, HostIP: "127.0.0.1"},
 	})
-	require.NoError(t, err, "Could not find the expected 'docker run' command")
-
-	t.Log("Complete the container startup sequence...")
-	creationTime := time.Now().UTC()
-	containerID := testName + "-" + testutil.GetRandLetters(t, 6)
-	err = ensureContainerRunningWithArg(t, ctx, ctr.Spec.Image, expectedArg, containerID, creationTime)
-	require.NoError(t, err, "Container '%s' was not started as expected", ctr.ObjectMeta.Name)
 
 	t.Logf("Ensure the Status.EffectiveEnv for Container '%s' contains the injected address information...", ctr.ObjectMeta.Name)
 	updatedCtr := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {
@@ -670,4 +656,3 @@ func TestContainerServingAddressInjected(t *testing.T) {
 	t.Logf("Ensure the Status.EffectiveArgs for Container '%s' contains the injected address information...", ctr.ObjectMeta.Name)
 	require.Equal(t, updatedCtr.Status.EffectiveArgs[0], expectedArg, "The Container '%s' startup parameters do not include expected address information for service '%s'. The startup parameters are %v", ctr.ObjectMeta.Name, svc.ObjectMeta.Name, updatedCtr.Status.EffectiveArgs)
 }
-
