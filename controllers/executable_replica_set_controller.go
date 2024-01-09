@@ -39,6 +39,7 @@ type ExecutableReplicaSetReconciler struct {
 	Log                 logr.Logger
 	reconciliationSeqNo uint32
 	runningReplicaSets  syncmap.Map[types.NamespacedName, executableReplicaSetData]
+	replicaCounters     syncmap.Map[types.NamespacedName, *atomic.Int32]
 
 	// Debouncer used to schedule reconciliations.
 	debouncer *reconcilerDebouncer[any]
@@ -46,6 +47,7 @@ type ExecutableReplicaSetReconciler struct {
 
 const (
 	ExecutableReplicaStateAnnotation = "executable-replica-set.usvc-dev.developer.microsoft.com/replica-state"
+	ExecutableDisplayNameAnnotation  = "executable-replica-set.usvc-dev.developer.microsoft.com/display-name"
 )
 
 const (
@@ -62,6 +64,7 @@ func NewExecutableReplicaSetReconciler(client ctrl_client.Client, log logr.Logge
 		Client:             client,
 		debouncer:          newReconcilerDebouncer[any](reconciliationDebounceDelay),
 		runningReplicaSets: syncmap.Map[types.NamespacedName, executableReplicaSetData]{},
+		replicaCounters:    syncmap.Map[types.NamespacedName, *atomic.Int32]{},
 	}
 
 	r.Log = log.WithValues("Controller", executableReplicaSetFinalizer)
@@ -109,6 +112,16 @@ func (r *ExecutableReplicaSetReconciler) createExecutable(replicaSet *apiv1.Exec
 		return nil, err
 	}
 
+	// Replicas have a display name annotation that is the replica set name concatenated with a monotonically increasing counter.
+	var counter *atomic.Int32
+	var ok bool
+	if counter, ok = r.replicaCounters.Load(replicaSet.NamespacedName()); !ok {
+		counter = &atomic.Int32{}
+		r.replicaCounters.Store(replicaSet.NamespacedName(), counter)
+	}
+
+	displayName := fmt.Sprintf("%s-%d", replicaSet.Name, counter.Add(1))
+
 	// We don't honor all metadata fields from the template for now, only Labels and Annotations
 	exe := &apiv1.Executable{
 		ObjectMeta: metav1.ObjectMeta{
@@ -124,6 +137,7 @@ func (r *ExecutableReplicaSetReconciler) createExecutable(replicaSet *apiv1.Exec
 		exe.Annotations[k] = v
 	}
 	exe.Annotations[ExecutableReplicaStateAnnotation] = string(ExecutableReplicaSetStateActive)
+	exe.Annotations[ExecutableDisplayNameAnnotation] = displayName
 
 	for k, v := range replicaSet.Spec.Template.Labels {
 		exe.Labels[k] = v
