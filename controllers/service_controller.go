@@ -318,10 +318,25 @@ func (r *ServiceReconciler) getServiceEndpoints(ctx context.Context, svc *apiv1.
 // startProxyIfNeeded starts a proxy process if needed for the given service.
 // It returns the error if any.
 func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.Service, log logr.Logger) error {
+	requestedServiceAddress := svc.Spec.Address
+	if requestedServiceAddress == "" {
+		if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeLocalhost || svc.Spec.AddressAllocationMode == "" {
+			requestedServiceAddress = "localhost"
+		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv4ZeroOne {
+			requestedServiceAddress = "127.0.0.1"
+		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv4Loopback {
+			requestedServiceAddress = fmt.Sprintf("127.%d.%d.%d", rand.Intn(254)+1, rand.Intn(254)+1, rand.Intn(254)+1)
+		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv6ZeroOne {
+			requestedServiceAddress = "[::1]"
+		} else {
+			return fmt.Errorf("unsupported address allocation mode: %s", svc.Spec.AddressAllocationMode)
+		}
+	}
+
 	serviceProxyData, found := r.proxyData.Load(svc.NamespacedName())
 
 	if found {
-		svc.Status.EffectiveAddress, svc.Status.EffectivePort = r.getEffectiveAddressAndPort(serviceProxyData)
+		svc.Status.EffectiveAddress, svc.Status.EffectivePort = r.getEffectiveAddressAndPort(serviceProxyData, requestedServiceAddress)
 		return nil
 	}
 
@@ -329,21 +344,6 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 	svc.Status.ProxyProcessPid = apiv1.UnknownPID
 	svc.Status.EffectiveAddress = ""
 	svc.Status.EffectivePort = 0
-
-	proxyAddress := svc.Spec.Address
-	if proxyAddress == "" {
-		if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeLocalhost || svc.Spec.AddressAllocationMode == "" {
-			proxyAddress = "localhost"
-		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv4ZeroOne {
-			proxyAddress = "127.0.0.1"
-		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv4Loopback {
-			proxyAddress = fmt.Sprintf("127.%d.%d.%d", rand.Intn(254)+1, rand.Intn(254)+1, rand.Intn(254)+1)
-		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv6ZeroOne {
-			proxyAddress = "[::1]"
-		} else {
-			return fmt.Errorf("unsupported address allocation mode: %s", svc.Spec.AddressAllocationMode)
-		}
-	}
 
 	var err error
 	proxies := []proxyInstanceData{}
@@ -362,14 +362,14 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 	// which does not make sense in the context of the proxy.
 	proxyLog := r.Log.WithValues("ServiceName", svc.NamespacedName())
 
-	if proxyAddress == "localhost" {
+	if requestedServiceAddress == "localhost" {
 		// Bind to all applicable IPs (IPv4 and IPv6) for the proxy address
-		ips, err := net.LookupIP(proxyAddress)
+		ips, err := net.LookupIP(requestedServiceAddress)
 		if err != nil {
-			return fmt.Errorf("could not obtain IP address(es) for %s: %w", proxyAddress, err)
+			return fmt.Errorf("could not obtain IP address(es) for %s: %w", requestedServiceAddress, err)
 		}
 		if len(ips) == 0 {
-			return fmt.Errorf("could not obtain IP address(es) for %s", proxyAddress)
+			return fmt.Errorf("could not obtain IP address(es) for %s", requestedServiceAddress)
 		}
 
 		for _, ip := range ips {
@@ -388,13 +388,13 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 	} else {
 		// Bind to just the proxy address
 
-		proxyPort, portAllocationErr := getProxyPort(proxyAddress)
+		proxyPort, portAllocationErr := getProxyPort(requestedServiceAddress)
 		if portAllocationErr != nil {
 			err = portAllocationErr
 		} else {
 			proxyCtx, cancelFunc := context.WithCancel(r.lifetimeCtx)
 			proxies = append(proxies, proxyInstanceData{
-				proxy:     proxy.NewProxy(svc.Spec.Protocol, proxyAddress, proxyPort, proxyCtx, proxyLog),
+				proxy:     proxy.NewProxy(svc.Spec.Protocol, requestedServiceAddress, proxyPort, proxyCtx, proxyLog),
 				stopProxy: cancelFunc,
 			})
 		}
@@ -421,7 +421,7 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 		}
 	}
 
-	svc.Status.EffectiveAddress, svc.Status.EffectivePort = r.getEffectiveAddressAndPort(proxies)
+	svc.Status.EffectiveAddress, svc.Status.EffectivePort = r.getEffectiveAddressAndPort(proxies, requestedServiceAddress)
 	r.Log.Info("service proxy started",
 		"EffectiveAddress", svc.Status.EffectiveAddress,
 		"EffectivePort", svc.Status.EffectivePort,
@@ -442,7 +442,7 @@ func (r *ServiceReconciler) noProxyStartOption() bool {
 	return false
 }
 
-func (r *ServiceReconciler) getEffectiveAddressAndPort(proxies []proxyInstanceData) (string, int32) {
+func (r *ServiceReconciler) getEffectiveAddressAndPort(proxies []proxyInstanceData, requestedServiceAddress string) (string, int32) {
 	if len(proxies) == 0 {
 		return "", 0
 	}
@@ -464,23 +464,36 @@ func (r *ServiceReconciler) getEffectiveAddressAndPort(proxies []proxyInstanceDa
 		isEligibleProxy = func(p *proxy.Proxy) bool { return p.State() == proxy.ProxyStateRunning }
 	}
 
+	eligibleProxies := slices.Select(proxies, func(pd proxyInstanceData) bool {
+		return isEligibleProxy(pd.proxy)
+	})
+	if len(eligibleProxies) == 0 {
+		return "", 0
+	}
+
 	// We might bind to multiple addresses if the address specified by the service spec is "localhost".
-	// We do not want to use just "localhost", because then the port could be ambiguous.
+	// But we can (and should) still report the effective address as "localhost"
+	// if the port used by all addresses is the same.
+	portsInUse := make(map[int32]bool)
+	for _, pd := range eligibleProxies {
+		portsInUse[getProxyPort(pd.proxy)] = true
+	}
+	if requestedServiceAddress == "localhost" && len(portsInUse) == 1 {
+		return "localhost", getProxyPort(eligibleProxies[0].proxy)
+	}
+
 	// We give preference to IPv4 because it is the safer default
 	// (e.g. host.docker.internal resolves to IPv4 on dual-stack machines).
+	eligibleIPv4Proxies := slices.Select(eligibleProxies, func(pd proxyInstanceData) bool {
+		return networking.IsIPv4(getProxyAddress(pd.proxy))
+	})
 
-	// We could be fancy and sort the proxies by the IP family of the address they are bound to,
-	// but that is more code than just scanning the slice twice.
-	for _, pd := range proxies {
-		if isEligibleProxy(pd.proxy) && networking.IsIPv4(getProxyAddress(pd.proxy)) {
-			return getProxyAddress(pd.proxy), getProxyPort(pd.proxy)
-		}
-	}
-	for _, pd := range proxies {
-		if isEligibleProxy(pd.proxy) {
-			return getProxyAddress(pd.proxy), getProxyPort(pd.proxy)
-		}
+	var sourceProxy *proxy.Proxy
+	if len(eligibleIPv4Proxies) > 0 {
+		sourceProxy = eligibleIPv4Proxies[0].proxy
+	} else {
+		sourceProxy = eligibleProxies[0].proxy
 	}
 
-	return "", 0
+	return getProxyAddress(sourceProxy), getProxyPort(sourceProxy)
 }
