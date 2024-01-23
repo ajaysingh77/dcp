@@ -380,8 +380,8 @@ func (r *ServiceReconciler) getProxyData(svc *apiv1.Service, requestedServiceAdd
 
 	// We do not want to use the passed-in logger for the proxy because it has reconciliation-specific data
 	// which does not make sense in the context of the proxy.
-	// The resulting log name will be "ServiceReconciler-Proxy".
-	proxyLog := r.Log.WithName("-Proxy").WithValues("Service", svc.NamespacedName())
+	// The resulting log name will be "dcpctrl.ServiceReconciler.Proxy".
+	proxyLog := r.Log.WithName("Proxy").WithValues("Service", svc.NamespacedName())
 
 	var portAllocationErr error = nil
 
