@@ -354,7 +354,7 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 	}
 
 	svc.Status.EffectiveAddress, svc.Status.EffectivePort = r.getEffectiveAddressAndPort(proxies, requestedServiceAddress)
-	r.Log.Info("service proxy started",
+	log.Info("service proxy started",
 		"EffectiveAddress", svc.Status.EffectiveAddress,
 		"EffectivePort", svc.Status.EffectivePort,
 	)
@@ -380,7 +380,8 @@ func (r *ServiceReconciler) getProxyData(svc *apiv1.Service, requestedServiceAdd
 
 	// We do not want to use the passed-in logger for the proxy because it has reconciliation-specific data
 	// which does not make sense in the context of the proxy.
-	proxyLog := r.Log.WithValues("ServiceName", svc.NamespacedName())
+	// The resulting log name will be "ServiceReconciler-Proxy".
+	proxyLog := r.Log.WithName("-Proxy").WithValues("Service", svc.NamespacedName())
 
 	var portAllocationErr error = nil
 
