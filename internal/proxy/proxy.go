@@ -143,8 +143,6 @@ func NewProxy(mode apiv1.PortProtocol, listenAddress string, listenPort int32, l
 	return &p
 }
 
-var ErrTcpListenFailed = errors.New("could not establish TCP listener")
-
 func (p *Proxy) Start() error {
 	if err := p.setState(ProxyStateInitial, ProxyStateRunning); err != nil {
 		return fmt.Errorf("proxy cannot be started: %w", err)
@@ -159,7 +157,7 @@ func (p *Proxy) Start() error {
 		tcpListener, err := lc.Listen(p.lifetimeCtx, "tcp", fmt.Sprintf("%s:%d", p.ListenAddress, p.ListenPort))
 		if err != nil {
 			_ = p.setState(ProxyStateAny, ProxyStateFailed)
-			return fmt.Errorf("%w: %s", ErrTcpListenFailed, err)
+			return err
 		}
 
 		p.EffectiveAddress = networking.IpToString(tcpListener.Addr().(*net.TCPAddr).IP)
@@ -303,7 +301,7 @@ func (p *Proxy) runTCP(tcpListener net.Listener) {
 	}
 }
 
-var errTcpDialFailed = errors.New("could not establish TCP connection to endpoint")
+var errTcpDialFailed = errors.New("Could not establish TCP connection to endpoint")
 
 func (p *Proxy) handleTCPConnection(currentConfig ProxyConfig, incoming net.Conn) {
 	err := resiliency.Retry(p.lifetimeCtx, func() error {
