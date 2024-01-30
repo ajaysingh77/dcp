@@ -405,10 +405,10 @@ func TestExecutableReplicaSetExecutableStatusChangeTracked(t *testing.T) {
 
 	ensureStatusUpdated := func(ctx context.Context) (bool, error) {
 		var updatedExers apiv1.ExecutableReplicaSet
-		updaedExersQueryErr := client.Get(ctx, ctrl_client.ObjectKeyFromObject(&exers), &updatedExers)
-		if updaedExersQueryErr != nil {
-			t.Fatalf("unable to fetch updated ExecutableReplicaSet: %v", updaedExersQueryErr)
-			return false, updaedExersQueryErr
+		updatedExersQueryErr := client.Get(ctx, ctrl_client.ObjectKeyFromObject(&exers), &updatedExers)
+		if updatedExersQueryErr != nil {
+			t.Fatalf("unable to fetch updated ExecutableReplicaSet: %v", updatedExersQueryErr)
+			return false, updatedExersQueryErr
 		}
 
 		if updatedExers.Status.ObservedReplicas != scaleTo {
