@@ -243,7 +243,7 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 		err = r.startProxyIfNeeded(ctx, svc, log)
 		if err != nil {
 			log.Error(err, "could not start the proxy")
-			change |= additionalReconciliationNeeded
+			return noChange
 		} else {
 			serviceProxyData, found := r.proxyData.Load(svc.NamespacedName())
 			if !found {
