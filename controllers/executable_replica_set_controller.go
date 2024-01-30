@@ -221,7 +221,13 @@ func (r *ExecutableReplicaSetReconciler) scaleReplicas(ctx context.Context, repl
 				exePatch.SetAnnotations(annotations)
 				exePatch.Spec.Stop = true
 				if err := r.Patch(ctx, exePatch, ctrl_client.MergeFromWithOptions(exe, ctrl_client.MergeFromWithOptimisticLock{})); err != nil {
-					log.Error(err, "unable to soft delete Executable", "exe", exe)
+					if errors.IsConflict(err) {
+						// Expected optimistic concurrency check error, log it at debug level and move on
+						log.V(1).Info("conflict while soft deleting Executable", "exe", exe)
+					} else {
+						log.Error(err, "unable to soft delete Executable", "exe", exe)
+					}
+
 					change |= additionalReconciliationNeeded
 					continue
 				} else {
