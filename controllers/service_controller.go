@@ -138,7 +138,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	svc := apiv1.Service{}
 	if err := r.Get(ctx, req.NamespacedName, &svc); err != nil {
 		if apimachinery_errors.IsNotFound(err) {
-			log.Info("the Service object does not exist yet or was deleted")
+			log.V(1).Info("the Service object does not exist yet or was deleted")
 			r.stopAllProxies(req.NamespacedName, log)
 			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
@@ -155,7 +155,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	patch := ctrl_client.MergeFromWithOptions(svc.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
 	if svc.DeletionTimestamp != nil && !svc.DeletionTimestamp.IsZero() {
-		log.Info("Service object is being deleted")
+		log.V(1).Info("Service object is being deleted")
 		r.stopAllProxies(svc.NamespacedName(), log)
 		change = deleteFinalizer(&svc, serviceFinalizer, log)
 		serviceCounters(ctx, &svc, -1) // Service is being deleted
@@ -175,7 +175,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 func (r *ServiceReconciler) stopAllProxies(svcName types.NamespacedName, log logr.Logger) {
 	if proxyData, ok := r.proxyData.LoadAndDelete(svcName); ok && len(proxyData) > 0 {
-		log.Info("stopping all proxies...")
+		log.V(1).Info("stopping all proxies...")
 		for _, data := range proxyData {
 			data.stopProxy()
 		}

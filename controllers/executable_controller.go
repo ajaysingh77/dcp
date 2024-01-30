@@ -124,7 +124,7 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	if exe.DeletionTimestamp != nil && !exe.DeletionTimestamp.IsZero() && !exe.Starting() {
 		// Remove the finalizer if deletion has been requested and the Executable has completed initial startup
-		log.Info("Executable is being deleted...")
+		log.V(1).Info("Executable is being deleted...")
 		r.releaseExecutableResources(ctx, &exe, log)
 		change = deleteFinalizer(&exe, executableFinalizer, log)
 

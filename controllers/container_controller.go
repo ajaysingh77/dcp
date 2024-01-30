@@ -213,7 +213,7 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// Note: if the Container object is being deleted, but the correspoinding container is in the process of starting,
 		// we need the container startup to finish, before attemptin to delete everything.
 		// Otherwise we will be left with a dangling container that no one owns.
-		log.Info("Container object is being deleted")
+		log.V(1).Info("Container object is being deleted")
 		r.deleteContainer(ctx, &container, log)
 		change = deleteFinalizer(&container, containerFinalizer, log)
 		r.releaseContainerWatch(&container, log)
