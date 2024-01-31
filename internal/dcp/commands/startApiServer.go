@@ -14,6 +14,7 @@ import (
 	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
 	"github.com/microsoft/usvc-apiserver/internal/dcp/bootstrap"
 	"github.com/microsoft/usvc-apiserver/internal/perftrace"
+	"github.com/microsoft/usvc-apiserver/pkg/containers"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
@@ -35,6 +36,7 @@ func NewStartApiSrvCommand(log logger.Logger) (*cobra.Command, error) {
 
 	kubeconfig.EnsureKubeconfigFlag(startApiSrvCmd.Flags())
 	kubeconfig.EnsureKubeconfigPortFlag(startApiSrvCmd.Flags())
+	containers.EnsureRuntimeFlag(startApiSrvCmd.Flags())
 
 	startApiSrvCmd.Flags().StringVarP(&rootDir, "root-dir", "r", "", "If present, tells DCP to use specific directory as the application root directory. Defaults to current working directory.")
 	startApiSrvCmd.Flags().BoolVar(&detach, "detach", false, "If present, instructs DCP to fork itself as a detached process.")
@@ -123,7 +125,7 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 			},
 		}
 
-		invocationFlags := []string{"--kubeconfig", kubeconfigPath, "--monitor", strconv.Itoa(os.Getpid())}
+		invocationFlags := []string{"--kubeconfig", kubeconfigPath, "--monitor", strconv.Itoa(os.Getpid()), "--runtime", containers.GetRuntimeFlagArg()}
 		if verbosityArg := logger.GetVerbosityArg(cmd.Flags()); verbosityArg != "" {
 			invocationFlags = append(invocationFlags, verbosityArg)
 		}

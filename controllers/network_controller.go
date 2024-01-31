@@ -6,10 +6,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/smallnest/chanx"
@@ -171,7 +173,15 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
-	result, err := saveChanges(r.Client, ctx, &network, patch, change, nil, log)
+	reconciliationDelay := additionalReconciliationDelay
+	if (change & additionalReconciliationNeeded) == 0 {
+		// Schedule followup reconciliation on a random delay between 10 to 20 seconds (to avoid stampedes).
+		// The goal is to enable periodic reconciliation polling.
+		reconciliationDelay = time.Duration(rand.Intn(10)+10) * time.Second
+		change |= additionalReconciliationNeeded
+	}
+
+	result, err := saveChangesWithCustomReconciliationDelay(r.Client, ctx, &network, patch, change, reconciliationDelay, nil, log)
 	return result, err
 }
 

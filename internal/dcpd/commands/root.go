@@ -11,6 +11,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/apiserver"
 	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
 	"github.com/microsoft/usvc-apiserver/internal/perftrace"
+	"github.com/microsoft/usvc-apiserver/pkg/containers"
 	"github.com/microsoft/usvc-apiserver/pkg/extensions"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
@@ -46,6 +47,7 @@ func NewRootCmd(logger logger.Logger) (*cobra.Command, error) {
 
 	cmds.AddMonitorFlags(rootCmd)
 
+	containers.EnsureRuntimeFlag(rootCmd.PersistentFlags())
 	logger.AddLevelFlag(rootCmd.PersistentFlags())
 
 	klog.SetLogger(logger.V(1))

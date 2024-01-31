@@ -5,6 +5,7 @@ import (
 	ctrlruntime "sigs.k8s.io/controller-runtime"
 
 	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
+	"github.com/microsoft/usvc-apiserver/pkg/containers"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
@@ -32,6 +33,8 @@ func NewRootCommand(logger logger.Logger) *cobra.Command {
 
 	rootCmd.AddCommand(NewGetCapabilitiesCommand(logger))
 	rootCmd.AddCommand(NewRunControllersCommand(logger))
+
+	containers.EnsureRuntimeFlag(rootCmd.PersistentFlags())
 
 	logger.AddLevelFlag(rootCmd.PersistentFlags())
 	ctrlruntime.SetLogger(logger.V(1))
