@@ -369,7 +369,9 @@ func (r *IdeExecutableRunner) prepareRunRequest(exe *apiv1.Executable) (*http.Re
 		Env:         exe.Status.EffectiveEnv,
 		Args:        exe.Status.EffectiveArgs,
 	}
-	if launchProfile, found := exe.Annotations[csharpLaunchProfileAnnotation]; found {
+	if _, disableLaunchProfile := exe.Annotations[csharpDisableLaunchProfileAnnotation]; disableLaunchProfile {
+		isr.DisableLaunchProfile = true
+	} else if launchProfile, haveLaunchProfile := exe.Annotations[csharpLaunchProfileAnnotation]; haveLaunchProfile {
 		isr.LaunchProfile = launchProfile
 	}
 
