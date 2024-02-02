@@ -125,7 +125,7 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 			},
 		}
 
-		invocationFlags := []string{"--kubeconfig", kubeconfigPath, "--monitor", strconv.Itoa(os.Getpid()), "--runtime", containers.GetRuntimeFlagArg()}
+		invocationFlags := []string{"--kubeconfig", kubeconfigPath, "--monitor", strconv.Itoa(os.Getpid()), containers.GetRuntimeFlag(), containers.GetRuntimeFlagArg()}
 		if verbosityArg := logger.GetVerbosityArg(cmd.Flags()); verbosityArg != "" {
 			invocationFlags = append(invocationFlags, verbosityArg)
 		}

@@ -18,6 +18,8 @@ type RuntimeFlagValue struct {
 	OrchestratorFactory ContainerOrchestratorFactory
 }
 
+const ContainerRuntimeFlagName = "container-runtime"
+
 var (
 	supportedRuntimes = []RuntimeFlagValue{
 		{
@@ -33,7 +35,11 @@ var (
 )
 
 func EnsureRuntimeFlag(flags *pflag.FlagSet) {
-	flags.Var(&runtime, "container-runtime", "The container runtime to use (docker or podman)")
+	flags.Var(&runtime, ContainerRuntimeFlagName, "The container runtime to use (docker or podman)")
+}
+
+func GetRuntimeFlag() string {
+	return "--" + ContainerRuntimeFlagName
 }
 
 func GetRuntimeFlagArg() string {
@@ -61,5 +67,5 @@ func (rfv *RuntimeFlagValue) String() string {
 }
 
 func (rfv *RuntimeFlagValue) Type() string {
-	return "container-runtime"
+	return ContainerRuntimeFlagName
 }
