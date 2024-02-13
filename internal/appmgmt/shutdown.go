@@ -128,6 +128,13 @@ func cleanupResourceBatch(
 				}
 			},
 			DeleteFunc: func(obj interface{}) {
+				clientObj := obj.(client.Object)
+				parent := metav1.GetControllerOf(clientObj)
+				if parent != nil && parent.APIVersion == apiv1.GroupVersion.String() {
+					log.Info("Resource has a parent, ignoring")
+					return
+				}
+
 				totalResources := totalResourceCounts.Add(-1)
 				log.Info("Resource removed", "resource", gvr, "total", totalResources)
 
