@@ -1551,6 +1551,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref common.ReferenceC
 							Format:      "",
 						},
 					},
+					"inheritAmbientEnvironment": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Options on how to handle ambient environment variables",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 					"stop": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Should the controller attempt to stop the Executable",
