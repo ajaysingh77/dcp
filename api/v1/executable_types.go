@@ -236,6 +236,12 @@ func (e *Executable) Validate(ctx context.Context) field.ErrorList {
 	// TODO: implement validation https://github.com/microsoft/usvc-stdtypes/issues/2
 	errorList := field.ErrorList{}
 
+	if e.Spec.AmbientEnvironment.Behavior != "" &&
+		e.Spec.AmbientEnvironment.Behavior != EnvironmentBehaviorInherit &&
+		e.Spec.AmbientEnvironment.Behavior != EnvironmentBehaviorDoNotInherit {
+		errorList = append(errorList, field.Invalid(field.NewPath("spec", "ambientEnvironment", "behavior"), e.Spec.AmbientEnvironment.Behavior, "Ambient environment behavior must be either Inherit or DoNotInherit."))
+	}
+
 	return errorList
 }
 
@@ -245,6 +251,10 @@ func (e *Executable) ValidateUpdate(ctx context.Context, obj runtime.Object) fie
 	oldExe := obj.(*Executable)
 	if oldExe.Spec.Stop && e.Spec.Stop != oldExe.Spec.Stop {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "stop"), "Cannot unset stop property once it is set."))
+	}
+
+	if oldExe.Spec.AmbientEnvironment.Behavior != e.Spec.AmbientEnvironment.Behavior {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "ambientEnvironment", "behavior"), "Cannot change ambient environment behavior once it is set."))
 	}
 
 	return errorList
