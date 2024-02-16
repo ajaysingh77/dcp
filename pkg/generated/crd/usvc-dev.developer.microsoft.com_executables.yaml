@@ -41,6 +41,11 @@ spec:
                   type: string
                 type: array
                 x-kubernetes-list-type: atomic
+              doNotInheritEnvironment:
+                default: false
+                description: Whether the executable should inherit the environment
+                  of the controller process.
+                type: boolean
               env:
                 description: Environment variables to be set for the Executable
                 items:
@@ -75,11 +80,6 @@ spec:
                 default: Process
                 description: The execution type for the Executable.
                 type: string
-              inheritEnvironment:
-                default: true
-                description: Whether the executable should inherit the environment
-                  of the controller process.
-                type: boolean
               stop:
                 default: false
                 description: Should the controller attempt to stop the Executable

@@ -102,8 +102,8 @@ type ExecutableSpec struct {
 	ExecutionType ExecutionType `json:"executionType,omitempty"`
 
 	// Whether the executable should inherit the environment of the controller process.
-	// +kubebuilder:default:=true
-	InheritEnvironment bool `json:"inheritEnvironment,omitempty"`
+	// +kubebuilder:default:=false
+	DoNotInheritEnvironment bool `json:"doNotInheritEnvironment,omitempty"`
 
 	// Should the controller attempt to stop the Executable
 	// +kubebuilder:default:=false
