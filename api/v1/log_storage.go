@@ -115,8 +115,7 @@ func (ls *LogStorage) resourceStreamerFactory(resourceName string, options *LogO
 			return nil, false, "", err
 		}
 
-		const flushOnNewData = true
-		return logStream, flushOnNewData, "text/plain", nil
+		return logStream /* flushOnNewData */, true, "text/plain", nil
 	}), nil
 }
 

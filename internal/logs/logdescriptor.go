@@ -126,7 +126,7 @@ func (l *LogDescriptor) LogConsumerStarting() (string, string, error) {
 }
 
 // Notifies the log descriptor that a log watcher has stopped using the log files.
-// Should only be called if corresponding LogConsumerStarting() returned true.
+// Should only be called if corresponding LogConsumerStarting() succeeded.
 func (l *LogDescriptor) LogConsumerStopped() {
 	l.lock.Lock()
 	defer l.lock.Unlock()
