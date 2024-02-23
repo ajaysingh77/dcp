@@ -53,7 +53,7 @@ func (m *Map[Key, Value]) LoadOrStore(key Key, newValue Value) (Value, bool) {
 // The returned boolean is true if the value was already in the map, and false if the new value was stored.
 //
 // Note: in high-contention conditions the value factory function might be called even if the key is already in the map.
-// In this happens, the existing value is returned and the new value is discarded.
+// If this happens, the existing value is returned and the new value is discarded.
 func (m *Map[Key, Value]) LoadOrStoreNew(key Key, valueFactory func() Value) (Value, bool) {
 	// Naive implementation, but it will do for our purposes
 	val, found := m.Load(key)
