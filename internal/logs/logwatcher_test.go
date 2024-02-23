@@ -34,7 +34,8 @@ func TestWatchLogsFollowEmptyFile(t *testing.T) {
 	tmpFilePath := filepath.Join(tmpDir, fmt.Sprintf("%s.log", t.Name()))
 	tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
 	require.NoError(t, tmpFileErr)
-	t.Cleanup(func() { tmpFile.Close() })
+	require.NoError(t, tmpFile.Close())
+	t.Cleanup(func() { _ = os.Remove(tmpFilePath) })
 
 	buf := testutil.NewBufferWriter(1)
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
@@ -64,10 +65,11 @@ func TestWatchLogsFollowWholeFile(t *testing.T) {
 	tmpFilePath := filepath.Join(tmpDir, fmt.Sprintf("%s.log", t.Name()))
 	tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, osutil.PermissionOnlyOwnerReadWrite)
 	require.NoError(t, tmpFileErr)
-	t.Cleanup(func() { tmpFile.Close() })
 	n, tmpFileErr := tmpFile.WriteString(content)
 	require.NoError(t, tmpFileErr)
 	require.Equal(t, len(content), n)
+	require.NoError(t, tmpFile.Close())
+	t.Cleanup(func() { _ = os.Remove(tmpFilePath) })
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	buf := testutil.NewBufferWriter(uint(len(content)))
@@ -110,7 +112,10 @@ func TestWatchLogsFollowGetsAllData(t *testing.T) {
 		tmpFilePath := filepath.Join(tmpDir, fmt.Sprintf("%s-%d.log", t.Name(), try))
 		tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, osutil.PermissionOnlyOwnerReadWrite)
 		require.NoError(t, tmpFileErr)
-		t.Cleanup(func() { tmpFile.Close() })
+		t.Cleanup(func() {
+			_ = tmpFile.Close()
+			_ = os.Remove(tmpFilePath)
+		})
 
 		tryCtx, cancel := context.WithCancel(testCtx)
 		buf := testutil.NewBufferWriter(contentTotalLen)
@@ -164,7 +169,8 @@ func TestWatchLogsNoFollowEmptyFile(t *testing.T) {
 	tmpFilePath := filepath.Join(tmpDir, fmt.Sprintf("%s.log", t.Name()))
 	tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
 	require.NoError(t, tmpFileErr)
-	t.Cleanup(func() { tmpFile.Close() })
+	require.NoError(t, tmpFile.Close())
+	t.Cleanup(func() { _ = os.Remove(tmpFilePath) })
 
 	buf := testutil.NewBufferWriter(1)
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
@@ -183,10 +189,11 @@ func TestWatchLogsNoFollowWholeFile(t *testing.T) {
 	tmpFilePath := filepath.Join(tmpDir, fmt.Sprintf("%s.log", t.Name()))
 	tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, osutil.PermissionOnlyOwnerReadWrite)
 	require.NoError(t, tmpFileErr)
-	t.Cleanup(func() { tmpFile.Close() })
 	n, tmpFileErr := tmpFile.WriteString(content)
 	require.NoError(t, tmpFileErr)
 	require.Equal(t, len(content), n)
+	require.NoError(t, tmpFile.Close())
+	t.Cleanup(func() { _ = os.Remove(tmpFilePath) })
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
