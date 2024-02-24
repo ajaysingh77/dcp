@@ -16,7 +16,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
@@ -38,7 +37,7 @@ func TestWatchLogsFollowEmptyFile(t *testing.T) {
 	t.Parallel()
 
 	tmpFilePath := getTempLogFilePath(t)
-	tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL, osutil.PermissionOwnerReadWriteOthersRead)
+	tmpFile, tmpFileErr := os.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL, osutil.PermissionOwnerReadWriteOthersRead)
 	require.NoError(t, tmpFileErr)
 	require.NoError(t, tmpFile.Close())
 	t.Cleanup(func() { _ = os.Remove(tmpFilePath) })
@@ -68,7 +67,7 @@ func TestWatchLogsFollowWholeFile(t *testing.T) {
 
 	const content = "hello\nworld\n"
 	tmpFilePath := getTempLogFilePath(t)
-	tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, osutil.PermissionOwnerReadWriteOthersRead)
+	tmpFile, tmpFileErr := os.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, osutil.PermissionOwnerReadWriteOthersRead)
 	require.NoError(t, tmpFileErr)
 	n, tmpFileErr := tmpFile.WriteString(content)
 	require.NoError(t, tmpFileErr)
@@ -114,7 +113,7 @@ func TestWatchLogsFollowGetsAllData(t *testing.T) {
 
 	for try := 0; try < len(content)+1; try++ {
 		tmpFilePath := getTempLogFilePath(t)
-		tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, osutil.PermissionOwnerReadWriteOthersRead)
+		tmpFile, tmpFileErr := os.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, osutil.PermissionOwnerReadWriteOthersRead)
 		require.NoError(t, tmpFileErr)
 		t.Cleanup(func() {
 			_ = tmpFile.Close()
@@ -169,7 +168,7 @@ func TestWatchLogsNoFollowEmptyFile(t *testing.T) {
 	t.Parallel()
 
 	tmpFilePath := getTempLogFilePath(t)
-	tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL, osutil.PermissionOwnerReadWriteOthersRead)
+	tmpFile, tmpFileErr := os.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL, osutil.PermissionOwnerReadWriteOthersRead)
 	require.NoError(t, tmpFileErr)
 	require.NoError(t, tmpFile.Close())
 	t.Cleanup(func() { _ = os.Remove(tmpFilePath) })
@@ -188,7 +187,7 @@ func TestWatchLogsNoFollowWholeFile(t *testing.T) {
 
 	const content = "hello\nworld\n"
 	tmpFilePath := getTempLogFilePath(t)
-	tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, osutil.PermissionOwnerReadWriteOthersRead)
+	tmpFile, tmpFileErr := os.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, osutil.PermissionOwnerReadWriteOthersRead)
 	require.NoError(t, tmpFileErr)
 	n, tmpFileErr := tmpFile.WriteString(content)
 	require.NoError(t, tmpFileErr)
