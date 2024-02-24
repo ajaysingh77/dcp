@@ -134,11 +134,30 @@ func (l *LogDescriptor) LogConsumerStopped() {
 	if l.consumerCount > 0 {
 		l.consumerCount--
 	}
+
+	// Self-dispose if there are no more consumers
+	// This will stop log capturing and delete the log files, saving machine resources.
+	if !l.disposed && l.consumerCount == 0 {
+		l.disposed = true
+		l.CancelContext()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // No consumers, so we do not need to wait for them to stop
+
+	// CONSIDER: logging errors from self-disposal
+	_ = l.doCleanup(ctx)
+}
+
+func (l *LogDescriptor) IsDisposed() bool {
+	l.lock.Lock()
+	defer l.lock.Unlock()
+
+	return l.disposed
 }
 
 // Waits for all log watchers to stop (with a passed deadline) and then deletes the log files (best effort).
 func (l *LogDescriptor) Dispose(deadline context.Context) error {
-	// Zero out the paths to log files immediately so that no new log watchers can be started.
 	l.lock.Lock()
 	if l.disposed {
 		l.lock.Unlock()
@@ -148,6 +167,10 @@ func (l *LogDescriptor) Dispose(deadline context.Context) error {
 	l.CancelContext()
 	l.lock.Unlock()
 
+	return l.doCleanup(deadline)
+}
+
+func (l *LogDescriptor) doCleanup(deadline context.Context) error {
 	_ = wait.PollUntilContextCancel(deadline, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
 		l.lock.Lock()
 		defer l.lock.Unlock()

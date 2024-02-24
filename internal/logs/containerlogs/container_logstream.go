@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -43,7 +42,7 @@ const (
 )
 
 func CreateContainerLogStream(
-	ctx context.Context,
+	requestCtx context.Context,
 	obj apiserver_resource.Object,
 	opts *apiv1.LogOptions,
 	parentKindStorage registry_rest.StandardStorage,
@@ -65,20 +64,20 @@ func CreateContainerLogStream(
 
 	case apiv1.ContainerStatePending, apiv1.ContainerStateStarting:
 		// TODO: need to wait for the logs to be availabe if opts.Follow is true
-		return io.NopCloser(strings.NewReader("")), nil
+		return nil, nil
 	}
 
 	if ctr.Status.ContainerID == "" {
 		// TODO: need to wait for the logs to be availabe if opts.Follow is true
-		return io.NopCloser(strings.NewReader("")), nil
+		return nil, nil
 	}
 
 	if opts.Source != "" && opts.Source != string(apiv1.LogStreamSourceStdout) && opts.Source != string(apiv1.LogStreamSourceStderr) {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("Invalid log source '%s'. Supported log sources are '%s' and '%s'", opts.Source, apiv1.LogStreamSourceStdout, apiv1.LogStreamSourceStderr))
 	}
 
-	hostLifetimeCtx := contextdata.GetHostLifetimeContext(ctx)
-	log := contextdata.GetContextLogger(ctx)
+	hostLifetimeCtx := contextdata.GetHostLifetimeContext(requestCtx)
+	log := contextdata.GetContextLogger(requestCtx)
 	logFolder := os.TempDir()
 	if dcpSessionDir, found := os.LookupEnv(logger.DCP_SESSION_FOLDER); found {
 		logFolder = dcpSessionDir
@@ -91,14 +90,14 @@ func CreateContainerLogStream(
 	}
 
 	ld, ldExisted := containerLogs.LoadOrStoreNew(ctr.UID, func() *logs.LogDescriptor {
-		logDescriptorCtx, cancel := context.WithCancel(hostLifetimeCtx)
+		logDescriptorCtx, cancel := context.WithCancel(requestCtx)
 		return logs.NewLogDescriptor(logDescriptorCtx, cancel, ctr.NamespacedName(), ctr.UID)
 	})
 
 	if !ldExisted {
 		// Need to start log capturing for the container
 
-		co, coErr := ensureContainerOrchestrator(ctx, log)
+		co, coErr := ensureContainerOrchestrator(requestCtx, log)
 		if coErr != nil {
 			log.Error(coErr, "failed to get Container orchestrator")
 			containerLogs.Delete(ctr.UID)
@@ -117,8 +116,7 @@ func CreateContainerLogStream(
 		})
 		if logCaptureErr != nil {
 			log.Error(logCaptureErr, "Failed to start capturing logs for Container", "Container", ctr.NamespacedName())
-			// Deliberately using the request context here for the timeout
-			shutdownCtx, cancel := context.WithTimeout(ctx, logCaptureShutdownTimeout)
+			shutdownCtx, cancel := context.WithTimeout(requestCtx, logCaptureShutdownTimeout)
 			defer cancel()
 			disposeErr := ld.Dispose(shutdownCtx)
 			if disposeErr != nil {
@@ -137,7 +135,7 @@ func CreateContainerLogStream(
 	}
 
 	var logFilePath string
-	if opts.Source == string(apiv1.LogStreamSourceStdout) {
+	if opts.Source == string(apiv1.LogStreamSourceStdout) || opts.Source == "" {
 		logFilePath = stdOutPath
 	} else {
 		logFilePath = stdErrPath
@@ -154,14 +152,6 @@ func CreateContainerLogStream(
 		}
 		ld.LogConsumerStopped()
 	}()
-	// We also need a singleton watcher for the Containers, to handle Container deletion.
-	//
-	// When a Container is removed (as reported by the watcher),
-	// we want to stop the log stream and any log watchers by cancelling the context,
-	// and then remove the stdout/stderr file objects. To track the watchers and log stream,
-	// we will have an atomic count of the number of watchers that includes the log streamer
-	// (part of the log descriptor). We wait (with a timeout) for the count to go to zero
-	// and then delete the file objects.
 
 	return reader, nil
 }

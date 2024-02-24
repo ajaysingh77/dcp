@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strings"
 
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -18,7 +17,7 @@ import (
 )
 
 func CreateExecutableLogStream(
-	ctx context.Context,
+	requestCtx context.Context,
 	obj apiserver_resource.Object,
 	opts *apiv1.LogOptions,
 	parentKindStorage registry_rest.StandardStorage,
@@ -42,7 +41,7 @@ func CreateExecutableLogStream(
 			logFilePath = exe.Status.StdOutFile
 		} else {
 			// TODO: need to wait for the logs to be availabe if opts.Follow is true
-			return io.NopCloser(strings.NewReader("")), nil
+			return nil, nil
 		}
 
 	case string(apiv1.LogStreamSourceStderr):
@@ -50,7 +49,7 @@ func CreateExecutableLogStream(
 			logFilePath = exe.Status.StdErrFile
 		} else {
 			// TODO: need to wait for the logs to be availabe if opts.Follow is true
-			return io.NopCloser(strings.NewReader("")), nil
+			return nil, nil
 		}
 
 	default:
@@ -58,10 +57,9 @@ func CreateExecutableLogStream(
 	}
 
 	reader, writer := io.Pipe()
-	hostLifetimeCtx := contextdata.GetHostLifetimeContext(ctx)
-	log := contextdata.GetContextLogger(ctx)
+	log := contextdata.GetContextLogger(requestCtx)
 	go func() {
-		err := logs.WatchLogs(hostLifetimeCtx, logFilePath, writer, logs.WatchLogOptions{Follow: opts.Follow})
+		err := logs.WatchLogs(requestCtx, logFilePath, writer, logs.WatchLogOptions{Follow: opts.Follow})
 		if err != nil {
 			log.Error(err, "Failed to watch Executable logs",
 				"Executable", exe.NamespacedName(),

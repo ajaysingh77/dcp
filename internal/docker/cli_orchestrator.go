@@ -413,11 +413,11 @@ func (dco *DockerCliOrchestrator) CaptureContainerLogs(ctx context.Context, cont
 
 	exitHandler := func(_ process.Pid_t, exitCode int32, err error) {
 		if err != nil {
-			dco.log.Error(err, "streaming container logs failed", "Container", container)
+			dco.log.Error(err, "capturing container logs failed", "Container", container)
 		} else if exitCode != 0 {
 			dco.log.Error(
-				fmt.Errorf("streaming container logs failed with exit code %d", exitCode),
-				"streaming container logs failed",
+				fmt.Errorf("capturing container logs failed with exit code %d", exitCode),
+				"capturing container logs failed",
 				"Container", container,
 			)
 		}

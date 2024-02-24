@@ -30,7 +30,7 @@ const (
 func getTempLogFilePath(t *testing.T) string {
 	suffix, err := randdata.MakeRandomString(8)
 	require.NoError(t, err)
-	return filepath.Join(t.TempDir(), fmt.Sprintf("%s-%s.log", t.Name(), suffix))
+	return filepath.Join(os.TempDir(), fmt.Sprintf("%s-%s.log", t.Name(), suffix))
 }
 
 // Ensure that log watcher in follow mode run on empty file does not return any data.
