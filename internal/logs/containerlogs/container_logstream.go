@@ -72,7 +72,7 @@ func CreateContainerLogStream(
 	hostLifetimeCtx := contextdata.GetHostLifetimeContext(requestCtx)
 	log := contextdata.GetContextLogger(requestCtx)
 
-	co, err := ensureDependencies(hostLifetimeCtx, parentKindStorage, log)
+	co, err := ensureDependencies(requestCtx, parentKindStorage, log)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +117,7 @@ func CreateContainerLogStream(
 
 	reader, writer := io.Pipe()
 	go func() {
-		logWatchErr := logs.WatchLogs(ld.Context, logFilePath, writer, logs.WatchLogOptions{Follow: opts.Follow})
+		logWatchErr := logs.WatchLogs(requestCtx, logFilePath, writer, logs.WatchLogOptions{Follow: opts.Follow})
 		if logWatchErr != nil {
 			log.Error(logWatchErr, "Failed to watch Container logs",
 				"Container", ctr.NamespacedName(),
@@ -130,7 +130,8 @@ func CreateContainerLogStream(
 	return reader, nil
 }
 
-func ensureDependencies(hostLifetimeCtx context.Context, parentKindStorage registry_rest.StandardStorage, log logr.Logger) (containers.ContainerOrchestrator, error) {
+func ensureDependencies(requestCtx context.Context, parentKindStorage registry_rest.StandardStorage, log logr.Logger) (containers.ContainerOrchestrator, error) {
+	hostLifetimeCtx := contextdata.GetHostLifetimeContext(requestCtx)
 	ensureContainerLogDescriptors(hostLifetimeCtx)
 
 	containerWatcherErr := ensureContainerWatcher(hostLifetimeCtx, parentKindStorage, log)
@@ -139,7 +140,7 @@ func ensureDependencies(hostLifetimeCtx context.Context, parentKindStorage regis
 		return nil, apierrors.NewInternalError(containerWatcherErr)
 	}
 
-	co, coErr := ensureContainerOrchestrator(hostLifetimeCtx, log)
+	co, coErr := ensureContainerOrchestrator(requestCtx, log)
 	if coErr != nil {
 		log.Error(coErr, "failed to get Container orchestrator")
 		return nil, apierrors.NewInternalError(coErr)
@@ -148,15 +149,16 @@ func ensureDependencies(hostLifetimeCtx context.Context, parentKindStorage regis
 	return co, nil
 }
 
-func ensureContainerOrchestrator(ctx context.Context, log logr.Logger) (containers.ContainerOrchestrator, error) {
+func ensureContainerOrchestrator(requestCtx context.Context, log logr.Logger) (containers.ContainerOrchestrator, error) {
 	lock.Lock()
 	defer lock.Unlock()
 	if containerOrchestrator != nil {
 		return containerOrchestrator, nil
 	}
 
-	pe := contextdata.GetProcessExecutor(ctx)
-	co, err := container_flags.GetContainerOrchestrator(ctx, log.WithName("ContainerOrchestrator").WithValues("ContainerRuntime", container_flags.GetRuntimeFlagArg()), pe)
+	pe := contextdata.GetProcessExecutor(requestCtx)
+	hostLifetimeCtx := contextdata.GetHostLifetimeContext(requestCtx)
+	co, err := container_flags.GetContainerOrchestrator(hostLifetimeCtx, log.WithName("ContainerOrchestrator").WithValues("ContainerRuntime", container_flags.GetRuntimeFlagArg()), pe)
 	if err != nil {
 		return nil, err
 	}

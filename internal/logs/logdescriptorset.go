@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	oldDescriptorScavengeInterval    = 1 * time.Minute
-	oldDescriptorNonUseTimeout       = 15 * time.Second
+	oldDescriptorScavengeInterval    = 30 * time.Second
+	oldDescriptorNonUseTimeout       = 10 * time.Second
 	DefaultDescriptorDisposalTimeout = 2 * time.Second
 )
 
@@ -95,7 +95,7 @@ func (lds *LogDescriptorSet) scavenger() {
 		case <-timer.C:
 			lds.lock.Lock()
 
-			oldDescriptors := make([]*LogDescriptor, len(lds.descriptors))
+			var oldDescriptors []*LogDescriptor
 			for _, ld := range lds.descriptors {
 				consumers, lastUsed := ld.Usage()
 				if ld.IsDisposed() || (consumers == 0 && time.Since(lastUsed) > oldDescriptorNonUseTimeout) {

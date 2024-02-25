@@ -371,7 +371,9 @@ func (dco *PodmanCliOrchestrator) CaptureContainerLogs(ctx context.Context, cont
 
 	exitHandler := func(_ process.Pid_t, exitCode int32, err error) {
 		if err != nil {
-			dco.log.Error(err, "capturing container logs failed", "Container", container)
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				dco.log.Error(err, "capturing container logs failed", "Container", container)
+			}
 		} else if exitCode != 0 {
 			dco.log.Error(
 				fmt.Errorf("streaming container logs failed with exit code %d", exitCode),
