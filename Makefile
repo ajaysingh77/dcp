@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 
 ifneq (3.81,$(firstword $(sort $(MAKE_VERSION) 3.81)))
-    $(error This Makefile requires make version 3.81 or newer. You have make version $(MAKE_VERSION))
+	$(error This Makefile requires make version 3.81 or newer. You have make version $(MAKE_VERSION))
 endif
 
 # Detect the operating system, and configure shell and shell commands.
@@ -115,10 +115,10 @@ version_values := -X 'github.com/microsoft/usvc-apiserver/internal/version.Produ
 export CGO_ENABLED=0
 
 ifeq ($(detected_OS),windows)
-    GO_SOURCES := $(shell Get-ChildItem -Include '*.go' -Exclude 'zz_generated*' -Recurse -File | Select-Object -ExpandProperty FullName)
+	GO_SOURCES := $(shell Get-ChildItem -Include '*.go' -Exclude 'zz_generated*' -Recurse -File | Select-Object -ExpandProperty FullName)
 	TYPE_SOURCES := $(shell Get-ChildItem -Path './api/v1/*' -Include '*.go' -Exclude 'zz_generated*' -File | Select-Object -ExpandProperty FullName)
 else
-    GO_SOURCES := $(shell find . -name '*.go' -not -name 'zz_generated*' -type f)
+	GO_SOURCES := $(shell find . -name '*.go' -not -name 'zz_generated*' -type f)
 	TYPE_SOURCES := $(shell find ./api/v1 -name '*.go' -not -name 'zz_generated*' -type f)
 endif
 
