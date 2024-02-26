@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	defaultBufferSize = 4096 // Does not have to be, but it is the same size as bufio default buffer size (Go 1.22)
-	fileWatchTimeout  = 10 * time.Second
-	fileWatchRetries  = 3
+	defaultBufferSize   = 4096 // Does not have to be, but it is the same size as bufio default buffer size (Go 1.22)
+	maxFileWatchTimeout = 10 * time.Second
+	minFileWatchTimeout = 100 * time.Millisecond
+	fileWatchRetries    = 3
 )
 
 type WatchLogOptions struct {
@@ -26,7 +27,7 @@ type WatchLogOptions struct {
 }
 
 // WatchLogs watches a log file on disk and sends its contents to supplied writer
-func WatchLogs(ctx context.Context, path string, dest io.WriteCloser, opts WatchLogOptions) error {
+func WatchLogs(ctx context.Context, path string, dest *io.PipeWriter, opts WatchLogOptions) error {
 	if path == "" {
 		return fmt.Errorf("log file path is empty")
 	}
@@ -62,6 +63,15 @@ func WatchLogs(ctx context.Context, path string, dest io.WriteCloser, opts Watch
 	// 3. Have individual log file watchers subscribe to the directory watcher for change notifications to their own files
 	var watcher *fsnotify.Watcher
 	var timer *time.Timer
+
+	// If this is the first time we are watching a resource, there is a lot of opportunity for timing issues to occur.
+	// We might be just spinning up the log capturing process, and the log source file might be empty.
+	// This means first read will not get any data, and we set up a file notification watcher.
+	// If the log data is small and gets written in one shot right after our first read, but before we set up the watcher,
+	// we will miss the change event.
+	// To work around this issue we will start with a small watch timeout and increase it exponentially to maxFileWatchTimeout.
+	// After we get going, it is unlikely that we miss any change events, so we can keep the timeout at max.
+	watchTimeout := minFileWatchTimeout
 
 	for {
 		if ctx.Err() != nil {
@@ -108,7 +118,14 @@ func WatchLogs(ctx context.Context, path string, dest io.WriteCloser, opts Watch
 			continue
 		}
 
-		waitForLogChange(ctx, watcher, path, timer)
+		endReason := waitForLogChange(ctx, watcher, path, timer, watchTimeout)
+
+		if endReason == waitEndReasonTimerExpired && watchTimeout < maxFileWatchTimeout {
+			watchTimeout *= 2
+			if watchTimeout > maxFileWatchTimeout {
+				watchTimeout = maxFileWatchTimeout
+			}
+		}
 	}
 }
 
@@ -124,22 +141,37 @@ func createFileWatchInfra(path string) (*fsnotify.Watcher, *time.Timer, error) {
 		return nil, nil, fmt.Errorf("failed to add log file '%s' to watcher: %w", path, watcherErr)
 	}
 
-	timer := time.NewTimer(fileWatchTimeout)
+	timer := time.NewTimer(minFileWatchTimeout)
 	return watcher, timer, nil
 }
 
-func waitForLogChange(ctx context.Context, watcher *fsnotify.Watcher, path string, timer *time.Timer) {
+type waitEndReason int
+
+const (
+	waitEndReasonFileChanged waitEndReason = iota
+	waitEndReasonWatcherError
+	waitEndReasonTimerExpired
+	waitEndReasonContextCancelled
+)
+
+func waitForLogChange(
+	ctx context.Context,
+	watcher *fsnotify.Watcher,
+	path string,
+	timer *time.Timer,
+	watchTimeout time.Duration,
+) waitEndReason {
 	fileWatchRetryCount := 0
-	timer.Reset(fileWatchTimeout)
+	timer.Reset(watchTimeout)
 
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return waitEndReasonContextCancelled
 
 		case we := <-watcher.Events:
 			if (we.Op == fsnotify.Write || we.Op == fsnotify.Remove) && we.Name == path {
-				return
+				return waitEndReasonFileChanged
 			}
 
 		case <-watcher.Errors:
@@ -148,13 +180,12 @@ func waitForLogChange(ctx context.Context, watcher *fsnotify.Watcher, path strin
 			if fileWatchRetryCount < fileWatchRetries {
 				fileWatchRetryCount++
 			} else {
-				return
+				return waitEndReasonWatcherError
 			}
 
 		case <-timer.C:
-			// Just in case the file watch event(s) do not arrive as expected,
-			// we will do some low-frequency polling too.
-			return
+			// Just in case the file watch event(s) do not arrive as expected, we will do some polling too.
+			return waitEndReasonTimerExpired
 		}
 	}
 }
