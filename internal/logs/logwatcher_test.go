@@ -1,8 +1,4 @@
-//go:build !windows
-
 // Copyright (c) Microsoft Corporation. All rights reserved.
-
-// TODO: these tests fail inside Windows CI pipeline with "access denied" error, need to investigate and fix
 
 package logs
 
@@ -42,7 +38,7 @@ func TestWatchLogsFollowEmptyFile(t *testing.T) {
 	t.Parallel()
 
 	tmpFilePath := getTempLogFilePath(t)
-	tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL, osutil.PermissionOwnerReadWriteOthersRead)
+	tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
 	require.NoError(t, tmpFileErr)
 	require.NoError(t, tmpFile.Close())
 	t.Cleanup(func() { _ = os.Remove(tmpFilePath) })
@@ -72,7 +68,7 @@ func TestWatchLogsFollowWholeFile(t *testing.T) {
 
 	const content = "hello\nworld\n"
 	tmpFilePath := getTempLogFilePath(t)
-	tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, osutil.PermissionOwnerReadWriteOthersRead)
+	tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, osutil.PermissionOnlyOwnerReadWrite)
 	require.NoError(t, tmpFileErr)
 	n, tmpFileErr := tmpFile.WriteString(content)
 	require.NoError(t, tmpFileErr)
@@ -118,7 +114,7 @@ func TestWatchLogsFollowGetsAllData(t *testing.T) {
 
 	for try := 0; try < len(content)+1; try++ {
 		tmpFilePath := getTempLogFilePath(t)
-		tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, osutil.PermissionOwnerReadWriteOthersRead)
+		tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, osutil.PermissionOnlyOwnerReadWrite)
 		require.NoError(t, tmpFileErr)
 		t.Cleanup(func() {
 			_ = tmpFile.Close()
@@ -173,7 +169,7 @@ func TestWatchLogsNoFollowEmptyFile(t *testing.T) {
 	t.Parallel()
 
 	tmpFilePath := getTempLogFilePath(t)
-	tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL, osutil.PermissionOwnerReadWriteOthersRead)
+	tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
 	require.NoError(t, tmpFileErr)
 	require.NoError(t, tmpFile.Close())
 	t.Cleanup(func() { _ = os.Remove(tmpFilePath) })
@@ -192,7 +188,7 @@ func TestWatchLogsNoFollowWholeFile(t *testing.T) {
 
 	const content = "hello\nworld\n"
 	tmpFilePath := getTempLogFilePath(t)
-	tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, osutil.PermissionOwnerReadWriteOthersRead)
+	tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, osutil.PermissionOnlyOwnerReadWrite)
 	require.NoError(t, tmpFileErr)
 	n, tmpFileErr := tmpFile.WriteString(content)
 	require.NoError(t, tmpFileErr)
