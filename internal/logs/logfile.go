@@ -32,15 +32,6 @@ func newLogFile(inner WriteSyncerCloser, id string) *logfile {
 
 func (f *logfile) Write(p []byte) (int, error) {
 	return f.inner.Write(p)
-	/*
-		written, err := f.inner.Write(p)
-		if err != nil {
-			return written, err
-		}
-
-		syncErr := f.inner.Sync()
-		return written, syncErr
-	*/
 }
 
 func (f *logfile) Close() error {
