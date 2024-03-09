@@ -16,6 +16,11 @@ import (
 // the file is only readable by other elevated processes. If not running as administrator, we
 // simply use the standard os.OpenFile function.
 func OpenFile(name string, flag int, perm os.FileMode) (*os.File, error) {
+	if flag == os.O_RDONLY {
+		// If we are only reading the file, we don't need to do anything special
+		return os.OpenFile(name, flag, perm)
+	}
+
 	// Get the actual token for the process
 	var processToken windows.Token
 	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &processToken); err != nil {
