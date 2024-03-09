@@ -132,6 +132,15 @@ func urlValuesToLogOptions(in *url.Values, out *LogOptions, cscope conversion.Sc
 		out.Source = ""
 	}
 
+	timestampsValues := (*in)["timestamps"]
+	if len(timestampsValues) > 0 {
+		if err := runtime.Convert_Slice_string_To_bool(&timestampsValues, &out.Timestamps, cscope); err != nil {
+			return fmt.Errorf("failed to convert LogOptions 'timestamps' parameter: %w", err)
+		}
+	} else {
+		out.Timestamps = false
+	}
+
 	return nil
 }
 
