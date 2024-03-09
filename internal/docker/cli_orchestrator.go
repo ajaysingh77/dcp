@@ -658,6 +658,7 @@ func (dco *DockerCliOrchestrator) runDockerCommand(ctx context.Context, commandN
 	effectiveCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	dco.log.V(1).Info("Running Docker command", "Command", cmd.String())
 	exitCode, err := process.RunWithTimeout(effectiveCtx, dco.executor, cmd)
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		// If a timeout occurs, the content of the stdout and stderr buffers is not guaranteed to be complete.
