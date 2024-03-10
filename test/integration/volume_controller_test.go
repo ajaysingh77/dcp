@@ -92,7 +92,9 @@ func TestVolumeDeletion(t *testing.T) {
 	_ = ensureVolumeCreated(t, ctx, &vol)
 
 	t.Log("Deleting ContainerVolume object...")
-	err = client.Delete(ctx, &vol)
+	err = retryOnConflict(ctx, vol.NamespacedName(), func(ctx context.Context, currentVol *apiv1.ContainerVolume) error {
+		return client.Delete(ctx, currentVol)
+	})
 	require.NoError(t, err, "ContainerVolume object could not be deleted")
 
 	t.Log("Ensure that ContainerVolume object really disappeared from the API server...")

@@ -293,9 +293,12 @@ func TestExecutableStopState(t *testing.T) {
 			})
 
 			t.Logf("Setting Executable '%s' stop to 'true'...", tc.exe.ObjectMeta.Name)
-			exePatch := updatedExe.DeepCopy()
-			exePatch.Spec.Stop = true
-			if err := client.Patch(ctx, exePatch, ctrl_client.MergeFrom(updatedExe)); err != nil {
+			err := retryOnConflict(ctx, updatedExe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+				exePatch := currentExe.DeepCopy()
+				exePatch.Spec.Stop = true
+				return client.Patch(ctx, exePatch, ctrl_client.MergeFromWithOptions(currentExe, ctrl_client.MergeFromWithOptimisticLock{}))
+			})
+			if err != nil {
 				t.Fatalf("Unable to update Executable: %v", err)
 			}
 
@@ -306,7 +309,10 @@ func TestExecutableStopState(t *testing.T) {
 				return currentExe.Status.State == apiv1.ExecutableStateFinished, nil
 			})
 
-			if err := client.Delete(ctx, updatedExe); err != nil {
+			err = retryOnConflict(ctx, updatedExe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+				return client.Delete(ctx, currentExe)
+			})
+			if err != nil {
 				t.Fatalf("Unable to delete Executable: %v", err)
 			}
 		})
@@ -404,7 +410,10 @@ func TestExecutableDeletion(t *testing.T) {
 			})
 
 			t.Logf("Deleting Executable '%s' object...", tc.exe.ObjectMeta.Name)
-			if err := client.Delete(ctx, updatedExe); err != nil {
+			err := retryOnConflict(ctx, updatedExe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+				return client.Delete(ctx, currentExe)
+			})
+			if err != nil {
 				t.Fatalf("Unable to delete Executable: %v", err)
 			}
 
