@@ -213,7 +213,7 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 			svc.Status.State = apiv1.ServiceStateReady
 
 			// If an Endpoint was previously chosen, we need to ensure it is still valid, and if not choose another.
-			if svc.Status.ProxylessEndpointNamespace != "" && svc.Status.ProxylessEndpointName != "" {
+			if svc.Status.ProxylessEndpointName != "" {
 				// Ensure the previously chosen Endpoint still exists
 				endpointStillExists := slices.Any(serviceEndpoints.Items, func(endpoint apiv1.Endpoint) bool {
 					return endpoint.ObjectMeta.Namespace == svc.Status.ProxylessEndpointNamespace && endpoint.ObjectMeta.Name == svc.Status.ProxylessEndpointName
