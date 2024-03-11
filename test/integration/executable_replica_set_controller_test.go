@@ -167,6 +167,7 @@ func TestExecutableReplicaSetRecreatesDeletedReplicas(t *testing.T) {
 	exeToDelete := ownedExes[0]
 	oldUid := exeToDelete.UID
 
+	t.Logf("Deleting replica '%s'", exeToDelete.ObjectMeta.Name)
 	err = retryOnConflict(ctx, exeToDelete.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
 		return client.Delete(ctx, exeToDelete, ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground))
 	})
@@ -174,6 +175,7 @@ func TestExecutableReplicaSetRecreatesDeletedReplicas(t *testing.T) {
 		t.Fatalf("could not delete Executable: %v", err)
 	}
 
+	t.Logf("Waiting for ExecutableReplicaSet '%s' to recreate the deleted replica", exers.ObjectMeta.Name)
 	ensureReplicasRecreated := func(ctx context.Context) (bool, error) {
 		newOwnedExes, ownedExesQueryErr := getOwnedExes(ctx, &exers)
 		if ownedExesQueryErr != nil {

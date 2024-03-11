@@ -305,6 +305,7 @@ func TestExecutableStopState(t *testing.T) {
 			t.Logf("Waiting for process associated with Executable '%s' to be killed...", tc.exe.ObjectMeta.Name)
 			tc.verifyRunEnded(ctx, t, tc.exe)
 
+			t.Logf("Verify Executable '%s' reaches Finished state...", tc.exe.ObjectMeta.Name)
 			updatedExe = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(tc.exe), func(currentExe *apiv1.Executable) (bool, error) {
 				return currentExe.Status.State == apiv1.ExecutableStateFinished, nil
 			})
