@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	iofs "io/fs"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,7 +84,7 @@ func createKubeconfigFile(path string, port int32) error {
 	// it will contain both IPv4 and IPv6 addresses. However, different programming languages and libraries may
 	// "choose" different addresses to try first (e.g. some might prefer IPv4 vs IPv6).
 	// The result can be long connection delays. To avoid that we will use specific IP address.
-	ips, err := net.LookupIP("localhost")
+	ips, err := networking.LookupIP("localhost")
 	if err != nil {
 		return fmt.Errorf("kubeconfig file creation failed: could not obtain IP address(es) for localhost: %w", err)
 	}

@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strconv"
 
+	"github.com/microsoft/usvc-apiserver/internal/networking"
 	clientcmd "k8s.io/client-go/tools/clientcmd"
 )
 
@@ -48,7 +49,7 @@ func GetKubeConfigData(kubeconfigPath string) (net.IP, int, string, error) {
 		return nil, InvalidPort, "", fmt.Errorf("could not determine the port to use for the API server; the port information in server URL ('%s') is either missing or invalid: %w", clusterUrl.Port(), err)
 	}
 
-	ips, err := net.LookupIP(clusterUrl.Hostname())
+	ips, err := networking.LookupIP(clusterUrl.Hostname())
 	if err != nil || len(ips) == 0 {
 		return nil, InvalidPort, "", fmt.Errorf("could not determine the network address to use for the API server; the host name information in server URL ('%s') is either missing or invalid: %w", clusterUrl.Hostname(), err)
 	}
