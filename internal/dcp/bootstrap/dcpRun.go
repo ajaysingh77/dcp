@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-logr/logr"
 
+	"github.com/microsoft/usvc-apiserver/internal/apiserver"
 	"github.com/microsoft/usvc-apiserver/internal/hosting"
 	"github.com/microsoft/usvc-apiserver/pkg/extensions"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
@@ -36,21 +37,9 @@ func DcpRun(
 		log.Info("No controllers found. Check DCP installation.")
 	}
 
-	// Start API server and controllers.
-	apiServerExtensions := slices.Select(allExtensions, func(ext DcpExtension) bool {
-		return slices.Contains(ext.Capabilities, extensions.ApiServerCapability)
-	})
-	if len(apiServerExtensions) == 0 {
-		return fmt.Errorf("no API servers found")
-	} else if len(apiServerExtensions) > 1 {
-		return fmt.Errorf("multiple API servers found")
-	}
-	apiServerSvc, err := NewDcpExtensionService(cwd, apiServerExtensions[0], "", invocationFlags, log)
-	if err != nil {
-		return fmt.Errorf("could not start the API server: %w", err)
-	}
+	apiServer := apiserver.NewApiServer(string(extensions.ApiServerCapability), log)
 
-	hostedServices := []hosting.Service{apiServerSvc}
+	hostedServices := []hosting.Service{apiServer}
 	for _, controller := range controllers {
 		controllerService, ctrlCreationErr := NewDcpExtensionService(cwd, controller, "run-controllers", invocationFlags, log)
 		if ctrlCreationErr != nil {
@@ -76,6 +65,7 @@ func DcpRun(
 		}
 	}
 
+	var err error
 	if evtHandlers.AfterApiSrvStart != nil {
 		if err = evtHandlers.AfterApiSrvStart(); err != nil {
 			return errors.Join(err, shutdownHost())
@@ -92,7 +82,7 @@ func DcpRun(
 				return nil
 
 			case msg := <-lifecycleMsgs:
-				if msg.Err != nil && msg.ServiceName == apiServerSvc.Name() {
+				if msg.Err != nil && msg.ServiceName == apiServer.Name() {
 					log.Error(msg.Err, "API server exited with an error. Graceful shutdown is not possible. Terminating...")
 
 					err = fmt.Errorf("API server exited with an error: %w.\nGraceful shutdown is not possible. Terminating...", msg.Err)

@@ -21,8 +21,9 @@ import (
 )
 
 var (
-	rootDir string
-	detach  bool
+	rootDir    string
+	detach     bool
+	serverOnly bool
 )
 
 func NewStartApiSrvCommand(log logger.Logger) (*cobra.Command, error) {
@@ -39,6 +40,7 @@ func NewStartApiSrvCommand(log logger.Logger) (*cobra.Command, error) {
 
 	startApiSrvCmd.Flags().StringVarP(&rootDir, "root-dir", "r", "", "If present, tells DCP to use specific directory as the application root directory. Defaults to current working directory.")
 	startApiSrvCmd.Flags().BoolVar(&detach, "detach", false, "If present, instructs DCP to fork itself as a detached process.")
+	startApiSrvCmd.Flags().BoolVar(&serverOnly, "server-only", false, "If present, instructs DCP to start only the API server and not the controllers. This is useful for testing the API server in isolation.")
 
 	container_flags.EnsureRuntimeFlag(startApiSrvCmd.Flags())
 	cmds.AddMonitorFlags(startApiSrvCmd)
@@ -115,9 +117,12 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 
-		allExtensions, err := bootstrap.GetExtensions(ctx, log)
-		if err != nil {
-			return err
+		var allExtensions []bootstrap.DcpExtension
+		if !serverOnly {
+			allExtensions, err = bootstrap.GetExtensions(ctx, log)
+			if err != nil {
+				return err
+			}
 		}
 
 		runEvtHandlers := bootstrap.DcpRunEventHandlers{

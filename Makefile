@@ -81,7 +81,6 @@ DCP_DIR ?= $(home_dir)/.dcp
 EXTENSIONS_DIR ?= $(home_dir)/.dcp/ext
 BIN_DIR ?= $(home_dir)/.dcp/ext/bin
 DCP_BINARY ?= ${OUTPUT_BIN}/dcp$(bin_exe_suffix)
-DCPD_BINARY ?= ${OUTPUT_BIN}/ext/dcpd$(bin_exe_suffix)
 DCPCTRL_BINARY ?= $(OUTPUT_BIN)/ext/dcpctrl$(bin_exe_suffix)
 
 # Locations and definitions for tool binaries
@@ -174,7 +173,6 @@ $(repo_dir)/pkg/generated/openapi/zz_generated.openapi.go: $(TYPE_SOURCES) opena
 .PHONY: generate-goversioninfo
 generate-goversioninfo: goversioninfo-gen
 	$(GOVERSIONINFO_GEN) $(GOVERSIONINFO_ARCH_FLAGS) -o $(repo_dir)/cmd/dcp/resource.syso -product-version "$(VERSION) $(COMMIT)" -ver-major=$(VERSION_MAJOR) -ver-minor=$(VERSION_MINOR) -ver-patch=$(VERSION_PATCH) -ver-build=0 $(repo_dir)/cmd/dcp/versioninfo.json ## Generates version information for Windows binaries
-	$(copy) $(repo_dir)/cmd/dcp/resource.syso $(repo_dir)/cmd/dcpd/resource.syso
 	$(copy) $(repo_dir)/cmd/dcp/resource.syso $(repo_dir)/cmd/dcpctrl/resource.syso
 
 .PHONY: generate-licenses
@@ -182,7 +180,7 @@ generate-licenses: generate-dependency-notices ## Generates license/notice files
 
 .PHONY: generate-dependency-notices
 generate-dependency-notices: go-licenses
-	$(GO_LICENSES) report ./cmd/dcp ./cmd/dcpd ./cmd/dcpctrl --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver > NOTICE
+	$(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver > NOTICE
 
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN)
@@ -231,20 +229,15 @@ $(DELAY_TOOL): $(wildcard ./test/delay/*.go) | $(TOOL_BIN)
 release: BUILD_ARGS := $(BUILD_ARGS) -ldflags "-s -w $(version_values)"
 release: compile ## Builds all binaries with flags to reduce binary size
 
-build: generate compile ## Runs codegen and builds all binaries (DCP CLI, DCP API server, and controller host)
+build: generate compile ## Runs codegen and builds DCP CLI and controller host
 
-build-ci: generate-ci release ## Runs codegen, including license/notice files, then builds all binaries (DCP CLI, DCP API server, and controller host) with flags to reduce binary size
+build-ci: generate-ci release ## Runs codegen, including license/notice files, then builds DCP CLI and controller host with flags to reduce binary size
 
 compile: BUILD_ARGS := $(BUILD_ARGS) -ldflags "$(version_values)"
-compile: build-dcpd build-dcpctrl build-dcp ## Builds all binaries (DCP CLI, DCP API server, and controller host) (skips codegen)
+compile: build-dcpctrl build-dcp ## Builds DCP CLI and controller host (skips codegen)
 
 compile-debug: BUILD_ARGS := $(BUILD_ARGS) -gcflags="all=-N -l" -ldflags "$(version_values)"
-compile-debug: build-dcpd build-dcpctrl build-dcp ## Builds all binaries (DCP CLI, DCP API server, and controller host) with debug symbols (good for debugging; skips codegen)
-
-.PHONY: build-dcpd
-build-dcpd: $(DCPD_BINARY) ## Builds DCP API server binary (dcpd)
-$(DCPD_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
-	go build -o $(DCPD_BINARY) $(BUILD_ARGS) ./cmd/dcpd
+compile-debug: build-dcpctrl build-dcp ## Builds DCP CLI and controller host with debug symbols (good for debugging; skips codegen)
 
 .PHONY: build-dcp
 build-dcp: $(DCP_BINARY) ## Builds DCP CLI binary
@@ -272,13 +265,11 @@ endif
 
 .PHONY: install
 install: compile | $(DCP_DIR) $(EXTENSIONS_DIR) ## Installs all binaries to their destinations
-	$(install) $(DCPD_BINARY) $(EXTENSIONS_DIR)
 	$(install) $(DCPCTRL_BINARY) $(EXTENSIONS_DIR)
 	$(install) $(DCP_BINARY) $(DCP_DIR)
 
 .PHONY: uninstall
 uninstall: ## Uninstalls all binaries from their destinations
-	$(rm_f) $(EXTENSIONS_DIR)/dcpd$(bin_exe_suffix)
 	$(rm_f) $(EXTENSIONS_DIR)/dcpctrl$(bin_exe_suffix)
 	$(rm_f) $(DCP_DIR)/dcp$(bin_exe_suffix)
 
@@ -292,18 +283,18 @@ endif
 
 .PHONY: test
 test: TEST_OPTS = -coverprofile cover.out
-test: build-dcpd delay-tool ## Run all tests in the repository
+test: build-dcp delay-tool ## Run all tests in the repository
 	go test ./... $(TEST_OPTS)
 
 .PHONY: test-ci
 ifeq ($(detected_OS),windows)
 # On Windows enabling -race requires additional components to be installed (gcc), so we do not support it at the moment.
 test-ci: TEST_OPTS = -coverprofile cover.out -count 1
-test-ci: lint build-dcpd delay-tool
+test-ci: lint build-dcp delay-tool
 	go test ./... $(TEST_OPTS)
 else
 test-ci: TEST_OPTS = -coverprofile cover.out -race -count 1
-test-ci: lint build-dcpd delay-tool ## Runs tests in a way appropriate for CI pipeline, with linting etc.
+test-ci: lint build-dcp delay-tool ## Runs tests in a way appropriate for CI pipeline, with linting etc.
 	CGO_ENABLED=1 go test ./... $(TEST_OPTS)
 endif
 

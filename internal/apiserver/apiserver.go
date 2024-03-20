@@ -27,7 +27,6 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/pkg/generated/openapi"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
@@ -39,11 +38,11 @@ const (
 
 type ApiServer struct {
 	name         string
-	logger       logger.Logger
+	logger       logr.Logger
 	runCompleted bool
 }
 
-func NewApiServer(name string, logger logger.Logger) *ApiServer {
+func NewApiServer(name string, logger logr.Logger) *ApiServer {
 	return &ApiServer{
 		name:         name,
 		logger:       logger,
@@ -57,7 +56,6 @@ func (s *ApiServer) Name() string {
 
 func (s *ApiServer) Run(ctx context.Context) error {
 	log := s.logger.WithName(s.name)
-	defer s.logger.Flush()
 
 	log.Info("Starting API server...")
 
