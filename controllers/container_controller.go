@@ -24,6 +24,7 @@ import (
 	ctrl_source "sigs.k8s.io/controller-runtime/pkg/source"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/internal/containers"
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
@@ -234,8 +235,8 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 			switch container.Status.State {
 			case apiv1.ContainerStateRunning:
-				_, runData, found := r.runningContainers.FindBySecondKey(container.NamespacedName())
-				if !found {
+				_, runData, running := r.runningContainers.FindBySecondKey(container.NamespacedName())
+				if !running {
 					// Should never happen
 					log.Error(fmt.Errorf("missing running container data"), "", "ContainerID", container.Status.ContainerID, "ContainerState", container.Status.State)
 				} else {
@@ -259,8 +260,8 @@ func (r *ContainerReconciler) stopContainer(ctx context.Context, container *apiv
 	// This method is called only when we never attempted to start the container,
 	// or if the has already finished starting and we know the outcome.
 
-	containerID, _, found := r.runningContainers.FindBySecondKey(container.NamespacedName())
-	if !found {
+	containerID, _, running := r.runningContainers.FindBySecondKey(container.NamespacedName())
+	if !running {
 		log.V(1).Info("running container data is not available; nothing to stop")
 		return
 	}
@@ -276,8 +277,8 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 	// This method is called only when we never attempted to start the container,
 	// or if the container has already finished starting and we know the outcome.
 
-	containerID, _, found := r.runningContainers.FindBySecondKey(container.NamespacedName())
-	if !found {
+	containerID, _, running := r.runningContainers.FindBySecondKey(container.NamespacedName())
+	if !running {
 		// We either never started the container, or we already attempted to remove the container
 		// and the current reconciliation call is just the cache catching up.
 		// Either way there is nothing to do.
@@ -332,7 +333,7 @@ func (r *ContainerReconciler) handleInitialNetworkConnections(ctx context.Contex
 }
 
 func (r *ContainerReconciler) manageContainer(ctx context.Context, container *apiv1.Container, log logr.Logger) objectChange {
-	containerID, rcd, found := r.runningContainers.FindBySecondKey(container.NamespacedName())
+	containerID, rcd, running := r.runningContainers.FindBySecondKey(container.NamespacedName())
 	_, starting := r.startingContainers.Load(container.NamespacedName())
 
 	switch {
@@ -362,7 +363,7 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 
 	case container.Status.State == apiv1.ContainerStateStarting:
 
-		if !found {
+		if !running {
 			// We are still waiting for the container to start.
 			// Whatever triggered reconciliation, it was not a container event and does not matter.
 			return noChange
@@ -424,7 +425,7 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 			return statusChanged
 		}
 
-	case !found:
+	case !running:
 
 		// This should never really happen--we should be tracking this container via our runningContainers map
 		// from the startup attempt till it is deleted. Not much we can do at this point, let's mark it as finished-unknown state
@@ -1030,8 +1031,8 @@ func (r *ContainerReconciler) processContainerEvent(em ct.EventMessage) {
 	// Any event that means the container has been started, stopped, or was removed, is interesting
 	case ct.EventActionCreate, ct.EventActionDestroy, ct.EventActionDie, ct.EventActionKill, ct.EventActionOom, ct.EventActionStop, ct.EventActionRestart, ct.EventActionStart, ct.EventActionPrune:
 		containerID := em.Actor.ID
-		owner, _, found := r.runningContainers.FindByFirstKey(containerID)
-		if !found {
+		owner, _, running := r.runningContainers.FindByFirstKey(containerID)
+		if !running {
 			// We are not tracking this container
 			return
 		}
@@ -1052,8 +1053,8 @@ func (r *ContainerReconciler) processNetworkEvent(em ct.EventMessage) {
 			return
 		}
 
-		owner, _, found := r.runningContainers.FindByFirstKey(containerID)
-		if !found {
+		owner, _, running := r.runningContainers.FindByFirstKey(containerID)
+		if !running {
 			// We are not tracking this container
 			return
 		}
@@ -1177,6 +1178,10 @@ func (r *ContainerReconciler) getHostAddressAndPortForContainerPort(
 	inspected, err := r.findContainer(ctx, ctr.Status.ContainerID)
 	if err != nil {
 		return "", 0, err
+	}
+
+	if inspected.Status != containers.ContainerStatusRunning {
+		return "", 0, fmt.Errorf("container '%s' is not running: %s", inspected.Name, inspected.Status)
 	}
 
 	var matchedHostPort ct.InspectedContainerHostPortConfig
