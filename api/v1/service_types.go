@@ -160,7 +160,6 @@ func (svc *Service) NamespacedName() types.NamespacedName {
 }
 
 func (svc *Service) Validate(ctx context.Context) field.ErrorList {
-	// TODO: implement validation
 	return nil
 }
 

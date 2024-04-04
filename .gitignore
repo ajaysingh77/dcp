@@ -26,3 +26,4 @@ __debug_*
 
 # Misc. extra exclusions
 .DS_Store
+.mono/

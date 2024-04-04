@@ -83,7 +83,6 @@ func (cn *ContainerNetworkConnection) NamespacedName() types.NamespacedName {
 }
 
 func (cn *ContainerNetworkConnection) Validate(ctx context.Context) field.ErrorList {
-	// TODO: implement validation
 	return nil
 }
 

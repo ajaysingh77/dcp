@@ -78,7 +78,6 @@ func (cv *ContainerVolume) NamespacedName() types.NamespacedName {
 }
 
 func (cv *ContainerVolume) Validate(ctx context.Context) field.ErrorList {
-	// TODO: implement validation
 	return nil
 }
 

@@ -77,7 +77,6 @@ type ExecutableReplicaSet struct {
 
 // Validate implements resourcestrategy.Validater.
 func (*ExecutableReplicaSet) Validate(ctx context.Context) field.ErrorList {
-	// TODO: implement validation https://github.com/microsoft/usvc-apiserver/issues/2
 	return nil
 }
 

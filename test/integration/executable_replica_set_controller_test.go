@@ -380,19 +380,20 @@ func TestExecutableReplicaSetExecutableStatusChangeTracked(t *testing.T) {
 	ownedExes, err := getOwnedExes(ctx, &exers)
 	require.NoError(t, err, "Failed to retrieve owned Executable replicas")
 
-	t.Log("Ensure first executable is started...")
+	t.Log("Ensure first Executable is started...")
 	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(ownedExes[0]), func(exe *apiv1.Executable) (bool, error) {
 		return !exe.Status.StartupTimestamp.IsZero(), nil
 	})
 
+	t.Log("Stopping first Executable...")
 	pid64, err := strconv.ParseInt(updatedExe.Status.ExecutionID, 10, 32)
 	require.NoError(t, err, "Failed to parse PID from Executable status")
 	pid, err := process.Int64ToPidT(pid64)
 	require.NoError(t, err)
-	if err = testProcessExecutor.StopProcess(pid); err != nil {
-		t.Fatalf("could not kill process: %v", err)
-	}
+	testProcessExecutor.SimulateProcessExit(t, pid, 0)
 
+	// Replica running to completion does not trigger creation of another replica,
+	// so we expect (scaleTo - 1) replicas to be running and one to be finished.
 	ensureStatusUpdated := func(ctx context.Context) (bool, error) {
 		var updatedExers apiv1.ExecutableReplicaSet
 		updatedExersQueryErr := client.Get(ctx, ctrl_client.ObjectKeyFromObject(&exers), &updatedExers)

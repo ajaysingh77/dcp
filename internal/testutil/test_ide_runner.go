@@ -3,6 +3,7 @@ package testutil
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -12,10 +13,13 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
+	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
+
+const AutoStartExecutableAnnotation = "test.usvc-dev.developer.microsoft.com/auto-start-executable"
 
 type TestIdeRun struct {
 	ID                   controllers.RunID
@@ -53,7 +57,7 @@ func NewTestIdeRunner(lifetimeCtx context.Context) *TestIdeRunner {
 	}
 }
 
-func (r *TestIdeRunner) StartRun(_ context.Context, exe *apiv1.Executable, runChangeHandler controllers.RunChangeHandler, _ logr.Logger) error {
+func (r *TestIdeRunner) StartRun(_ context.Context, exe *apiv1.Executable, runChangeHandler controllers.RunChangeHandler, log logr.Logger) error {
 	r.m.Lock()
 	defer r.m.Unlock()
 
@@ -90,6 +94,25 @@ func (r *TestIdeRunner) StartRun(_ context.Context, exe *apiv1.Executable, runCh
 	}
 
 	r.Runs.Store(namespacedName, run)
+
+	if exe.Annotations != nil {
+		if asea, ok := exe.Annotations[AutoStartExecutableAnnotation]; ok && asea == "true" {
+			pid, err := randdata.MakeRandomInt64(math.MaxInt64 - 1)
+			if err != nil {
+				log.Error(err, "failed to generate random PID for run")
+				return err
+			}
+
+			pid = pid + 1 // Ensure that the PID is positive
+			go func() {
+				startErr := r.SimulateRunStart(runID, process.Pid_t(pid))
+				if startErr != nil {
+					log.Error(startErr, "failed to simulate run start")
+				}
+			}()
+		}
+
+	}
 
 	return nil
 }

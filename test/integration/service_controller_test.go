@@ -8,6 +8,7 @@ import (
 	"time"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 	"github.com/stretchr/testify/require"
@@ -74,6 +75,124 @@ func TestServiceBecomesReady(t *testing.T) {
 		return correctState && addressCorrect && portCorrect, nil
 	})
 	t.Log("Service is in state Ready.")
+}
+
+// Ensure that a service implemented by ExecutableReplicaSet becomes Ready.
+func TestServicesBecomeReadyMultipleReplicas(t *testing.T) {
+	type testcase struct {
+		description string
+		svc         *apiv1.Service
+		ers         *apiv1.ExecutableReplicaSet
+	}
+
+	testcases := []testcase{
+		{
+			description: "Service backed by multiple replicas started by process runner",
+			svc: &apiv1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "svc-becomes-ready-multi-process",
+					Namespace: metav1.NamespaceNone,
+				},
+				Spec: apiv1.ServiceSpec{
+					Protocol: apiv1.TCP,
+					Address:  "127.32.15.120",
+					Port:     19825,
+				},
+			},
+			ers: &apiv1.ExecutableReplicaSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ers-becomes-ready-multi-process",
+					Namespace: metav1.NamespaceNone,
+				},
+				Spec: apiv1.ExecutableReplicaSetSpec{
+					Replicas: 3,
+					Template: apiv1.ExecutableTemplate{
+						Annotations: map[string]string{
+							"service-producer": fmt.Sprintf(`[{"serviceName":"%s"}]`, "svc-becomes-ready-multi-process"),
+						},
+						Spec: apiv1.ExecutableSpec{
+							ExecutablePath: "path/to/ers-becomes-ready-multi-process",
+							Env: []apiv1.EnvVar{
+								{
+									Name:  "PORT",
+									Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, "svc-becomes-ready-multi-process"),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			description: "Service backed by multiple replicas started by IDE runner",
+			svc: &apiv1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "svc-becomes-ready-multi-ide",
+					Namespace: metav1.NamespaceNone,
+				},
+				Spec: apiv1.ServiceSpec{
+					Protocol: apiv1.TCP,
+					Address:  "127.32.15.121",
+					Port:     19826,
+				},
+			},
+			ers: &apiv1.ExecutableReplicaSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ers-becomes-ready-multi-ide",
+					Namespace: metav1.NamespaceNone,
+				},
+				Spec: apiv1.ExecutableReplicaSetSpec{
+					Replicas: 3,
+					Template: apiv1.ExecutableTemplate{
+						Annotations: map[string]string{
+							"service-producer":                          fmt.Sprintf(`[{"serviceName":"%s"}]`, "svc-becomes-ready-multi-ide"),
+							ctrl_testutil.AutoStartExecutableAnnotation: "true",
+						},
+						Spec: apiv1.ExecutableSpec{
+							ExecutablePath: "path/to/ers-becomes-ready-multi-ide",
+							Env: []apiv1.EnvVar{
+								{
+									Name:  "PORT",
+									Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, "svc-becomes-ready-multi-ide"),
+								},
+							},
+							ExecutionType: apiv1.ExecutionTypeIDE,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	t.Parallel()
+
+	for _, tc := range testcases {
+		tc := tc
+
+		t.Run(tc.description, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+
+			t.Logf("Creating Service '%s'", tc.svc.ObjectMeta.Name)
+			err := client.Create(ctx, tc.svc)
+			require.NoError(t, err, "Could not create Service %s", tc.svc.ObjectMeta.Name)
+
+			t.Logf("Creating ExecutableReplicaSet '%s'", tc.ers.ObjectMeta.Name)
+			err = client.Create(ctx, tc.ers)
+			require.NoError(t, err, "Could not create ExecutableReplicaSet %s", tc.ers.ObjectMeta.Name)
+
+			t.Logf("Ensure all replicas for ExecutableReplicaSet '%s' are running...", tc.ers.ObjectMeta.Name)
+			waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(tc.ers), func(ers *apiv1.ExecutableReplicaSet) (bool, error) {
+				return ers.Status.RunningReplicas == ers.Spec.Replicas, nil
+			})
+
+			t.Logf("Ensure Service '%s' is in Ready state...", tc.svc.ObjectMeta.Name)
+			waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(tc.svc), func(svc *apiv1.Service) (bool, error) {
+				return svc.Status.State == apiv1.ServiceStateReady, nil
+			})
+		})
+	}
 }
 
 // Tests that service starts proxying and becomes ready when it is created AFTER the Executable and Container

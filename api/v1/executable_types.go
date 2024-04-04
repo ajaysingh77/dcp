@@ -237,7 +237,6 @@ func (e *Executable) NamespacedName() types.NamespacedName {
 }
 
 func (e *Executable) Validate(ctx context.Context) field.ErrorList {
-	// TODO: implement validation https://github.com/microsoft/usvc-stdtypes/issues/2
 	errorList := field.ErrorList{}
 
 	if e.Spec.AmbientEnvironment.Behavior != "" &&

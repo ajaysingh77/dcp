@@ -20,3 +20,12 @@ func MakeRandomString(length uint32) ([]byte, error) {
 
 	return retval, nil
 }
+
+// Returns a random int64 between [0, max)
+func MakeRandomInt64(max int64) (int64, error) {
+	n, err := rand.Int(rand.Reader, big.NewInt(max))
+	if err != nil {
+		return 0, err
+	}
+	return n.Int64(), nil
+}

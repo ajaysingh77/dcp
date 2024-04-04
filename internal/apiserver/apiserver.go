@@ -26,6 +26,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/logs/containerlogs"
 	"github.com/microsoft/usvc-apiserver/internal/logs/exelogs"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
+	"github.com/microsoft/usvc-apiserver/internal/version"
 	"github.com/microsoft/usvc-apiserver/pkg/generated/openapi"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
@@ -71,7 +72,7 @@ func NewApiServer(name string, config *kubeconfig.Kubeconfig, logger logr.Logger
 
 	// The two constants below are just metadata for Swagger UI
 	const openApiConfigrationName = "DCP"
-	const openApiConfigurationVersion = "1.0.0" // TODO: use DCP executable version
+	var openApiConfigurationVersion = version.Version().Version
 
 	// Types that must be recognizable by the API server, but are not persisted
 	// (they are used for request processing only).

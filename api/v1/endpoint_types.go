@@ -103,7 +103,6 @@ func (e *Endpoint) NamespacedName() types.NamespacedName {
 }
 
 func (e *Endpoint) Validate(ctx context.Context) field.ErrorList {
-	// TODO: implement validation
 	return nil
 }
 
