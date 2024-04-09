@@ -240,16 +240,16 @@ jobs:
 
             console.log("Successfully opened the GitHub PR.");
           } catch (error) {
+            // This action wasn't able to create a PR, so add a comment with instructions on creating the backport PR.
+            const temp_branch_url = `https://github.com/microsoft/usvc-apiserver/tree/${temp_branch}`;
+            const pr_url = `https://github.com/${repo_owner}/${repo_name}/compare/${target_branch}...${temp_branch}?quick_pull=1&title=${encodeURIComponent(backport_pr_title)}&body=${encodeURIComponent(backport_pr_description)}`;
 
-            core.setFailed(error);
-
-            // post failure to GitHub comment
-            const unknown_error_body = `@${comment_user} an error occurred while backporting to ${target_branch}, please check the run log for details!\n\n${error.message}`;
+            const backport_pr_body = `@${comment_user} backport PR couldn't be created automatically, please create the backport PR manually!\n\n[Open backport PR into ${target_branch}](${pr_url}).`;
             await github.rest.issues.createComment({
               owner: repo_owner,
               repo: repo_name,
               issue_number: pr_number,
-              body: unknown_error_body
+              body: backport_pr_body,
             });
           }
 
