@@ -868,6 +868,20 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerStatus(ref common.Reference
 							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
 						},
 					},
+					"startupStdOutFile": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The path of a temporary file that contains captured standard output data from the Container startup process.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"startupStdErrFile": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The path of a temporary file that contains captured standard error data from the Container startup process.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"exitCode": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Exit code of the Container. Default is -1, meaning the exit code is not known, or the container is still running.",

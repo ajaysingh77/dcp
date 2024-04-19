@@ -325,7 +325,7 @@ func (elr *ExecutableLogResource) GetStorageProvider(
 			return nil, fmt.Errorf("parent (%s) should implement registry_rest.Getter", obj.GetObjectKind().GroupVersionKind().Kind)
 		}
 
-		logStreamFactory, found := LogStreamFactories.Load(obj.GetGroupVersionResource())
+		logStreamFactory, found := ResourceLogStreamers.Load(obj.GetGroupVersionResource())
 		if !found {
 			return nil, fmt.Errorf("log stream factory not found for resource %s", obj.GetGroupVersionResource().String())
 		}

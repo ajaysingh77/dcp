@@ -39,6 +39,15 @@ type InspectedContainerHostPortConfig struct {
 	HostPort string `json:"HostPort,omitempty"`
 }
 
+// Common options for commands that support streamed output
+type StreamCommandOptions struct {
+	// Stream to write stdout to
+	StdOutStream io.Writer
+
+	// Stream to write stderr to
+	StdErrStream io.Writer
+}
+
 type InspectedContainer struct {
 	// ID of the container
 	Id string `json:"Id"`
@@ -101,6 +110,8 @@ type CreateContainerOptions struct {
 	// Name or ID of a network to connect to
 	Network string
 
+	StreamCommandOptions
+
 	apiv1.ContainerSpec
 }
 
@@ -110,6 +121,8 @@ type RunContainerOptions struct {
 
 	// Name or ID of a network to connect to
 	Network string
+
+	StreamCommandOptions
 
 	apiv1.ContainerSpec
 }

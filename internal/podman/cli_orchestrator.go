@@ -71,7 +71,7 @@ func (*PodmanCliOrchestrator) ContainerHost() string {
 
 func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context) containers.ContainerRuntimeStatus {
 	cmd := makePodmanCommand("container", "ls", "--last", "1", "--quiet")
-	_, stdErr, err := pco.runPodmanCommand(ctx, "Info", cmd, ordinaryPodmanCommandTimeout)
+	_, stdErr, err := pco.runBufferedPodmanCommand(ctx, "Info", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 
 	if errors.Is(err, exec.ErrNotFound) {
 		// Try to get the inner error if this is an exec.ErrNotFound error
@@ -115,7 +115,7 @@ func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context) containers.Co
 
 func (pco *PodmanCliOrchestrator) CreateVolume(ctx context.Context, name string) error {
 	cmd := makePodmanCommand("volume", "create", name)
-	outBuf, _, err := pco.runPodmanCommand(ctx, "CreateVolume", cmd, ordinaryPodmanCommandTimeout)
+	outBuf, _, err := pco.runBufferedPodmanCommand(ctx, "CreateVolume", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return err
 	}
@@ -132,7 +132,7 @@ func (pco *PodmanCliOrchestrator) InspectVolumes(ctx context.Context, volumes []
 		volumes...)...,
 	)
 
-	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "InspectVolumes", cmd, ordinaryPodmanCommandTimeout)
+	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "InspectVolumes", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)))
 	}
@@ -147,7 +147,7 @@ func (pco *PodmanCliOrchestrator) RemoveVolumes(ctx context.Context, volumes []s
 	}
 	args = append(args, volumes...)
 	cmd := makePodmanCommand(args...)
-	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "RemoveVolumes", cmd, ordinaryPodmanCommandTimeout)
+	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "RemoveVolumes", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)))
 	}
@@ -236,7 +236,7 @@ func (pco *PodmanCliOrchestrator) CreateContainer(ctx context.Context, options c
 
 	// Create container can take a long time to finish if the image is not available locally.
 	// Use a much longer timeout than for other commands.
-	outBuf, _, err := pco.runPodmanCommand(ctx, "CreateContainer", cmd, 10*time.Minute)
+	outBuf, _, err := pco.runBufferedPodmanCommand(ctx, "CreateContainer", cmd, options.StdOutStream, options.StdErrStream, 10*time.Minute)
 	if err != nil {
 		if id, err2 := asId(outBuf); err2 == nil {
 			// We got an ID, so the container was created, but the command failed.
@@ -273,7 +273,7 @@ func (pco *PodmanCliOrchestrator) RunContainer(ctx context.Context, options cont
 
 	// The run container command can take a long time to finish if the image is not available locally.
 	// So we use much longer timeout than for other commands.
-	outBuf, _, err := pco.runPodmanCommand(ctx, "RunContainer", cmd, 10*time.Minute)
+	outBuf, _, err := pco.runBufferedPodmanCommand(ctx, "RunContainer", cmd, options.StdOutStream, options.StdErrStream, 10*time.Minute)
 	if err != nil {
 		return "", err
 	}
@@ -289,7 +289,7 @@ func (pco *PodmanCliOrchestrator) InspectContainers(ctx context.Context, names [
 		[]string{"container", "inspect", "--format", "json"},
 		names...)...,
 	)
-	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "InspectContainers", cmd, ordinaryPodmanCommandTimeout)
+	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "InspectContainers", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
 	}
@@ -306,7 +306,7 @@ func (pco *PodmanCliOrchestrator) StartContainers(ctx context.Context, container
 	args = append(args, containerIds...)
 
 	cmd := makePodmanCommand(args...)
-	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "StartContainers", cmd, ordinaryPodmanCommandTimeout)
+	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "StartContainers", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(containerIds)))
 	}
@@ -330,7 +330,7 @@ func (pco *PodmanCliOrchestrator) StopContainers(ctx context.Context, names []st
 	args = append(args, names...)
 
 	cmd := makePodmanCommand(args...)
-	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "StopContainers", cmd, timeout)
+	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "StopContainers", cmd, nil, nil, timeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
 	}
@@ -352,7 +352,7 @@ func (pco *PodmanCliOrchestrator) RemoveContainers(ctx context.Context, names []
 	args = append(args, names...)
 
 	cmd := makePodmanCommand(args...)
-	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "RemoveContainers", cmd, ordinaryPodmanCommandTimeout)
+	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "RemoveContainers", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
 	}
@@ -372,34 +372,27 @@ func (dco *PodmanCliOrchestrator) CaptureContainerLogs(ctx context.Context, cont
 	args = append(args, container)
 
 	cmd := makePodmanCommand(args...)
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
 
-	exitHandler := func(_ process.Pid_t, exitCode int32, err error) {
+	exitCh, err := dco.streamPodmanCommand(ctx, "CaptureContainerLogs", cmd, stdout, stderr)
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		// Wait for the command to finish and clean up any resources
+		exitErr := <-exitCh
+		if exitErr != nil && !errors.Is(exitErr, context.Canceled) && !errors.Is(exitErr, context.DeadlineExceeded) {
+			dco.log.Error(err, "capturing container logs failed", "Container", container)
+		}
+
 		if stdOutCloseErr := stdout.Close(); stdOutCloseErr != nil {
 			dco.log.Error(stdOutCloseErr, "closing stdout log destination failed", "Container", container)
 		}
 		if stdErrCloseErr := stderr.Close(); stdErrCloseErr != nil {
 			dco.log.Error(stdErrCloseErr, "closing stderr log destination failed", "Container", container)
 		}
+	}()
 
-		if err != nil {
-			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-				dco.log.Error(err, "capturing container logs failed", "Container", container)
-			}
-		} else if exitCode != 0 && exitCode != process.UnknownExitCode {
-			dco.log.Error(
-				fmt.Errorf("streaming container logs failed with exit code %d", exitCode),
-				"capturing container logs failed",
-				"Container", container,
-			)
-		}
-	}
-	_, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler))
-	if err != nil {
-		return err
-	}
-	startWaitForProcessExit()
 	return nil
 }
 
@@ -417,7 +410,7 @@ func (pco *PodmanCliOrchestrator) CreateNetwork(ctx context.Context, options con
 	args = append(args, options.Name)
 
 	cmd := makePodmanCommand(args...)
-	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "CreateNetwork", cmd, ordinaryPodmanCommandTimeout)
+	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "CreateNetwork", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return "", containers.NormalizeCliError(err, errBuf, newNetworkAlreadyExistsErrorMatch.MaxObjects(1))
 	}
@@ -436,7 +429,7 @@ func (pco *PodmanCliOrchestrator) RemoveNetworks(ctx context.Context, options co
 	args = append(args, options.Networks...)
 
 	cmd := makePodmanCommand(args...)
-	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "RemoveNetworks", cmd, ordinaryPodmanCommandTimeout)
+	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "RemoveNetworks", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks)))
 	}
@@ -455,7 +448,7 @@ func (pco *PodmanCliOrchestrator) InspectNetworks(ctx context.Context, options c
 	args = append(args, options.Networks...)
 
 	cmd := makePodmanCommand(args...)
-	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "InspectNetworks", cmd, ordinaryPodmanCommandTimeout)
+	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "InspectNetworks", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks)))
 	}
@@ -473,7 +466,7 @@ func (pco *PodmanCliOrchestrator) ConnectNetwork(ctx context.Context, options co
 	args = append(args, options.Network, options.Container)
 
 	cmd := makePodmanCommand(args...)
-	_, errBuf, err := pco.runPodmanCommand(ctx, "ConnectNetwork", cmd, ordinaryPodmanCommandTimeout)
+	_, errBuf, err := pco.runBufferedPodmanCommand(ctx, "ConnectNetwork", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1))
 	}
@@ -490,7 +483,7 @@ func (pco *PodmanCliOrchestrator) DisconnectNetwork(ctx context.Context, options
 	args = append(args, options.Network, options.Container)
 
 	cmd := makePodmanCommand(args...)
-	_, errBuf, err := pco.runPodmanCommand(ctx, "DisconnectNetwork", cmd, ordinaryPodmanCommandTimeout)
+	_, errBuf, err := pco.runBufferedPodmanCommand(ctx, "DisconnectNetwork", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1))
 	}
@@ -613,40 +606,71 @@ func (pco *PodmanCliOrchestrator) doWatchNetworks(watcherCtx context.Context) {
 	}
 }
 
-func (pco *PodmanCliOrchestrator) runPodmanCommand(ctx context.Context, commandName string, cmd *exec.Cmd, timeout time.Duration) (*bytes.Buffer, *bytes.Buffer, error) {
-	outBuf := new(bytes.Buffer)
-	errBuf := new(bytes.Buffer)
-	cmd.Stdout = outBuf
-	cmd.Stderr = errBuf
+func (pco *PodmanCliOrchestrator) streamPodmanCommand(ctx context.Context, commandName string, cmd *exec.Cmd, stdOutWriter io.Writer, stdErrWriter io.Writer) (<-chan error, error) {
+	cmd.Stdout = stdOutWriter
+	cmd.Stderr = stdErrWriter
 
+	exitCh := make(chan error)
+	exitHandler := func(_ process.Pid_t, exitCode int32, err error) {
+		defer close(exitCh)
+		if err != nil {
+			exitCh <- err
+		}
+
+		if exitCode != 0 {
+			exitCh <- fmt.Errorf("podman command '%s' returned with non-zero exit code %d", commandName, exitCode)
+		}
+	}
+
+	pco.log.V(1).Info("running podman command", "Command", cmd.String())
+	_, startWaitForProcessExit, err := pco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler))
+	if err != nil {
+		close(exitCh)
+		return nil, errors.Join(err, fmt.Errorf("failed to start podman command '%s'", commandName))
+	}
+	startWaitForProcessExit()
+
+	return exitCh, nil
+}
+
+func (pco *PodmanCliOrchestrator) runBufferedPodmanCommand(ctx context.Context, commandName string, cmd *exec.Cmd, stdOutWriter io.Writer, stdErrWriter io.Writer, timeout time.Duration) (*bytes.Buffer, *bytes.Buffer, error) {
 	effectiveCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	pco.log.V(1).Info("Running Podman command", "Command", cmd.String())
-	exitCode, err := process.RunWithTimeout(effectiveCtx, pco.executor, cmd)
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		// If a timeout occurs, the content of the stdout and stderr buffers is not guaranteed to be complete.
-		return nil, nil, err
+	outBuf := new(bytes.Buffer)
+	if stdOutWriter != nil {
+		stdOutWriter = io.MultiWriter(stdOutWriter, outBuf)
+	} else {
+		stdOutWriter = outBuf
 	}
 
-	// process.RunWithTimeout() guarantees (through exec.Cmd standard library implementation)
-	// that when it exits without timeout error, all the available data written to stdout and stderr has been captured.
+	errBuf := new(bytes.Buffer)
+	if stdErrWriter != nil {
+		stdErrWriter = io.MultiWriter(stdErrWriter, errBuf)
+	} else {
+		stdErrWriter = errBuf
+	}
 
-	stderr := ""
-	stdout := ""
-	if err != nil || exitCode != 0 {
+	exitCh, err := pco.streamPodmanCommand(effectiveCtx, commandName, cmd, stdOutWriter, stdErrWriter)
+	if err == nil {
+		// If we successfully started running, wait for the command to finish
+		exitErr := <-exitCh
+		if exitErr != nil {
+			err = exitErr
+		}
+	}
+
+	if err != nil {
+		stderr := ""
+		stdout := ""
 		if errBuf.Len() > 0 {
 			stderr = errBuf.String()
 		}
 		if outBuf.Len() > 0 {
 			stdout = outBuf.String()
 		}
-	}
-	if err != nil {
-		return outBuf, errBuf, fmt.Errorf("%s command failed: %w Stdout: '%s' Stderr: '%s'", commandName, err, stdout, stderr)
-	}
-	if exitCode != 0 {
-		return outBuf, errBuf, fmt.Errorf("%s command returned error code %d Stdout: '%s' Stderr: '%s'", commandName, exitCode, stdout, stderr)
+
+		return outBuf, errBuf, fmt.Errorf("%w: command output: Stdout: '%s' Stderr: '%s'", err, stdout, stderr)
 	}
 
 	return outBuf, errBuf, nil

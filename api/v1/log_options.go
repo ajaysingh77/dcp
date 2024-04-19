@@ -17,9 +17,11 @@ import (
 type LogStreamSource string
 
 const (
-	LogStreamSourceStdout LogStreamSource = "stdout"
-	LogStreamSourceStderr LogStreamSource = "stderr"
-	LogStreamSourceAll    LogStreamSource = "all"
+	LogStreamSourceStdout        LogStreamSource = "stdout"
+	LogStreamSourceStderr        LogStreamSource = "stderr"
+	LogStreamSourceStartupStdout LogStreamSource = "startup_stdout"
+	LogStreamSourceStartupStderr LogStreamSource = "startup_stderr"
+	LogStreamSourceAll           LogStreamSource = "all"
 )
 
 // +kubebuilder:object:root=true

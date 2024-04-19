@@ -249,13 +249,13 @@ func configureForLogServing(config *apiserver.Config, persistentDcpTypes []apise
 		sets.NewString(apiv1.LogSubresourceName),
 	)
 
-	apiv1.LogStreamFactories.Store(
+	apiv1.ResourceLogStreamers.Store(
 		(&apiv1.Executable{}).GetGroupVersionResource(),
-		apiv1.CreateLogStreamFunc(exelogs.CreateExecutableLogStream),
+		exelogs.LogStreamer(),
 	)
-	apiv1.LogStreamFactories.Store(
+	apiv1.ResourceLogStreamers.Store(
 		(&apiv1.Container{}).GetGroupVersionResource(),
-		apiv1.CreateLogStreamFunc(containerlogs.CreateContainerLogStream),
+		containerlogs.LogStreamer(),
 	)
 
 	return nil

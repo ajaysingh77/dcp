@@ -75,7 +75,7 @@ func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context) containers.Co
 	go func() {
 		// Run a simple command to check if the Docker CLI is installed and responsive
 		cmd := makeDockerCommand("container", "ls", "-l")
-		_, stdErr, err := dco.runDockerCommand(ctx, "Status", cmd, ordinaryDockerCommandTimeout)
+		_, stdErr, err := dco.runBufferedDockerCommand(ctx, "Status", cmd, nil, nil, ordinaryDockerCommandTimeout)
 
 		if errors.Is(err, exec.ErrNotFound) {
 			// Try to get the inner error if this is an exec.ErrNotFound error
@@ -121,7 +121,7 @@ func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context) containers.Co
 	isDockerCh := make(chan bool, 1)
 	go func() {
 		cmd := makeDockerCommand("info", "--format", "{{json .}}")
-		outBuf, _, err := dco.runDockerCommand(ctx, "AliasDetection", cmd, ordinaryDockerCommandTimeout)
+		outBuf, _, err := dco.runBufferedDockerCommand(ctx, "AliasDetection", cmd, nil, nil, ordinaryDockerCommandTimeout)
 		if err != nil || outBuf == nil {
 			// Failed to run the command, or got no output. This is probably not a valid Docker runtime.
 			isDockerCh <- false
@@ -159,7 +159,7 @@ func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context) containers.Co
 
 func (dco *DockerCliOrchestrator) CreateVolume(ctx context.Context, name string) error {
 	cmd := makeDockerCommand("volume", "create", name)
-	outBuf, _, err := dco.runDockerCommand(ctx, "CreateVolume", cmd, ordinaryDockerCommandTimeout)
+	outBuf, _, err := dco.runBufferedDockerCommand(ctx, "CreateVolume", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return err
 	}
@@ -176,7 +176,7 @@ func (dco *DockerCliOrchestrator) InspectVolumes(ctx context.Context, volumes []
 		volumes...)...,
 	)
 
-	outBuf, errBuf, err := dco.runDockerCommand(ctx, "InspectVolumes", cmd, ordinaryDockerCommandTimeout)
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "InspectVolumes", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)))
 	}
@@ -191,7 +191,7 @@ func (dco *DockerCliOrchestrator) RemoveVolumes(ctx context.Context, volumes []s
 	}
 	args = append(args, volumes...)
 	cmd := makeDockerCommand(args...)
-	outBuf, errBuf, err := dco.runDockerCommand(ctx, "RemoveVolumes", cmd, ordinaryDockerCommandTimeout)
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "RemoveVolumes", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)))
 	}
@@ -280,7 +280,7 @@ func (dco *DockerCliOrchestrator) CreateContainer(ctx context.Context, options c
 
 	// Create container can take a long time to finish if the image is not available locally.
 	// Use a much longer timeout than for other commands.
-	outBuf, _, err := dco.runDockerCommand(ctx, "CreateContainer", cmd, 10*time.Minute)
+	outBuf, _, err := dco.runBufferedDockerCommand(ctx, "CreateContainer", cmd, options.StdOutStream, options.StdErrStream, 10*time.Minute)
 	if err != nil {
 		if id, err2 := asId(outBuf); err2 == nil {
 			// We got an ID, so the container was created, but the command failed.
@@ -317,7 +317,7 @@ func (dco *DockerCliOrchestrator) RunContainer(ctx context.Context, options cont
 
 	// The run container command can take a long time to finish if the image is not available locally.
 	// So we use much longer timeout than for other commands.
-	outBuf, _, err := dco.runDockerCommand(ctx, "RunContainer", cmd, 10*time.Minute)
+	outBuf, _, err := dco.runBufferedDockerCommand(ctx, "RunContainer", cmd, options.StdOutStream, options.StdErrStream, 10*time.Minute)
 	if err != nil {
 		return "", err
 	}
@@ -333,7 +333,7 @@ func (dco *DockerCliOrchestrator) InspectContainers(ctx context.Context, names [
 		[]string{"container", "inspect", "--format", "{{json .}}"},
 		names...)...,
 	)
-	outBuf, errBuf, err := dco.runDockerCommand(ctx, "InspectContainers", cmd, ordinaryDockerCommandTimeout)
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "InspectContainers", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
 	}
@@ -350,7 +350,7 @@ func (dco *DockerCliOrchestrator) StartContainers(ctx context.Context, container
 	args = append(args, containerIDs...)
 
 	cmd := makeDockerCommand(args...)
-	outBuf, errBuf, err := dco.runDockerCommand(ctx, "StartContainers", cmd, ordinaryDockerCommandTimeout)
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "StartContainers", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(containerIDs)))
 	}
@@ -374,7 +374,7 @@ func (dco *DockerCliOrchestrator) StopContainers(ctx context.Context, names []st
 	args = append(args, names...)
 
 	cmd := makeDockerCommand(args...)
-	outBuf, errBuf, err := dco.runDockerCommand(ctx, "StopContainers", cmd, timeout)
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "StopContainers", cmd, nil, nil, timeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
 	}
@@ -396,7 +396,7 @@ func (dco *DockerCliOrchestrator) RemoveContainers(ctx context.Context, names []
 	args = append(args, names...)
 
 	cmd := makeDockerCommand(args...)
-	outBuf, errBuf, err := dco.runDockerCommand(ctx, "RemoveContainers", cmd, ordinaryDockerCommandTimeout)
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "RemoveContainers", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
 	}
@@ -416,34 +416,27 @@ func (dco *DockerCliOrchestrator) CaptureContainerLogs(ctx context.Context, cont
 	args = append(args, container)
 
 	cmd := makeDockerCommand(args...)
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
 
-	exitHandler := func(_ process.Pid_t, exitCode int32, err error) {
+	exitCh, err := dco.streamDockerCommand(ctx, "CaptureContainerLogs", cmd, stdout, stderr)
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		// Wait for the command to finish and clean up any resources
+		exitErr := <-exitCh
+		if exitErr != nil && !errors.Is(exitErr, context.Canceled) && !errors.Is(exitErr, context.DeadlineExceeded) {
+			dco.log.Error(err, "capturing container logs failed", "Container", container)
+		}
+
 		if stdOutCloseErr := stdout.Close(); stdOutCloseErr != nil {
 			dco.log.Error(stdOutCloseErr, "closing stdout log destination failed", "Container", container)
 		}
 		if stdErrCloseErr := stderr.Close(); stdErrCloseErr != nil {
 			dco.log.Error(stdErrCloseErr, "closing stderr log destination failed", "Container", container)
 		}
+	}()
 
-		if err != nil {
-			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-				dco.log.Error(err, "capturing container logs failed", "Container", container)
-			}
-		} else if exitCode != 0 && exitCode != process.UnknownExitCode {
-			dco.log.Error(
-				fmt.Errorf("capturing container logs failed with exit code %d", exitCode),
-				"capturing container logs failed",
-				"Container", container,
-			)
-		}
-	}
-	_, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler))
-	if err != nil {
-		return err
-	}
-	startWaitForProcessExit()
 	return nil
 }
 
@@ -461,7 +454,7 @@ func (dco *DockerCliOrchestrator) CreateNetwork(ctx context.Context, options con
 	args = append(args, options.Name)
 
 	cmd := makeDockerCommand(args...)
-	outBuf, errBuf, err := dco.runDockerCommand(ctx, "CreateNetwork", cmd, ordinaryDockerCommandTimeout)
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "CreateNetwork", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return "", containers.NormalizeCliError(err, errBuf, newNetworkAlreadyExistsErrorMatch.MaxObjects(1))
 	}
@@ -480,7 +473,7 @@ func (dco *DockerCliOrchestrator) RemoveNetworks(ctx context.Context, options co
 	args = append(args, options.Networks...)
 
 	cmd := makeDockerCommand(args...)
-	outBuf, errBuf, err := dco.runDockerCommand(ctx, "RemoveNetworks", cmd, ordinaryDockerCommandTimeout)
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "RemoveNetworks", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks)))
 	}
@@ -499,7 +492,7 @@ func (dco *DockerCliOrchestrator) InspectNetworks(ctx context.Context, options c
 	args = append(args, options.Networks...)
 
 	cmd := makeDockerCommand(args...)
-	outBuf, errBuf, err := dco.runDockerCommand(ctx, "InspectNetworks", cmd, ordinaryDockerCommandTimeout)
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "InspectNetworks", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks)))
 	}
@@ -517,7 +510,7 @@ func (dco *DockerCliOrchestrator) ConnectNetwork(ctx context.Context, options co
 	args = append(args, options.Network, options.Container)
 
 	cmd := makeDockerCommand(args...)
-	_, errBuf, err := dco.runDockerCommand(ctx, "ConnectNetwork", cmd, ordinaryDockerCommandTimeout)
+	_, errBuf, err := dco.runBufferedDockerCommand(ctx, "ConnectNetwork", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1))
 	}
@@ -534,7 +527,7 @@ func (dco *DockerCliOrchestrator) DisconnectNetwork(ctx context.Context, options
 	args = append(args, options.Network, options.Container)
 
 	cmd := makeDockerCommand(args...)
-	_, errBuf, err := dco.runDockerCommand(ctx, "DisconnectNetwork", cmd, ordinaryDockerCommandTimeout)
+	_, errBuf, err := dco.runBufferedDockerCommand(ctx, "DisconnectNetwork", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1))
 	}
@@ -657,40 +650,71 @@ func (dco *DockerCliOrchestrator) doWatchNetworks(watcherCtx context.Context) {
 	}
 }
 
-func (dco *DockerCliOrchestrator) runDockerCommand(ctx context.Context, commandName string, cmd *exec.Cmd, timeout time.Duration) (*bytes.Buffer, *bytes.Buffer, error) {
-	outBuf := new(bytes.Buffer)
-	errBuf := new(bytes.Buffer)
-	cmd.Stdout = outBuf
-	cmd.Stderr = errBuf
+func (dco *DockerCliOrchestrator) streamDockerCommand(ctx context.Context, commandName string, cmd *exec.Cmd, stdOutWriter io.Writer, stdErrWriter io.Writer) (<-chan error, error) {
+	cmd.Stdout = stdOutWriter
+	cmd.Stderr = stdErrWriter
 
+	exitCh := make(chan error)
+	exitHandler := func(_ process.Pid_t, exitCode int32, err error) {
+		defer close(exitCh)
+		if err != nil {
+			exitCh <- err
+		}
+
+		if exitCode != 0 {
+			exitCh <- fmt.Errorf("docker command '%s' returned with non-zero exit code %d", commandName, exitCode)
+		}
+	}
+
+	dco.log.V(1).Info("Running Docker command", "Command", cmd.String())
+	_, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler))
+	if err != nil {
+		close(exitCh)
+		return nil, errors.Join(err, fmt.Errorf("failed to start Docker command '%s'", commandName))
+	}
+	startWaitForProcessExit()
+
+	return exitCh, nil
+}
+
+func (dco *DockerCliOrchestrator) runBufferedDockerCommand(ctx context.Context, commandName string, cmd *exec.Cmd, stdOutWriter io.Writer, stdErrWriter io.Writer, timeout time.Duration) (*bytes.Buffer, *bytes.Buffer, error) {
 	effectiveCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	dco.log.V(1).Info("Running Docker command", "Command", cmd.String())
-	exitCode, err := process.RunWithTimeout(effectiveCtx, dco.executor, cmd)
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		// If a timeout occurs, the content of the stdout and stderr buffers is not guaranteed to be complete.
-		return nil, nil, err
+	outBuf := new(bytes.Buffer)
+	if stdOutWriter != nil {
+		stdOutWriter = io.MultiWriter(stdOutWriter, outBuf)
+	} else {
+		stdOutWriter = outBuf
 	}
 
-	// process.RunWithTimeout() guarantees (through exec.Cmd standard library implementation)
-	// that when it exits without timeout error, all the available data written to stdout and stderr has been captured.
+	errBuf := new(bytes.Buffer)
+	if stdErrWriter != nil {
+		stdErrWriter = io.MultiWriter(stdErrWriter, errBuf)
+	} else {
+		stdErrWriter = errBuf
+	}
 
-	stderr := ""
-	stdout := ""
-	if err != nil || exitCode != 0 {
+	exitCh, err := dco.streamDockerCommand(effectiveCtx, commandName, cmd, stdOutWriter, stdErrWriter)
+	if err == nil {
+		// If we successfully started running, wait for the command to finish
+		exitErr := <-exitCh
+		if exitErr != nil {
+			err = exitErr
+		}
+	}
+
+	if err != nil {
+		stderr := ""
+		stdout := ""
 		if errBuf.Len() > 0 {
 			stderr = errBuf.String()
 		}
 		if outBuf.Len() > 0 {
 			stdout = outBuf.String()
 		}
-	}
-	if err != nil {
-		return outBuf, errBuf, fmt.Errorf("%s command failed: %w Stdout: '%s' Stderr: '%s'", commandName, err, stdout, stderr)
-	}
-	if exitCode != 0 {
-		return outBuf, errBuf, fmt.Errorf("%s command returned error code %d Stdout: '%s' Stderr: '%s'", commandName, exitCode, stdout, stderr)
+
+		return outBuf, errBuf, fmt.Errorf("%w: command output: Stdout: '%s' Stderr: '%s'", err, stdout, stderr)
 	}
 
 	return outBuf, errBuf, nil

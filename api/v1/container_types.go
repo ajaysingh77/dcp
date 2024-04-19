@@ -202,6 +202,12 @@ type ContainerStatus struct {
 	// Timestamp when the Container was terminated last
 	FinishTimestamp metav1.Time `json:"finishTimestamp,omitempty"`
 
+	// The path of a temporary file that contains captured standard output data from the Container startup process.
+	StartupStdOutFile string `json:"startupStdOutFile,omitempty"`
+
+	// The path of a temporary file that contains captured standard error data from the Container startup process.
+	StartupStdErrFile string `json:"startupStdErrFile,omitempty"`
+
 	// Exit code of the Container.
 	// Default is -1, meaning the exit code is not known, or the container is still running.
 	// +kubebuilder:default:=-1
@@ -402,7 +408,7 @@ func (clr *ContainerLogResource) GetStorageProvider(
 			return nil, fmt.Errorf("parent (%s) should implement registry_rest.Getter", obj.GetObjectKind().GroupVersionKind().Kind)
 		}
 
-		logStreamFactory, found := LogStreamFactories.Load(obj.GetGroupVersionResource())
+		logStreamFactory, found := ResourceLogStreamers.Load(obj.GetGroupVersionResource())
 		if !found {
 			return nil, fmt.Errorf("log stream factory not found for resource %s", obj.GetGroupVersionResource().String())
 		}

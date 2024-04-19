@@ -24,7 +24,7 @@ type WatchLogOptions struct {
 }
 
 // WatchLogs watches a log file on disk and sends its contents to supplied writer
-func WatchLogs(ctx context.Context, path string, dest io.WriteCloser, opts WatchLogOptions) error {
+func WatchLogs(ctx context.Context, path string, dest io.Writer, opts WatchLogOptions) error {
 	if path == "" {
 		return fmt.Errorf("log file path is empty")
 	}
@@ -42,14 +42,12 @@ func WatchLogs(ctx context.Context, path string, dest io.WriteCloser, opts Watch
 		// This is easy--we are going to just copy the file as-is into the destination.
 		// If early cancellation is desired, it should be done by the destination writer returning an error.
 		_, copyErr := io.Copy(dest, src)
-		closeErr := dest.Close()
-		return errors.Join(copyErr, closeErr)
+		return copyErr
 	}
 
 	// The harder case--we might hit EOF repeatedly, and we need to wait for new data to appear.
 	srcReader := bufio.NewReader(src)
 	buf := make([]byte, defaultBufferSize)
-	defer dest.Close()
 
 	// We experimented with file change notification libraries like fsnotify (github.com/fsnotify/fsnotify),
 	// but ultimately decided to rely on simple polling. The reasons are:

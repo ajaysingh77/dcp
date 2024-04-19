@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,7 +29,10 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
@@ -53,6 +58,12 @@ type runningContainerData struct {
 	// If the container starts successfully, this is the container ID from the container orchestrator.
 	newContainerID string
 
+	// Standard output from startup commands will be streamed to this file for log streaming support.
+	startupStdOutFile *os.File
+
+	// Standard error from startup commands will be streamed to this file for log streaming support.
+	startupStdErrFile *os.File
+
 	// The time the start attempt finished (successfully or not).
 	startAttemptFinishedAt metav1.Time
 
@@ -68,6 +79,32 @@ func newRunningContainerData(ctr *apiv1.Container) *runningContainerData {
 		newContainerID: getFailedContainerID(ctr.NamespacedName()),
 		reservedPorts:  make(map[types.NamespacedName]int32),
 		runSpec:        ctr.Spec.DeepCopy(),
+	}
+}
+
+func (rcd *runningContainerData) createStartupOutputFiles(ctr *apiv1.Container, log logr.Logger) {
+	if rcd.startupStdOutFile != nil || rcd.startupStdErrFile != nil {
+		log.V(1).Info("startup output files already created")
+		return
+	}
+
+	outputRootFolder := os.TempDir()
+	if dcpSessionDir, found := os.LookupEnv(logger.DCP_SESSION_FOLDER); found {
+		outputRootFolder = dcpSessionDir
+	}
+
+	stdOutFile, err := usvc_io.OpenFile(filepath.Join(outputRootFolder, fmt.Sprintf("%s_startout_%s", ctr.Name, ctr.UID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	if err != nil {
+		log.Error(err, "failed to create temporary file for capturing container startup standard output data")
+	} else {
+		rcd.startupStdOutFile = stdOutFile
+	}
+
+	stdErrFile, err := usvc_io.OpenFile(filepath.Join(outputRootFolder, fmt.Sprintf("%s_starterr_%s", ctr.Name, ctr.UID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	if err != nil {
+		log.Error(err, "failed to create temporary file for capturing container startup standard error data")
+	} else {
+		rcd.startupStdErrFile = stdErrFile
 	}
 }
 
@@ -277,7 +314,7 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 	// This method is called only when we never attempted to start the container,
 	// or if the container has already finished starting and we know the outcome.
 
-	containerID, _, running := r.runningContainers.FindBySecondKey(container.NamespacedName())
+	containerID, rcd, running := r.runningContainers.FindBySecondKey(container.NamespacedName())
 	if !running {
 		// We either never started the container, or we already attempted to remove the container
 		// and the current reconciliation call is just the cache catching up.
@@ -305,6 +342,20 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 		}
 	} else {
 		log.V(1).Info("Container is not using Managed mode, leaving underlying resources")
+	}
+
+	if rcd.startupStdOutFile != nil {
+		closeErr := rcd.startupStdOutFile.Close()
+		if closeErr != nil {
+			log.Error(closeErr, "failed to close startup standard output file")
+		}
+	}
+
+	if rcd.startupStdErrFile != nil {
+		closeErr := rcd.startupStdErrFile.Close()
+		if closeErr != nil {
+			log.Error(closeErr, "failed to close startup standard error file")
+		}
 	}
 }
 
@@ -343,6 +394,12 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 		// Check if we haven't already started this (sometimes we might get stale data from the object cache).
 		if starting {
 			container.Status.State = apiv1.ContainerStateStarting
+			if rcd.startupStdOutFile != nil {
+				container.Status.StartupStdOutFile = rcd.startupStdOutFile.Name()
+			}
+			if rcd.startupStdErrFile != nil {
+				container.Status.StartupStdErrFile = rcd.startupStdErrFile.Name()
+			}
 			// Just wait a bit for the cache to catch up and reconcile again
 			return statusChanged
 		} else {
@@ -512,16 +569,14 @@ func (r *ContainerReconciler) findContainer(ctx context.Context, container strin
 }
 
 // If we made it here, we need to attempt to start the container
-func (r *ContainerReconciler) doStartContainer(container *apiv1.Container, containerName string, log logr.Logger, delay time.Duration) func(context.Context) {
+func (r *ContainerReconciler) doStartContainer(container *apiv1.Container, rcd *runningContainerData, containerName string, log logr.Logger, delay time.Duration) func(context.Context) {
 	return func(startupCtx context.Context) {
 		if delay > 0 {
 			time.Sleep(delay)
 		}
 
-		rcd, err := func() (*runningContainerData, error) {
+		err := func() error {
 			log.V(1).Info("starting container", "image", container.Spec.Image)
-
-			var rcd = newRunningContainerData(container)
 
 			err := r.computeEffectiveEnvironment(startupCtx, container, rcd, log)
 			if err != nil {
@@ -531,7 +586,7 @@ func (r *ContainerReconciler) doStartContainer(container *apiv1.Container, conta
 					log.Error(err, "could not compute effective environment for the Container")
 				}
 
-				return rcd, err
+				return err
 			}
 
 			err = r.computeEffectiveInvocationArgs(startupCtx, container, rcd, log)
@@ -542,7 +597,7 @@ func (r *ContainerReconciler) doStartContainer(container *apiv1.Container, conta
 					log.Error(err, "could not compute effective invocation arguments for the Container")
 				}
 
-				return rcd, err
+				return err
 			}
 
 			var defaultNetwork string
@@ -554,6 +609,10 @@ func (r *ContainerReconciler) doStartContainer(container *apiv1.Container, conta
 				ContainerSpec: *rcd.runSpec,
 				Name:          containerName,
 				Network:       defaultNetwork,
+				StreamCommandOptions: ct.StreamCommandOptions{
+					StdOutStream: rcd.startupStdOutFile,
+					StdErrStream: rcd.startupStdErrFile,
+				},
 			}
 			containerID, err := r.orchestrator.CreateContainer(startupCtx, creationOptions)
 			// There are errors that can still result in a valid container ID, so we need to store it if one was returned
@@ -561,14 +620,14 @@ func (r *ContainerReconciler) doStartContainer(container *apiv1.Container, conta
 
 			if err != nil {
 				log.Error(err, "could not create the container")
-				return rcd, err
+				return err
 			}
 			log.V(1).Info("container created", "ContainerID", containerID)
 
 			inspected, err := r.findContainer(startupCtx, containerID)
 			if err != nil {
 				log.Error(err, "could not inspect the container")
-				return rcd, err
+				return err
 			}
 
 			rcd.runSpec.Env = maps.MapToSlice[string, string, apiv1.EnvVar](inspected.Env, func(key, value string) apiv1.EnvVar {
@@ -579,7 +638,7 @@ func (r *ContainerReconciler) doStartContainer(container *apiv1.Container, conta
 				_, err = r.orchestrator.StartContainers(startupCtx, []string{containerID})
 				if err != nil {
 					log.Error(err, "could not start the container", "ContainerID", containerID)
-					return rcd, err
+					return err
 				}
 
 				log.V(1).Info("container started", "ContainerID", containerID)
@@ -592,12 +651,12 @@ func (r *ContainerReconciler) doStartContainer(container *apiv1.Container, conta
 					err = r.orchestrator.DisconnectNetwork(startupCtx, ct.DisconnectNetworkOptions{Network: network, Container: containerID, Force: true})
 					if err != nil {
 						log.Error(err, "could not detach network from the container", "ContainerID", containerID, "Network", network)
-						return rcd, err
+						return err
 					}
 				}
 			}
 
-			return rcd, nil
+			return nil
 		}()
 
 		if err != nil {
@@ -662,7 +721,9 @@ func (r *ContainerReconciler) createContainer(ctx context.Context, container *ap
 		containerName = uniqueContainerName
 	}
 
-	err := r.startupQueue.Enqueue(r.doStartContainer(container, containerName, log, delay))
+	var rcd = newRunningContainerData(container)
+	rcd.createStartupOutputFiles(container, log)
+	err := r.startupQueue.Enqueue(r.doStartContainer(container, rcd, containerName, log, delay))
 
 	if err != nil {
 		log.Error(err, "container was not started because the workload is shutting down")
@@ -672,6 +733,12 @@ func (r *ContainerReconciler) createContainer(ctx context.Context, container *ap
 		return err
 	} else {
 		container.Status.State = apiv1.ContainerStateStarting
+		if rcd.startupStdOutFile != nil {
+			container.Status.StartupStdOutFile = rcd.startupStdOutFile.Name()
+		}
+		if rcd.startupStdErrFile != nil {
+			container.Status.StartupStdErrFile = rcd.startupStdErrFile.Name()
+		}
 		return nil
 	}
 }

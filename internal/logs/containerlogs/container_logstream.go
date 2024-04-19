@@ -12,9 +12,6 @@ import (
 	"github.com/go-logr/logr"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metainternalversion "k8s.io/apimachinery/pkg/apis/meta/internalversion"
-	"k8s.io/apimachinery/pkg/watch"
-	registry_rest "k8s.io/apiserver/pkg/registry/rest"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
@@ -24,124 +21,175 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
-var (
+var logStreamer = &containerLogStreamer{
+	lock: &sync.Mutex{},
+}
+
+type containerLogStreamer struct {
 	// A map of Container resource UID to the log descriptor for the container.
 	// Used for streaming logs from the container.
 	containerLogs *logs.LogDescriptorSet
 
-	containerOrchestrator containers.ContainerOrchestrator = nil
-	containerWatcher      watch.Interface                  = nil
-	lock                                                   = &sync.Mutex{}
-)
+	// The container orchestrator used to capture logs from containers.
+	containerOrchestrator containers.ContainerOrchestrator
 
-func CreateContainerLogStream(
-	requestCtx context.Context,
+	lock *sync.Mutex
+}
+
+func LogStreamer() *containerLogStreamer {
+	return logStreamer
+}
+
+// StreamLogs implements v1.ResourceLogStreamer.
+func (c *containerLogStreamer) StreamLogs(
+	ctx context.Context,
+	dest io.Writer,
 	obj apiserver_resource.Object,
 	opts *apiv1.LogOptions,
-	parentKindStorage registry_rest.StandardStorage,
-) (io.ReadCloser, error) {
+	log logr.Logger,
+) (apiv1.ResourceStreamStatus, <-chan struct{}, error) {
+	status := apiv1.ResourceStreamStatusNotReady
 	ctr, isContainer := obj.(*apiv1.Container)
 	if !isContainer {
-		return nil, apierrors.NewInternalError(fmt.Errorf("parent storage returned object of wrong type (not Container): %s", obj.GetObjectKind().GroupVersionKind().String()))
+		return status, nil, apierrors.NewInternalError(fmt.Errorf("parent storage returned object of wrong type (not Container): %s", obj.GetObjectKind().GroupVersionKind().String()))
 	}
 
 	deletionRequested := ctr.DeletionTimestamp != nil && !ctr.DeletionTimestamp.IsZero()
 	if deletionRequested {
-		return nil, apierrors.NewBadRequest("Container is being deleted")
+		return status, nil, apierrors.NewBadRequest("Container is being deleted")
 	}
 
 	switch ctr.Status.State {
-
 	case apiv1.ContainerStateUnknown, apiv1.ContainerStateNotFound, apiv1.ContainerStateRemoved:
-		return nil, apierrors.NewBadRequest(fmt.Sprintf("logs are not available for Container in state %s", ctr.Status.State))
+		return status, nil, apierrors.NewBadRequest(fmt.Sprintf("logs are not available for Container in state %s", ctr.Status.State))
 
-	case apiv1.ContainerStatePending, apiv1.ContainerStateStarting:
-		// TODO: need to wait for the logs to be availabe if opts.Follow is true
-		return nil, nil
+	case "", apiv1.ContainerStatePending:
+		// We're not ready to start streaming logs for this container yet
+		log.V(1).Info("container hasn't started running yet, not ready to stream logs")
+		return status, nil, nil
 	}
 
-	if ctr.Status.ContainerID == "" {
-		// TODO: need to wait for the logs to be availabe if opts.Follow is true
-		return nil, nil
+	if (opts.Source == string(apiv1.LogStreamSourceStartupStdout) || opts.Source == string(apiv1.LogStreamSourceStartupStderr)) && opts.Timestamps {
+		return status, nil, apierrors.NewBadRequest("timestamps are not supported yet for startup logs")
 	}
 
-	if opts.Source != "" && opts.Source != string(apiv1.LogStreamSourceStdout) && opts.Source != string(apiv1.LogStreamSourceStderr) {
-		return nil, apierrors.NewBadRequest(fmt.Sprintf("Invalid log source '%s'. Supported log sources are '%s' and '%s'", opts.Source, apiv1.LogStreamSourceStdout, apiv1.LogStreamSourceStderr))
+	if opts.Source == string(apiv1.LogStreamSourceStartupStdout) && ctr.Status.StartupStdOutFile == "" {
+		// Startup stdout log file is not available yet
+		return status, nil, apierrors.NewInternalError(fmt.Errorf("container has no startup stdout"))
 	}
 
-	hostLifetimeCtx := contextdata.GetHostLifetimeContext(requestCtx)
-	log := contextdata.GetContextLogger(requestCtx)
+	if opts.Source == string(apiv1.LogStreamSourceStartupStderr) && ctr.Status.StartupStdErrFile == "" {
+		// Startup stderr log file is not available yet
+		return status, nil, apierrors.NewInternalError(fmt.Errorf("container has no startup stderr"))
+	}
 
-	co, err := ensureDependencies(requestCtx, parentKindStorage, log)
+	hostLifetimeCtx := contextdata.GetHostLifetimeContext(ctx)
+
+	co, err := c.ensureDependencies(ctx, log)
 	if err != nil {
-		return nil, err
-	}
-
-	logDescriptorCtx, cancel := context.WithCancel(hostLifetimeCtx)
-	ld, stdOutWriter, stdErrWriter, newlyCreated, err := containerLogs.AcquireForResource(logDescriptorCtx, cancel, ctr.NamespacedName(), ctr.UID)
-	if err != nil {
-		log.Error(err, "Failed to enable log capturing for Container", "Container", ctr.NamespacedName())
-		return nil, apierrors.NewInternalError(err)
-	}
-
-	if newlyCreated {
-		// Need to start log capturing for the container
-		logCaptureErr := co.CaptureContainerLogs(ld.Context, ctr.Status.ContainerID, stdOutWriter, stdErrWriter, containers.StreamContainerLogsOptions{
-			Follow:     true,
-			Timestamps: opts.Timestamps,
-		})
-		if logCaptureErr != nil {
-			log.Error(logCaptureErr, "Failed to start capturing logs for Container", "Container", ctr.NamespacedName())
-			disposeErr := ld.Dispose(requestCtx, 0)
-			if disposeErr != nil {
-				log.V(1).Info("Failed to dispose log descriptor after failed log capture",
-					"Container", ctr.NamespacedName(),
-					"Error", disposeErr.Error())
-			}
-			return nil, apierrors.NewInternalError(logCaptureErr)
-		}
-	}
-
-	stdOutPath, stdErrPath, err := ld.LogConsumerStarting()
-	if err != nil {
-		// This can happen if the log descriptor is being disposed because the Container is being deleted
-		// We just report not found in this case
-		return nil, apierrors.NewNotFound(ctr.GetGroupVersionResource().GroupResource(), ctr.NamespacedName().Name)
+		return status, nil, err
 	}
 
 	var logFilePath string
-	if opts.Source == string(apiv1.LogStreamSourceStdout) || opts.Source == "" {
-		logFilePath = stdOutPath
+	cleanup := func() {}
+	if opts.Source == string(apiv1.LogStreamSourceStartupStdout) {
+		// Startup stdout log streaming
+		logFilePath = ctr.Status.StartupStdOutFile
+	} else if opts.Source == string(apiv1.LogStreamSourceStartupStderr) {
+		// Startup stderr log streaming
+		logFilePath = ctr.Status.StartupStdErrFile
 	} else {
-		logFilePath = stdErrPath
+		if ctr.Status.ContainerID == "" {
+			log.V(1).Info("container has no container ID yet, not ready to stream logs")
+			// We're not ready to start streaming logs for this container yet
+			return status, nil, nil
+		}
+
+		// Standard stdout/stderr log streaming
+		logDescriptorCtx, cancel := context.WithCancel(hostLifetimeCtx)
+		ld, stdOutWriter, stdErrWriter, newlyCreated, acquireErr := c.containerLogs.AcquireForResource(logDescriptorCtx, cancel, ctr.NamespacedName(), ctr.UID)
+		if acquireErr != nil {
+			log.Error(err, "Failed to enable log capturing for Container")
+			return status, nil, apierrors.NewInternalError(acquireErr)
+		}
+		// Ensure we cleanup resources after streaming
+		cleanup = ld.LogConsumerStopped
+
+		if newlyCreated {
+			// Need to start log capturing for the container
+			logCaptureErr := co.CaptureContainerLogs(ld.Context, ctr.Status.ContainerID, stdOutWriter, stdErrWriter, containers.StreamContainerLogsOptions{
+				Follow:     true,
+				Timestamps: opts.Timestamps,
+			})
+			if logCaptureErr != nil {
+				log.Error(logCaptureErr, "Failed to start capturing logs for Container")
+				disposeErr := ld.Dispose(ctx, 0)
+				if disposeErr != nil {
+					log.V(1).Info("Failed to dispose log descriptor after failed log capture", "Error", disposeErr.Error())
+				}
+				return status, nil, apierrors.NewInternalError(logCaptureErr)
+			}
+		}
+
+		stdOutPath, stdErrPath, startErr := ld.LogConsumerStarting()
+		if startErr != nil {
+			// This can happen if the log descriptor is being disposed because the Container is being deleted
+			// We just report not found in this case
+			return status, nil, apierrors.NewNotFound(ctr.GetGroupVersionResource().GroupResource(), ctr.NamespacedName().Name)
+		}
+
+		if opts.Source == string(apiv1.LogStreamSourceStdout) || opts.Source == "" {
+			logFilePath = stdOutPath
+		} else if opts.Source == string(apiv1.LogStreamSourceStderr) {
+			logFilePath = stdErrPath
+		}
 	}
 
-	reader, writer := io.Pipe()
-	go func() {
-		logWatchErr := logs.WatchLogs(requestCtx, logFilePath, writer, logs.WatchLogOptions{Follow: opts.Follow})
-		if logWatchErr != nil {
-			log.Error(logWatchErr, "Failed to watch Container logs",
-				"Container", ctr.NamespacedName(),
-				"LogFilePath", logFilePath,
-			)
-		}
-		ld.LogConsumerStopped()
-	}()
+	if logFilePath != "" {
+		doneCh := make(chan struct{})
+		status = apiv1.ResourceStreamStatusStreaming
 
-	return reader, nil
+		go func() {
+			defer close(doneCh)
+			defer cleanup()
+
+			logWatchErr := logs.WatchLogs(ctx, logFilePath, dest, logs.WatchLogOptions{Follow: opts.Follow})
+			if logWatchErr != nil {
+				log.Error(logWatchErr, "Failed to watch Container logs", "LogFilePath", logFilePath)
+			}
+		}()
+
+		return status, doneCh, nil
+	}
+
+	log.V(1).Info("container logs didn't start streaming")
+
+	return status, nil, nil
 }
 
-func ensureDependencies(requestCtx context.Context, parentKindStorage registry_rest.StandardStorage, log logr.Logger) (containers.ContainerOrchestrator, error) {
-	hostLifetimeCtx := contextdata.GetHostLifetimeContext(requestCtx)
-	ensureContainerLogDescriptors(hostLifetimeCtx)
-
-	containerWatcherErr := ensureContainerWatcher(hostLifetimeCtx, parentKindStorage, log)
-	if containerWatcherErr != nil {
-		log.Error(containerWatcherErr, "failed to create Container watcher")
-		return nil, apierrors.NewInternalError(containerWatcherErr)
+// OnResourceDeleted implements v1.ResourceLogStreamer.
+func (c *containerLogStreamer) OnResourceDeleted(obj apiserver_resource.Object, log logr.Logger) {
+	ctr, isContainer := obj.(*apiv1.Container)
+	if !isContainer {
+		log.V(1).Info("container watcher received a ResourceDeleted notification for an object that is not a Container", "ObjectKind", obj.GetObjectKind().GroupVersionKind().String())
+		return
 	}
 
-	co, coErr := ensureContainerOrchestrator(requestCtx, log)
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	if c.containerLogs != nil {
+		// Need to stop the log streamer and any log watchers for this container (if any) as it is being deleted.
+		// It is OK to call RealaeseForResource() if the resource is not in the set, it is a no-op in that case.
+		c.containerLogs.ReleaseForResource(ctr.UID)
+	}
+}
+
+func (c *containerLogStreamer) ensureDependencies(requestCtx context.Context, log logr.Logger) (containers.ContainerOrchestrator, error) {
+	hostLifetimeCtx := contextdata.GetHostLifetimeContext(requestCtx)
+	c.ensureContainerLogDescriptors(hostLifetimeCtx)
+
+	co, coErr := c.ensureContainerOrchestrator(requestCtx, log)
 	if coErr != nil {
 		log.Error(coErr, "failed to get Container orchestrator")
 		return nil, apierrors.NewInternalError(coErr)
@@ -150,11 +198,11 @@ func ensureDependencies(requestCtx context.Context, parentKindStorage registry_r
 	return co, nil
 }
 
-func ensureContainerOrchestrator(requestCtx context.Context, log logr.Logger) (containers.ContainerOrchestrator, error) {
-	lock.Lock()
-	defer lock.Unlock()
-	if containerOrchestrator != nil {
-		return containerOrchestrator, nil
+func (c *containerLogStreamer) ensureContainerOrchestrator(requestCtx context.Context, log logr.Logger) (containers.ContainerOrchestrator, error) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if c.containerOrchestrator != nil {
+		return c.containerOrchestrator, nil
 	}
 
 	pe := contextdata.GetProcessExecutor(requestCtx)
@@ -164,34 +212,14 @@ func ensureContainerOrchestrator(requestCtx context.Context, log logr.Logger) (c
 		return nil, err
 	}
 
-	containerOrchestrator = co
+	c.containerOrchestrator = co
 	return co, nil
 }
 
-func ensureContainerWatcher(hostLifetimeCtx context.Context, containerStorage registry_rest.StandardStorage, log logr.Logger) error {
-	lock.Lock()
-	defer lock.Unlock()
-	if containerWatcher != nil {
-		return nil
-	}
-
-	opts := metainternalversion.ListOptions{
-		Watch: true,
-	}
-	w, err := containerStorage.Watch(hostLifetimeCtx, &opts)
-	if err != nil {
-		return err
-	}
-	containerWatcher = w
-	go processContainerEvents(hostLifetimeCtx, containerWatcher, log)
-
-	return nil
-}
-
-func ensureContainerLogDescriptors(hostLifetimeCtx context.Context) {
-	lock.Lock()
-	defer lock.Unlock()
-	if containerLogs != nil {
+func (c *containerLogStreamer) ensureContainerLogDescriptors(hostLifetimeCtx context.Context) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if c.containerLogs != nil {
 		return
 	}
 
@@ -200,37 +228,7 @@ func ensureContainerLogDescriptors(hostLifetimeCtx context.Context) {
 		logFolder = dcpSessionDir
 	}
 
-	containerLogs = logs.NewLogDescriptorSet(hostLifetimeCtx, logFolder)
+	c.containerLogs = logs.NewLogDescriptorSet(hostLifetimeCtx, logFolder)
 }
 
-func processContainerEvents(hostLifetimeCtx context.Context, containerWatcher watch.Interface, log logr.Logger) {
-	ensureContainerLogDescriptors(hostLifetimeCtx)
-
-	for {
-		select {
-
-		case <-hostLifetimeCtx.Done():
-			containerWatcher.Stop()
-			return
-
-		case event, isChanOpen := <-containerWatcher.ResultChan():
-			if !isChanOpen {
-				return
-			}
-
-			if event.Type != watch.Deleted {
-				continue
-			}
-
-			ctr, isContainer := event.Object.(*apiv1.Container)
-			if !isContainer {
-				log.V(1).Info("container watcher received a Deleted event for an object that is not a Container", "ObjectKind", event.Object.GetObjectKind().GroupVersionKind().String())
-				continue
-			}
-
-			// Need to stop the log streamer and any log watchers for this container (if any) as it is being deleted.
-			// It is OK to call RealaeseForResource() if the resource is not in the set, it is a no-op in that case.
-			containerLogs.ReleaseForResource(ctr.UID)
-		}
-	}
-}
+var _ apiv1.ResourceLogStreamer = (*containerLogStreamer)(nil)

@@ -3,6 +3,7 @@ package main
 //go:generate goversioninfo
 
 import (
+	"fmt"
 	"os"
 
 	kubeapiserver "k8s.io/apiserver/pkg/server"
@@ -20,7 +21,11 @@ const (
 
 func main() {
 	log := logger.New("dcp")
-	defer log.BeforeExit(func(value interface{}) { os.Exit(errPanic) })
+	defer log.BeforeExit(func(value interface{}) {
+		// Attempt to log the panic before exiting (we're already in a panic state, so the worst that can happen is that we panic again)
+		log.Error(fmt.Errorf("panic: %v", value), "exiting due to panic")
+		os.Exit(errPanic)
+	})
 	defer logger.CleanupSessionFolderIfNeeded()
 
 	ctx := kubeapiserver.SetupSignalContext()
