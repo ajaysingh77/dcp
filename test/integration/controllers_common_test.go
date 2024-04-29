@@ -266,24 +266,49 @@ func getDcpExecutablePath() (string, error) {
 	return filepath.Join(append([]string{rootFolder}, tail...)...), nil
 }
 
+// unexpectedObjectStateError can be used to provide additional context when an object is not in the expected state.
+// In is meant to be used from within isInState() function passed to waitObjectAssumesState().
+// Unlike any other error, it won't stop the wait when returned from isInState(),
+// but if the wait times out and the object is still not in desired state,
+// the test will be terminated with the uexpectedObjectStateError serving as the terminating error.
+type unexpectedObjectStateError struct {
+	errText string
+}
+
+func (e *unexpectedObjectStateError) Error() string { return e.errText }
+
+var _ error = (*unexpectedObjectStateError)(nil)
+
 func waitObjectAssumesState[T controllers.ObjectStruct, PT controllers.PObjectStruct[T]](t *testing.T, ctx context.Context, name types.NamespacedName, isInState func(*T) (bool, error)) *T {
 	var updatedObject *T = new(T)
+	var unexpectedStateErr *unexpectedObjectStateError
 
 	hasExpectedState := func(ctx context.Context) (bool, error) {
 		err := client.Get(ctx, name, PT(updatedObject))
 		if ctrl_client.IgnoreNotFound(err) != nil {
-			t.Fatalf("unable to fetch the object '%s' from API server: %v", name.Name, err)
+			t.Fatalf("unable to fetch the object '%s' from API server: %v", name.String(), err)
 			return false, err
 		} else if err != nil {
 			return false, nil
 		}
 
-		return isInState(updatedObject)
+		ok, stateCheckErr := isInState(updatedObject)
+		if errors.As(stateCheckErr, &unexpectedStateErr) {
+			return ok, nil // Unexpected state error does not stop the wait
+		} else {
+			return ok, stateCheckErr
+		}
 	}
 
 	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, hasExpectedState)
 	if err != nil {
-		t.Fatalf("Waiting for object '%s' to assume desired state failed: %v", name.Name, err)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			// If the state check function returns errUnexpectedObjectState, use it.
+			if unexpectedStateErr != nil {
+				t.Fatalf("Waiting for object '%s' to assume desired state failed: %v", name.String(), unexpectedStateErr)
+			}
+		}
+		t.Fatalf("Waiting for object '%s' to assume desired state failed: %v", name.String(), err)
 		return nil // make the compiler happy
 	} else {
 		return updatedObject

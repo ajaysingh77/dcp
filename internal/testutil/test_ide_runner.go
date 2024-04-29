@@ -105,7 +105,7 @@ func (r *TestIdeRunner) StartRun(_ context.Context, exe *apiv1.Executable, runCh
 
 			pid = pid + 1 // Ensure that the PID is positive
 			go func() {
-				startErr := r.SimulateRunStart(runID, process.Pid_t(pid))
+				startErr := r.SimulateSuccessfulRunStart(runID, process.Pid_t(pid))
 				if startErr != nil {
 					log.Error(startErr, "failed to simulate run start")
 				}
@@ -121,8 +121,8 @@ func (r *TestIdeRunner) StopRun(_ context.Context, runID controllers.RunID, _ lo
 	return r.doStopRun(runID, KilledProcessExitCode)
 }
 
-func (r *TestIdeRunner) SimulateRunStart(runID controllers.RunID, pid process.Pid_t) error {
-	run, found := r.findAndChangeRun(
+func (r *TestIdeRunner) SimulateSuccessfulRunStart(runID controllers.RunID, pid process.Pid_t) error {
+	return r.SimulateRunStart(
 		func(_ types.NamespacedName, run *TestIdeRun) bool { return run.ID == runID },
 		func(run *TestIdeRun) {
 			run.PID = pid
@@ -130,45 +130,35 @@ func (r *TestIdeRunner) SimulateRunStart(runID controllers.RunID, pid process.Pi
 			run.Status.StartupTimestamp = metav1.NewTime(run.StartedAt)
 		},
 	)
-
-	if !found {
-		return fmt.Errorf("run '%s' was not found, cannot be started", runID)
-	}
-
-	if run.ChangeHandler != nil {
-		// Make sure OnStartingCompleted is called before we return and let the test proceed.
-		done := make(chan struct{})
-		go func() {
-			run.ChangeHandler.OnStartingCompleted(run.Exe.NamespacedName(), runID, *run.Status, run.StartWaitingCallback)
-
-			close(done)
-		}()
-		<-done
-	}
-
-	return nil
 }
 
 func (r *TestIdeRunner) SimulateFailedRunStart(exeName types.NamespacedName, startupError error) error {
-	run, found := r.findAndChangeRun(
+	return r.SimulateRunStart(
 		func(objName types.NamespacedName, run *TestIdeRun) bool { return objName == exeName },
 		func(run *TestIdeRun) {
+			run.ID = controllers.UnknownRunID
 			run.PID = process.UnknownPID
 			run.Status.State = apiv1.ExecutableStateFailedToStart
 			run.Status.StartupTimestamp = metav1.NewTime(run.StartedAt)
 			run.Status.FinishTimestamp = metav1.Now()
 		},
 	)
+}
 
+func (r *TestIdeRunner) SimulateRunStart(
+	isDesiredRun func(types.NamespacedName, *TestIdeRun) bool,
+	changeToStarted func(*TestIdeRun),
+) error {
+	run, found := r.findAndChangeRun(isDesiredRun, changeToStarted)
 	if !found {
-		return fmt.Errorf("run for Executable '%s' was not found", exeName.String())
+		return fmt.Errorf("run for Executable '%s' was not found", run.Exe.NamespacedName().String())
 	}
 
 	if run.ChangeHandler != nil {
 		// Make sure OnStartingCompleted is called before we return and let the test proceed.
 		done := make(chan struct{})
 		go func() {
-			run.ChangeHandler.OnStartingCompleted(run.Exe.NamespacedName(), controllers.UnknownRunID, *run.Status, run.StartWaitingCallback)
+			run.ChangeHandler.OnStartingCompleted(run.Exe.NamespacedName(), run.ID, *run.Status, run.StartWaitingCallback)
 
 			close(done)
 		}()

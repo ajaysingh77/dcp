@@ -219,7 +219,10 @@ func (r *ExecutableReconciler) OnStartingCompleted(name types.NamespacedName, ru
 		// reported during the next reconciliation loop
 		r.Log.V(1).Info("Executable failed to reach valid running state", "Executable", name.String())
 		exeStatus.State = apiv1.ExecutableStateFailedToStart
-		exeStatus.FinishTimestamp = metav1.Now()
+
+		if exeStatus.FinishTimestamp.IsZero() {
+			exeStatus.FinishTimestamp = metav1.Now()
+		}
 	}
 
 	// OnStartingCompleted might be invoked asynchronously. To avoid race conditions,
@@ -448,7 +451,9 @@ func (r *ExecutableReconciler) updateRunState(ctx context.Context, exe *apiv1.Ex
 		runInfo.exeState == apiv1.ExecutableStateTerminated ||
 		runInfo.exeState == apiv1.ExecutableStateFailedToStart
 	if reachedFinalState {
-		exe.Status.FinishTimestamp = metav1.Now()
+		if exe.Status.FinishTimestamp.IsZero() {
+			exe.Status.FinishTimestamp = metav1.Now()
+		}
 		change |= statusChanged
 	}
 

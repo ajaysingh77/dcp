@@ -9,8 +9,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	wait "k8s.io/apimachinery/pkg/util/wait"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -98,8 +100,8 @@ func TestExecutableExitCodeCaptured(t *testing.T) {
 	type testcase struct {
 		description       string
 		exe               *apiv1.Executable
-		verifyExeRunning  func(ctx context.Context, t *testing.T, exe *apiv1.Executable) string
-		simulateRunEnding func(t *testing.T, runID string)
+		verifyExeRunning  func(ctx context.Context, t *testing.T, exe *apiv1.Executable) controllers.RunID
+		simulateRunEnding func(t *testing.T, runID controllers.RunID)
 	}
 
 	const expectedEC = 12
@@ -116,17 +118,17 @@ func TestExecutableExitCodeCaptured(t *testing.T) {
 					ExecutablePath: "path/to/exit-code-captured-process",
 				},
 			},
-			verifyExeRunning: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) string {
+			verifyExeRunning: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) controllers.RunID {
 				pid, err := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
 				if err != nil {
 					t.Fatalf("Process could not be started: %v", err)
 					return "" // make compiler happy
 				} else {
-					return strconv.Itoa(int(pid))
+					return controllers.RunID(strconv.Itoa(int(pid)))
 				}
 			},
-			simulateRunEnding: func(t *testing.T, runID string) {
-				pid64, err := strconv.ParseInt(runID, 10, 32)
+			simulateRunEnding: func(t *testing.T, runID controllers.RunID) {
+				pid64, err := strconv.ParseInt(string(runID), 10, 32)
 				require.NoError(t, err)
 				pid, err := process.Int64ToPidT(pid64)
 				require.NoError(t, err)
@@ -145,17 +147,17 @@ func TestExecutableExitCodeCaptured(t *testing.T) {
 					ExecutionType:  apiv1.ExecutionTypeIDE,
 				},
 			},
-			verifyExeRunning: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) string {
+			verifyExeRunning: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) controllers.RunID {
 				runID, err := ensureIdeRunSessionStarted(ctx, exe.Spec.ExecutablePath)
 
 				if err != nil {
 					t.Fatalf("IDE run session could not be started: %v", err)
-					return "" // make compiler happy
+					return controllers.UnknownRunID // make compiler happy
 				}
 
 				return runID
 			},
-			simulateRunEnding: func(t *testing.T, runID string) {
+			simulateRunEnding: func(t *testing.T, runID controllers.RunID) {
 				err := ideRunner.SimulateRunEnd(controllers.RunID(runID), expectedEC)
 				require.NoError(t, err)
 			},
@@ -190,7 +192,7 @@ func TestExecutableExitCodeCaptured(t *testing.T) {
 					return false, err
 				}
 
-				if updatedExe.Status.ExecutionID == runID && updatedExe.Status.State == apiv1.ExecutableStateFinished && updatedExe.Status.ExitCode != apiv1.UnknownExitCode && *updatedExe.Status.ExitCode == int32(expectedEC) {
+				if updatedExe.Status.ExecutionID == string(runID) && updatedExe.Status.State == apiv1.ExecutableStateFinished && updatedExe.Status.ExitCode != apiv1.UnknownExitCode && *updatedExe.Status.ExitCode == int32(expectedEC) {
 					return true, nil
 				}
 
@@ -1290,6 +1292,127 @@ func TestExecutableServingAddressInjected(t *testing.T) {
 	waitServiceReady(t, ctx, &svc)
 }
 
+// Verify that all changes to the Executable status made by IDE executable runner are refleced in the Executable status.
+func TestExecutableStatusUpdatedByIdeRunner(t *testing.T) {
+	type testcase struct {
+		description    string
+		exe            *apiv1.Executable
+		performStartup func(*ctrl_testutil.TestIdeRun)
+		verifyExe      func(*apiv1.Executable) (bool, error)
+	}
+
+	const successfulStartExeName = "test-executable-status-updated-by-ide-runner-successful-start"
+	const failedStartExeName = "test-executable-status-updated-by-ide-runner-failed-start"
+
+	randomPid, pidCreationErr := process.IntToPidT(rand.Intn(60000) + 1)
+	require.NoError(t, pidCreationErr, "Could not generate random PID for successful run")
+	desiredSuccessfulExeStatus := apiv1.ExecutableStatus{
+		PID:        (*int64)(&randomPid),
+		State:      apiv1.ExecutableStateRunning,
+		StdOutFile: "stdout/log/for/" + successfulStartExeName,
+		StdErrFile: "stderr/log/for/" + successfulStartExeName,
+	}
+	desiredFailedExeStatus := apiv1.ExecutableStatus{
+		PID:   nil,
+		State: apiv1.ExecutableStateFailedToStart,
+	}
+
+	verifyExeStatus := func(currentExe *apiv1.Executable, desiredStatus *apiv1.ExecutableStatus) (bool, error) {
+		hasPID := (currentExe.Status.PID == nil && desiredStatus.PID == nil) ||
+			(currentExe.Status.PID != nil && *currentExe.Status.PID == *desiredStatus.PID)
+
+		stateMatches := currentExe.Status.State == desiredStatus.State
+
+		// metav1.Time uses RFC 3339 format and truncates the time to seconds during serialization.
+		// This is why we only check that the desired and actual timestamp are within a second of each other.
+		hasStartupTimestamp := !currentExe.Status.StartupTimestamp.IsZero() && testutil.Within(currentExe.Status.StartupTimestamp.Time, desiredStatus.StartupTimestamp.Time, time.Second)
+
+		hasFinishTimestamp := testutil.Within(currentExe.Status.FinishTimestamp.Time, desiredStatus.FinishTimestamp.Time, time.Second)
+
+		hasStdOutFile := currentExe.Status.StdOutFile == desiredStatus.StdOutFile
+		hasStdErrFile := currentExe.Status.StdErrFile == desiredStatus.StdErrFile
+
+		return hasPID && stateMatches && hasStartupTimestamp && hasFinishTimestamp && hasStdOutFile && hasStdErrFile, nil
+	}
+
+	testcases := []testcase{
+		{
+			description: "successful start",
+			exe: &apiv1.Executable{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      successfulStartExeName,
+					Namespace: metav1.NamespaceNone,
+				},
+				Spec: apiv1.ExecutableSpec{
+					ExecutablePath: "path/to/" + successfulStartExeName,
+					ExecutionType:  apiv1.ExecutionTypeIDE,
+				},
+			},
+			performStartup: func(r *ctrl_testutil.TestIdeRun) {
+				r.PID = randomPid
+				desiredSuccessfulExeStatus.StartupTimestamp = metav1.NewTime(r.StartedAt)
+				desiredSuccessfulExeStatus.DeepCopyInto(r.Status)
+			},
+			verifyExe: func(currentExe *apiv1.Executable) (bool, error) {
+				return verifyExeStatus(currentExe, &desiredSuccessfulExeStatus)
+			},
+		},
+		{
+			description: "failed start",
+			exe: &apiv1.Executable{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      failedStartExeName,
+					Namespace: metav1.NamespaceNone,
+				},
+				Spec: apiv1.ExecutableSpec{
+					ExecutablePath: "path/to/" + failedStartExeName,
+					ExecutionType:  apiv1.ExecutionTypeIDE,
+				},
+			},
+			performStartup: func(r *ctrl_testutil.TestIdeRun) {
+				r.PID = process.UnknownPID
+				r.ID = controllers.UnknownRunID
+				desiredFailedExeStatus.StartupTimestamp = metav1.NewTime(r.StartedAt)
+				r.EndedAt = time.Now()
+				desiredFailedExeStatus.FinishTimestamp = metav1.NewTime(r.EndedAt)
+				desiredFailedExeStatus.DeepCopyInto(r.Status)
+			},
+			verifyExe: func(currentExe *apiv1.Executable) (bool, error) {
+				return verifyExeStatus(currentExe, &desiredFailedExeStatus)
+			},
+		},
+	}
+
+	t.Parallel()
+
+	for _, tc := range testcases {
+		tc := tc
+
+		t.Run(tc.description, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+
+			if exeCreationErr := client.Create(ctx, tc.exe); exeCreationErr != nil {
+				t.Fatalf("Could not create Executable '%s': %v", tc.exe.ObjectMeta.Name, exeCreationErr)
+			}
+
+			runID, runFindErr := findIdeRun(ctx, tc.exe.Spec.ExecutablePath)
+			require.NoError(t, runFindErr, "Could not find IDE run for Executable '%s'", tc.exe.ObjectMeta.Name)
+
+			runStartErr := ideRunner.SimulateRunStart(
+				func(_ types.NamespacedName, r *ctrl_testutil.TestIdeRun) bool { return r.ID == runID },
+				tc.performStartup,
+			)
+			require.NoError(t, runStartErr, "Could not simulate IDE run start for Executable '%s'", tc.exe.ObjectMeta.Name)
+
+			t.Logf("Ensure the Status for Executable '%s' has been updated with data from the IDE runner...", tc.exe.ObjectMeta.Name)
+			_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(tc.exe), tc.verifyExe)
+		})
+	}
+}
+
 func ensureProcessRunning(ctx context.Context, cmdPath string) (process.Pid_t, error) {
 	pid := process.UnknownPID
 
@@ -1314,22 +1437,22 @@ func ensureProcessRunning(ctx context.Context, cmdPath string) (process.Pid_t, e
 	}
 }
 
-func ensureIdeRunSessionStarted(ctx context.Context, cmdPath string) (string, error) {
+func ensureIdeRunSessionStarted(ctx context.Context, cmdPath string) (controllers.RunID, error) {
 	runID, err := findIdeRun(ctx, cmdPath)
 	if err != nil {
-		return "", err
+		return controllers.UnknownRunID, err
 	}
 
 	randomPid, _ := process.IntToPidT(rand.Intn(12345) + 1)
-	if err = ideRunner.SimulateRunStart(controllers.RunID(runID), randomPid); err != nil {
-		return "", err
+	if err = ideRunner.SimulateSuccessfulRunStart(controllers.RunID(runID), randomPid); err != nil {
+		return controllers.UnknownRunID, err
 	}
 
 	return runID, nil
 }
 
-func findIdeRun(ctx context.Context, cmdPath string) (string, error) {
-	runID := ""
+func findIdeRun(ctx context.Context, cmdPath string) (controllers.RunID, error) {
+	var runID controllers.RunID = controllers.UnknownRunID
 
 	ideRunSessionStarted := func(_ context.Context) (bool, error) {
 		activeSessionsWithPath := ideRunner.FindAll(cmdPath, func(run ctrl_testutil.TestIdeRun) bool {
@@ -1340,13 +1463,13 @@ func findIdeRun(ctx context.Context, cmdPath string) (string, error) {
 			return false, nil
 		}
 
-		runID = string(activeSessionsWithPath[0].ID)
+		runID = activeSessionsWithPath[0].ID
 		return true, nil
 	}
 
 	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ideRunSessionStarted)
 	if err != nil {
-		return "", err
+		return controllers.UnknownRunID, err
 	}
 
 	return runID, nil

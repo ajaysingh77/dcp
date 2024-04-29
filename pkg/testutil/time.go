@@ -8,7 +8,6 @@ import (
 
 // Formats a duration into a human readable string.
 // If this proves not enough, consider https://github.com/hako/durafmt
-
 func FormatDuration(duration time.Duration) string {
 	days := duration / (24 * time.Hour)
 	duration = duration % (24 * time.Hour)
@@ -35,4 +34,9 @@ func FormatDuration(duration time.Duration) string {
 	}
 
 	return strings.Join(parts, " ")
+}
+
+// Ensures two given timestamps are within a given duration of each other.
+func Within(a, b time.Time, max time.Duration) bool {
+	return a.Sub(b).Abs() <= max
 }
