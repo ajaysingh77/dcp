@@ -12,23 +12,32 @@ import (
 	"github.com/go-logr/logr"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/watch"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	container_flags "github.com/microsoft/usvc-apiserver/internal/containers/flags"
 	"github.com/microsoft/usvc-apiserver/internal/contextdata"
 	"github.com/microsoft/usvc-apiserver/internal/logs"
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
+	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 
 var logStreamer = &containerLogStreamer{
-	lock: &sync.Mutex{},
+	startupLogStreams: &syncmap.Map[types.UID, []*usvc_io.FollowWriter]{},
+	stdioLogStreams:   &syncmap.Map[types.UID, []*usvc_io.FollowWriter]{},
+	lock:              &sync.Mutex{},
 }
 
 type containerLogStreamer struct {
 	// A map of Container resource UID to the log descriptor for the container.
 	// Used for streaming logs from the container.
 	containerLogs *logs.LogDescriptorSet
+
+	startupLogStreams *syncmap.Map[types.UID, []*usvc_io.FollowWriter]
+	stdioLogStreams   *syncmap.Map[types.UID, []*usvc_io.FollowWriter]
 
 	// The container orchestrator used to capture logs from containers.
 	containerOrchestrator containers.ContainerOrchestrator
@@ -69,18 +78,14 @@ func (c *containerLogStreamer) StreamLogs(
 		return status, nil, nil
 	}
 
-	if (opts.Source == string(apiv1.LogStreamSourceStartupStdout) || opts.Source == string(apiv1.LogStreamSourceStartupStderr)) && opts.Timestamps {
-		return status, nil, apierrors.NewBadRequest("timestamps are not supported yet for startup logs")
-	}
-
 	if opts.Source == string(apiv1.LogStreamSourceStartupStdout) && ctr.Status.StartupStdOutFile == "" {
-		// Startup stdout log file is not available yet
-		return status, nil, apierrors.NewInternalError(fmt.Errorf("container has no startup stdout"))
+		// No startup stdout file, so nothing to stream
+		return apiv1.ResourceStreamStatusDone, nil, nil
 	}
 
 	if opts.Source == string(apiv1.LogStreamSourceStartupStderr) && ctr.Status.StartupStdErrFile == "" {
-		// Startup stderr log file is not available yet
-		return status, nil, apierrors.NewInternalError(fmt.Errorf("container has no startup stderr"))
+		// No startup stderr file, so nothing to stream
+		return apiv1.ResourceStreamStatusDone, nil, nil
 	}
 
 	hostLifetimeCtx := contextdata.GetHostLifetimeContext(ctx)
@@ -90,14 +95,18 @@ func (c *containerLogStreamer) StreamLogs(
 		return status, nil, err
 	}
 
+	follow := opts.Follow
+
 	var logFilePath string
 	cleanup := func() {}
 	if opts.Source == string(apiv1.LogStreamSourceStartupStdout) {
 		// Startup stdout log streaming
 		logFilePath = ctr.Status.StartupStdOutFile
+		follow = follow && ctr.Status.State == apiv1.ContainerStateStarting
 	} else if opts.Source == string(apiv1.LogStreamSourceStartupStderr) {
 		// Startup stderr log streaming
 		logFilePath = ctr.Status.StartupStdErrFile
+		follow = follow && ctr.Status.State == apiv1.ContainerStateStarting
 	} else {
 		if ctr.Status.ContainerID == "" {
 			log.V(1).Info("container has no container ID yet, not ready to stream logs")
@@ -119,7 +128,7 @@ func (c *containerLogStreamer) StreamLogs(
 			// Need to start log capturing for the container
 			logCaptureErr := co.CaptureContainerLogs(ld.Context, ctr.Status.ContainerID, stdOutWriter, stdErrWriter, containers.StreamContainerLogsOptions{
 				Follow:     true,
-				Timestamps: opts.Timestamps,
+				Timestamps: true,
 			})
 			if logCaptureErr != nil {
 				log.Error(logCaptureErr, "Failed to start capturing logs for Container")
@@ -146,20 +155,57 @@ func (c *containerLogStreamer) StreamLogs(
 	}
 
 	if logFilePath != "" {
-		doneCh := make(chan struct{})
-		status = apiv1.ResourceStreamStatusStreaming
+		src, fileErr := usvc_io.OpenFile(logFilePath, os.O_RDONLY, 0)
+		if fileErr != nil {
+			cleanup()
+			return status, nil, fmt.Errorf("failed to open log file '%s': %w", logFilePath, fileErr)
+		}
 
-		go func() {
-			defer close(doneCh)
-			defer cleanup()
+		if follow {
+			// If we're following, use a follow writer to keep streaming until stopped
+			c.lock.Lock()
+			defer c.lock.Unlock()
 
-			logWatchErr := logs.WatchLogs(ctx, logFilePath, dest, logs.WatchLogOptions{Follow: opts.Follow})
-			if logWatchErr != nil {
-				log.Error(logWatchErr, "Failed to watch Container logs", "LogFilePath", logFilePath)
+			followWriter := usvc_io.NewFollowWriter(ctx, usvc_io.NewTimestampAwareReader(src, opts.Timestamps), dest)
+
+			switch opts.Source {
+			case string(apiv1.LogStreamSourceStartupStdout), string(apiv1.LogStreamSourceStartupStderr):
+				followWriters, _ := c.startupLogStreams.LoadOrStore(ctr.UID, []*usvc_io.FollowWriter{})
+				followWriters = append(followWriters, followWriter)
+				c.startupLogStreams.Store(ctr.UID, followWriters)
+			default:
+				followWriters, _ := c.stdioLogStreams.LoadOrStore(ctr.UID, []*usvc_io.FollowWriter{})
+				followWriters = append(followWriters, followWriter)
+				c.stdioLogStreams.Store(ctr.UID, followWriters)
 			}
-		}()
 
-		return status, doneCh, nil
+			go func() {
+				defer cleanup()
+				defer src.Close()
+
+				<-followWriter.Done()
+
+				if followWriter.Err() != nil {
+					log.Error(followWriter.Err(), "failed to stream logs for Container")
+				}
+			}()
+
+			return apiv1.ResourceStreamStatusStreaming, followWriter.Done(), nil
+		} else {
+			doneCh := make(chan struct{})
+			go func() {
+				defer cleanup()
+				defer src.Close()
+				defer close(doneCh)
+
+				_, copyErr := io.Copy(dest, usvc_io.NewTimestampAwareReader(src, opts.Timestamps))
+				if copyErr != nil {
+					log.Error(copyErr, "failed to copy log file to destination")
+				}
+			}()
+
+			return apiv1.ResourceStreamStatusStreaming, doneCh, nil
+		}
 	}
 
 	log.V(1).Info("container logs didn't start streaming")
@@ -167,21 +213,69 @@ func (c *containerLogStreamer) StreamLogs(
 	return status, nil, nil
 }
 
-// OnResourceDeleted implements v1.ResourceLogStreamer.
-func (c *containerLogStreamer) OnResourceDeleted(obj apiserver_resource.Object, log logr.Logger) {
-	ctr, isContainer := obj.(*apiv1.Container)
+// OnResourceUpdated implements v1.ResourceLogStreamer.
+func (c *containerLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent, log logr.Logger) {
+	ctr, isContainer := evt.Object.(*apiv1.Container)
 	if !isContainer {
-		log.V(1).Info("container watcher received a ResourceDeleted notification for an object that is not a Container", "ObjectKind", obj.GetObjectKind().GroupVersionKind().String())
+		log.V(1).Info("container watcher received a resource notification for an object that is not a Container", "ObjectKind", evt.Object.GetObjectKind().GroupVersionKind().String())
 		return
 	}
 
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	if c.containerLogs != nil {
-		// Need to stop the log streamer and any log watchers for this container (if any) as it is being deleted.
-		// It is OK to call RealaeseForResource() if the resource is not in the set, it is a no-op in that case.
-		c.containerLogs.ReleaseForResource(ctr.UID)
+	if c.containerOrchestrator == nil {
+		// We haven't completed initalization for any resources yet
+		return
+	}
+
+	if evt.Type == watch.Modified {
+		if ctr.Status.State != apiv1.ContainerStateStarting {
+			// If done starting the container, ensure startup logs stop streaming once they reach EOF
+			if logs, found := c.startupLogStreams.Load(ctr.UID); found {
+				log.V(1).Info("stopping startup follow logs for container", "Container", ctr.Status.ContainerID, "StreamCount", len(logs))
+				for i := range logs {
+					logs[i].StopFollow()
+				}
+
+				c.startupLogStreams.Delete(ctr.UID)
+			}
+		}
+
+		if ctr.Status.State == apiv1.ContainerStateFailedToStart || ctr.Status.State == apiv1.ContainerStateRemoved || ctr.Status.State == apiv1.ContainerStateExited || ctr.Status.State == apiv1.ContainerStateUnknown {
+			// If the container isn't running, ensure standard logs stop streaming once they reach EOF
+			if logs, found := c.stdioLogStreams.Load(ctr.UID); found {
+				log.V(1).Info("stopping stdio follow logs for container", "Container", ctr.Status.ContainerID, "StreamCount", len(logs))
+				for i := range logs {
+					logs[i].StopFollow()
+				}
+
+				c.stdioLogStreams.Delete(ctr.UID)
+			}
+		}
+	} else if evt.Type == watch.Deleted {
+		if c.containerLogs != nil {
+			// Need to stop the log streamer and any log watchers for this container (if any) as it is being deleted.
+			// It is OK to call RealaeseForResource() if the resource is not in the set, it is a no-op in that case.
+			c.containerLogs.ReleaseForResource(ctr.UID)
+		}
+
+		// The resource was deleted, ensure any following log streams stop and cleanup their resources
+		if logs, found := c.startupLogStreams.Load(ctr.UID); found {
+			for i := range logs {
+				logs[i].StopFollow()
+			}
+
+			c.startupLogStreams.Delete(ctr.UID)
+		}
+
+		if logs, found := c.stdioLogStreams.Load(ctr.UID); found {
+			for i := range logs {
+				logs[i].StopFollow()
+			}
+
+			c.stdioLogStreams.Delete(ctr.UID)
+		}
 	}
 }
 

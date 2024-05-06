@@ -64,7 +64,7 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 	if err != nil {
 		log.Error(err, "failed to create temporary file for capturing process standard output data")
 	} else {
-		cmd.Stdout = stdOutFile
+		cmd.Stdout = usvc_io.NewTimestampWriter(stdOutFile)
 		exe.Status.StdOutFile = stdOutFile.Name()
 	}
 
@@ -72,7 +72,7 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 	if err != nil {
 		log.Error(err, "failed to create temporary file for capturing process standard error data")
 	} else {
-		cmd.Stderr = stdErrFile
+		cmd.Stderr = usvc_io.NewTimestampWriter(stdErrFile)
 		exe.Status.StdErrFile = stdErrFile.Name()
 	}
 

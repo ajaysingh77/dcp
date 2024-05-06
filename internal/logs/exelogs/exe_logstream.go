@@ -43,23 +43,14 @@ func (*executableLogStreamer) StreamLogs(
 		return status, nil, apierrors.NewBadRequest("Executable is being deleted")
 	}
 
-	if opts.Timestamps {
-		// Timestamps are not implemented yet
-		return status, nil, apierrors.NewBadRequest("timestamps are not supported yet for Executable logs")
-	}
-
 	var logFilePath string
 	switch opts.Source {
 	case "", string(apiv1.LogStreamSourceStdout):
 		logFilePath = exe.Status.StdOutFile
 	case string(apiv1.LogStreamSourceStderr):
 		logFilePath = exe.Status.StdErrFile
-	case string(apiv1.LogStreamSourceStartupStdout):
-		return status, nil, apierrors.NewBadRequest("Startup logs are not supported yet for Executable logs")
-	case string(apiv1.LogStreamSourceStartupStderr):
-		return status, nil, apierrors.NewBadRequest("Startup logs are not supported yet for Executable logs")
 	default:
-		return status, nil, apierrors.NewBadRequest(fmt.Sprintf("Invalid log source '%s'. Supported log sources are '%s' and '%s'", opts.Source, apiv1.LogStreamSourceStdout, apiv1.LogStreamSourceStderr))
+		return apiv1.ResourceStreamStatusDone, nil, nil
 	}
 
 	if logFilePath != "" {
@@ -69,7 +60,7 @@ func (*executableLogStreamer) StreamLogs(
 		go func() {
 			defer close(doneCh)
 
-			logWatchErr := logs.WatchLogs(requestCtx, logFilePath, dest, logs.WatchLogOptions{Follow: opts.Follow})
+			logWatchErr := logs.WatchLogs(requestCtx, logFilePath, dest, logs.WatchLogOptions{Follow: opts.Follow, Timestamps: opts.Timestamps})
 			if logWatchErr != nil {
 				log.Error(logWatchErr, "failed to watch Executable logs", "LogFilePath", logFilePath)
 			}
@@ -82,7 +73,7 @@ func (*executableLogStreamer) StreamLogs(
 }
 
 // OnResourceDeleted implements v1.ResourceLogStreamer.
-func (*executableLogStreamer) OnResourceDeleted(obj apiserver_resource.Object, log logr.Logger) {
+func (*executableLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent, log logr.Logger) {
 	// Nothing to cleanup for executable logs
 }
 

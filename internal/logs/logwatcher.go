@@ -20,7 +20,8 @@ const (
 )
 
 type WatchLogOptions struct {
-	Follow bool
+	Follow     bool
+	Timestamps bool
 }
 
 // WatchLogs watches a log file on disk and sends its contents to supplied writer
@@ -38,15 +39,17 @@ func WatchLogs(ctx context.Context, path string, dest io.Writer, opts WatchLogOp
 	}
 	defer src.Close()
 
+	timestampReader := usvc_io.NewTimestampAwareReader(src, opts.Timestamps)
+
 	if !opts.Follow {
 		// This is easy--we are going to just copy the file as-is into the destination.
 		// If early cancellation is desired, it should be done by the destination writer returning an error.
-		_, copyErr := io.Copy(dest, src)
+		_, copyErr := io.Copy(dest, timestampReader)
 		return copyErr
 	}
 
 	// The harder case--we might hit EOF repeatedly, and we need to wait for new data to appear.
-	srcReader := bufio.NewReader(src)
+	srcReader := bufio.NewReader(timestampReader)
 	buf := make([]byte, defaultBufferSize)
 
 	// We experimented with file change notification libraries like fsnotify (github.com/fsnotify/fsnotify),

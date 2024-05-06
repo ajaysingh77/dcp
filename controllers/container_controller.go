@@ -113,18 +113,16 @@ func (rcd *runningContainerData) ensureStartupOutputFiles(ctr *apiv1.Container, 
 func (rcd *runningContainerData) closeStartupLogFiles(log logr.Logger) {
 	if rcd.startupStdOutFile != nil {
 		closeErr := rcd.startupStdOutFile.Close()
-		if closeErr != nil {
+		if closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
 			log.Error(closeErr, "failed to close startup standard output file")
 		}
-		rcd.startupStdOutFile = nil
 	}
 
 	if rcd.startupStdErrFile != nil {
 		closeErr := rcd.startupStdErrFile.Close()
-		if closeErr != nil {
+		if closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
 			log.Error(closeErr, "failed to close startup standard error file")
 		}
-		rcd.startupStdErrFile = nil
 	}
 }
 
@@ -426,9 +424,12 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 			return noChange
 		}
 
-		// This starting attempt is done, so we can close the startup log files,
-		// as nothing more will be written to them.
-		rcd.closeStartupLogFiles(log)
+		if rcd.startupStdOutFile != nil {
+			container.Status.StartupStdOutFile = rcd.startupStdOutFile.Name()
+		}
+		if rcd.startupStdErrFile != nil {
+			container.Status.StartupStdErrFile = rcd.startupStdErrFile.Name()
+		}
 
 		if rcd.startupError == nil {
 			container.Status.ContainerID = rcd.newContainerID
@@ -458,6 +459,7 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 				rcd.startAttemptFinishedAt = metav1.Now()
 				container.Status.State = apiv1.ContainerStateRunning
 				container.Status.StartupTimestamp = rcd.startAttemptFinishedAt
+				container.Status.ContainerID = rcd.newContainerID
 
 				return statusChanged
 			} else {
@@ -465,6 +467,7 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 
 				container.Status.State = apiv1.ContainerStateRunning
 				container.Status.StartupTimestamp = rcd.startAttemptFinishedAt
+				container.Status.ContainerID = rcd.newContainerID
 
 				return statusChanged
 			}
@@ -610,11 +613,16 @@ func (r *ContainerReconciler) doStartContainer(container *apiv1.Container, rcd *
 				Name:          containerName,
 				Network:       defaultNetwork,
 				StreamCommandOptions: ct.StreamCommandOptions{
-					StdOutStream: rcd.startupStdOutFile,
-					StdErrStream: rcd.startupStdErrFile,
+					// Always append timestamp to startup logs; we'll strip them out if the streaming request doesn't ask for them
+					StdOutStream: usvc_io.NewTimestampWriter(rcd.startupStdOutFile),
+					StdErrStream: usvc_io.NewTimestampWriter(rcd.startupStdErrFile),
 				},
 			}
 			containerID, err := r.orchestrator.CreateContainer(startupCtx, creationOptions)
+			// This starting attempt is done, so we can close the startup log files,
+			// as nothing more will be written to them.
+			rcd.closeStartupLogFiles(log)
+
 			// There are errors that can still result in a valid container ID, so we need to store it if one was returned
 			rcd.newContainerID = containerID
 

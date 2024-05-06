@@ -272,7 +272,7 @@ func (e *Executable) Done() bool {
 	return !e.Status.FinishTimestamp.IsZero()
 }
 
-func (_ *Executable) GenericSubResources() []apiserver_resource.GenericSubResource {
+func (*Executable) GenericSubResources() []apiserver_resource.GenericSubResource {
 	return []apiserver_resource.GenericSubResource{
 		&ExecutableLogResource{},
 	}

@@ -27,6 +27,7 @@ type ResourceStreamStatus string
 
 const (
 	ResourceStreamStatusStreaming ResourceStreamStatus = "streaming"
+	ResourceStreamStatusDone      ResourceStreamStatus = "done"
 	ResourceStreamStatusNotReady  ResourceStreamStatus = "not_ready"
 )
 
@@ -36,7 +37,7 @@ type ResourceLogStreamer interface {
 	// StreamLogs returns a boolean indicating if the logs are ready to be streamed, a channel that will be closed when the logs are done streaming, and an error if one occurred.
 	StreamLogs(ctx context.Context, dest io.Writer, obj apiserver_resource.Object, opts *LogOptions, log logr.Logger) (ResourceStreamStatus, <-chan struct{}, error)
 	// Callback when a resource of the type this streamer is registered for is deleted to allow for resource cleanup.
-	OnResourceDeleted(obj apiserver_resource.Object, log logr.Logger)
+	OnResourceUpdated(evt ResourceWatcherEvent, log logr.Logger)
 }
 
 // +kubebuilder:object:generate=false
@@ -191,13 +192,6 @@ func (ls *LogStorage) resourceEventHandler(evt watch.Event, log logr.Logger) {
 		return
 	}
 
-	if evt.Type == watch.Deleted {
-		log.V(1).Info("parent resource was deleted, notifying log streamer")
-		go func(obj apiserver_resource.Object, log logr.Logger) {
-			ls.logStreamer.OnResourceDeleted(apiObj, log)
-		}(apiObj, log)
-	}
-
 	rwevt := ResourceWatcherEvent{
 		Type:   evt.Type,
 		Object: apiObj,
@@ -225,11 +219,15 @@ func (ls *LogStorage) resourceEventHandler(evt watch.Event, log logr.Logger) {
 			rw.result <- rwevt
 			return true
 		})
-
 		log.V(1).Info("completed notifying resource watchers of parent resource event", "Event", rwevt.Type, "Resource", apiObj.GetObjectMeta().GetName(), "WatcherCount", watcherCount)
 	} else {
 		log.V(1).Info("no watchers registered for this resource", "Event", rwevt.Type, "Resource", apiObj.GetObjectMeta().GetName())
 	}
+
+	log.V(1).Info("notify the log streamer of resource update")
+	go func(obj apiserver_resource.Object, log logr.Logger) {
+		ls.logStreamer.OnResourceUpdated(rwevt, log)
+	}(apiObj, log)
 
 	// Store the event so subsequent resource watchers can receive it as the latest value
 	ls.mostRecentResourceEvents.Store(
@@ -358,6 +356,11 @@ func (ls *LogStorage) resourceStreamerFactory(resourceName string, options *LogO
 						// Wait for streaming to complete
 						<-doneStreaming
 						log.V(1).Info("log streaming for resource completed")
+						return
+					}
+
+					if resourceStreamStatus == ResourceStreamStatusDone {
+						log.V(1).Info("resource is done streaming logs")
 						return
 					}
 
