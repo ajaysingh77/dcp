@@ -89,6 +89,13 @@ func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context) containers.Co
 				Running:   false,
 				Error:     err.Error(),
 			}
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			// Timed out, assume Docker is not responsive but available
+			statusCh <- containers.ContainerRuntimeStatus{
+				Installed: true,
+				Running:   false,
+				Error:     "Docker CLI timed out while checking status. Ensure Docker CLI is functioning correctly and try again.",
+			}
 		} else if err != nil {
 			var stdErrString string
 
