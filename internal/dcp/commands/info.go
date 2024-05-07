@@ -58,6 +58,7 @@ func getInfo(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 		processExecutor := process.NewOSExecutor(log)
 		containerOrchestrator, orchestratorErr := container_flags.GetContainerOrchestrator(ctx, log, processExecutor)
 		var status containers.ContainerRuntimeStatus
+		containerHost := ""
 		if orchestratorErr != nil {
 			status = containers.ContainerRuntimeStatus{
 				Installed: false,
@@ -66,13 +67,14 @@ func getInfo(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 			}
 		} else {
 			status = containerOrchestrator.CheckStatus(ctx)
+			containerHost = containerOrchestrator.ContainerHost()
 		}
 
 		info := information{
 			VersionOutput: version.Version(),
 			Containers: containerRuntime{
 				Runtime:   container_flags.GetRuntimeFlagArg(),
-				HostName:  containerOrchestrator.ContainerHost(),
+				HostName:  containerHost,
 				Installed: status.Installed,
 				Running:   status.Running,
 				Error:     status.Error,
