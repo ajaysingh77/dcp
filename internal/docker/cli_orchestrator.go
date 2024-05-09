@@ -73,6 +73,7 @@ func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context) containers.Co
 	// Check the status of the Docker runtime
 	statusCh := make(chan containers.ContainerRuntimeStatus, 1)
 	go func() {
+		defer close(statusCh)
 		// Run a simple command to check if the Docker CLI is installed and responsive
 		cmd := makeDockerCommand("container", "ls", "-l")
 		_, stdErr, err := dco.runBufferedDockerCommand(ctx, "Status", cmd, nil, nil, ordinaryDockerCommandTimeout)
@@ -89,6 +90,8 @@ func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context) containers.Co
 				Running:   false,
 				Error:     err.Error(),
 			}
+
+			return
 		} else if errors.Is(err, context.DeadlineExceeded) {
 			// Timed out, assume Docker is not responsive but available
 			statusCh <- containers.ContainerRuntimeStatus{
@@ -96,6 +99,8 @@ func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context) containers.Co
 				Running:   false,
 				Error:     "Docker CLI timed out while checking status. Ensure Docker CLI is functioning correctly and try again.",
 			}
+
+			return
 		} else if err != nil {
 			var stdErrString string
 
@@ -115,6 +120,8 @@ func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context) containers.Co
 				Running:   false,
 				Error:     stdErrString,
 			}
+
+			return
 		}
 
 		// Info command returned successfully, assume runtime is ready
@@ -127,6 +134,8 @@ func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context) containers.Co
 	// Some users create a "docker" alias to different runtimes, try to detect that case
 	isDockerCh := make(chan bool, 1)
 	go func() {
+		defer close(isDockerCh)
+
 		cmd := makeDockerCommand("info", "--format", "{{json .}}")
 		outBuf, _, err := dco.runBufferedDockerCommand(ctx, "AliasDetection", cmd, nil, nil, ordinaryDockerCommandTimeout)
 		if err != nil || outBuf == nil {
