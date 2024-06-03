@@ -100,6 +100,6 @@ The renderer communicates the result of the analysis via exit code a JSON docume
 }
 ```
 
-The output document should conform to [`can-render` command response schema](https://github.com/microsoft/usvc-apiserver/schemas/v1.0/can-render.json). The `reason` property is optional if the result is positive, but it is mandatory if the result is negative (workload rendering is impossible).
+The output document should conform to [`can-render` command response schema](https://github.com/microsoft/usvc-apiserver/blob/main/schemas/v1.0/can-render.json). The `reason` property is optional if the result is positive, but it is mandatory if the result is negative (workload rendering is impossible).
 
 If an error occurs during analysis, the extension should write the error message to standard error and exit with non-zero exit code. Depending on verbosity level (see [common parameters](#common-parameters)), the extension might write diagnostic/informational messages to standard error.
