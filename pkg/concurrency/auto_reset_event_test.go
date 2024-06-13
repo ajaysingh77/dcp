@@ -77,6 +77,10 @@ func TestFreezeEvent(t *testing.T) {
 	ensureEventSet(t, event)
 	ensureEventSet(t, event)
 
+	// Can call SetAndFreeze() multiple times.
+	require.NotPanics(t, event.SetAndFreeze)
+	ensureEventSet(t, event)
+
 	require.Panics(t, func() { event.Set() })
 	require.Panics(t, func() { event.Clear() })
 }

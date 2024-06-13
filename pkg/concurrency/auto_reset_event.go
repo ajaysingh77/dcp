@@ -2,14 +2,22 @@
 
 package concurrency
 
+import (
+	"sync"
+)
+
 type AutoResetEvent struct {
-	channel chan struct{}
+	channel   chan struct{}
+	closeOnce func()
 }
 
 func NewAutoResetEvent(initialState bool) *AutoResetEvent {
 	retval := &AutoResetEvent{
 		channel: make(chan struct{}, 1),
 	}
+	retval.closeOnce = sync.OnceFunc(func() {
+		close(retval.channel)
+	})
 	if initialState {
 		retval.Set()
 	}
@@ -43,5 +51,5 @@ func (e *AutoResetEvent) Clear() {
 func (e *AutoResetEvent) SetAndFreeze() {
 	// Makes WaitChannel() return zero value always, effectively making the event set forever.
 	// Calls to Set() and Clear() will panic.
-	close(e.channel)
+	e.closeOnce()
 }

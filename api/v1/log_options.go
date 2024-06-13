@@ -84,6 +84,10 @@ func (lo *LogOptions) NewList() runtime.Object {
 	return &LogOptionsList{}
 }
 
+func (lo *LogOptions) String() string {
+	return fmt.Sprintf("{Follow: %t, Source: %s, Timestamps: %t}", lo.Follow, lo.Source, lo.Timestamps)
+}
+
 // We'll never have "lists of LogOptions", but list definition is required to register the resource with the API server.
 // +kubebuilder:object:generate=false
 type LogOptionsList struct {

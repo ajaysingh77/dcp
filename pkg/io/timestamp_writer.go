@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	timestampFormat = "2006-01-02T15:04:05.999Z07:00" // RFC3339 with milliseconds
+	timestampFormat = "2006-01-02T15:04:05.000Z07:00" // RFC3339 with milliseconds, fixed width
 )
 
 // TimestampWriter is an io.Writer that wraps another writer and appends timestamps before the first content

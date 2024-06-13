@@ -22,10 +22,14 @@ func IsWindows() bool {
 }
 
 func WithNewline(b []byte) []byte {
-	if IsWindows() {
-		b = append(b, crlf...)
-	} else {
-		b = append(b, lf...)
-	}
+	b = append(b, LineSep()...)
 	return b
+}
+
+func LineSep() []byte {
+	if IsWindows() {
+		return crlf
+	} else {
+		return lf
+	}
 }

@@ -95,6 +95,7 @@ type DeepCopyable[T ObjectStruct] interface {
 type PObjectStruct[T ObjectStruct] interface {
 	*T
 	ctrl_client.Object
+	apiserver_resource.Object
 }
 
 type PCopyableObjectStruct[T ObjectStruct] interface {

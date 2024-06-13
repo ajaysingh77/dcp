@@ -1,4 +1,4 @@
-package sync
+package concurrency
 
 import "context"
 
@@ -29,5 +29,9 @@ func (sc *syncChannel) Lock(ctx context.Context) error {
 }
 
 func (sc *syncChannel) Unlock() {
-	<-sc.ch
+	// Non-blocking for caller
+	select {
+	case <-sc.ch:
+	default:
+	}
 }

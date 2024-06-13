@@ -17,11 +17,11 @@ import (
 	"github.com/go-logr/logr"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
-	"github.com/microsoft/usvc-apiserver/pkg/sync"
 
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/secrets"
@@ -44,7 +44,7 @@ var (
 
 	// Cache and synchronization control for checking runtime status
 	status *containers.ContainerRuntimeStatus
-	syncCh = sync.NewSyncChannel()
+	syncCh = concurrency.NewSyncChannel()
 )
 
 type PodmanCliOrchestrator struct {
@@ -615,11 +615,10 @@ func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context) 
 				return // Cancellation has been requested, so we should stop scanning events
 			}
 
-			evtData := scanner.Text()
 			var evtMessage podmanEventMessage
 			unmarshalErr := json.Unmarshal(scanner.Bytes(), &evtMessage)
 			if unmarshalErr != nil {
-				pco.log.Error(unmarshalErr, "container event data could not be parsed", "EventData", evtData)
+				pco.log.Error(unmarshalErr, "container event data could not be parsed", "EventData", scanner.Text())
 			} else {
 				pco.containerEvtWatcher.Notify((&evtMessage).ToEventMessage())
 			}

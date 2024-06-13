@@ -1,24 +1,32 @@
 package integration_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	std_slices "slices"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
 	"go.uber.org/zap/zapcore"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apiruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
+	clientgorest "k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -32,8 +40,10 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/secrets"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
@@ -43,6 +53,7 @@ var (
 	testProcessExecutor *ctrl_testutil.TestProcessExecutor
 	ideRunner           *ctrl_testutil.TestIdeRunner
 	client              ctrl_client.Client
+	restClient          *clientgorest.RESTClient
 	orchestrator        *ctrl_testutil.TestContainerOrchestrator
 )
 
@@ -130,7 +141,7 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 	// Enable secrets for this test
 	secrets.SetSecretsKey(testSecretKey)
 
-	cmd := exec.CommandContext(ctx, dcpPath, "start-apiserver", "--server-only", "--kubeconfig", kubeconfigPath)
+	cmd := exec.CommandContext(ctx, dcpPath, "start-apiserver", "--server-only", "--kubeconfig", kubeconfigPath, "--monitor", strconv.Itoa(os.Getpid()))
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -156,20 +167,30 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 	}
 	startWaitForProcessExit()
 
-	config, configErr := dcpclient.NewConfigFromKubeconfigFile(kubeconfigPath)
-	if configErr != nil {
-		return fmt.Errorf("failed to build client-go config: %w", configErr)
+	clientConfig, clientConfigErr := dcpclient.NewConfigFromKubeconfigFile(kubeconfigPath)
+	if clientConfigErr != nil {
+		return fmt.Errorf("failed to build client-go config: %w", clientConfigErr)
 	}
 
 	// Using generous timeout because AzDO pipeline machines can be very slow at times.
 	var clientErr error
-	client, clientErr = dcpclient.NewClientFromKubeconfigFile(ctx, 60*time.Second, config)
+	client, clientErr = dcpclient.NewClientFromKubeconfigFile(ctx, 60*time.Second, clientConfig)
 	if clientErr != nil {
 		return fmt.Errorf("failed to create controller-runtime client: %w", clientErr)
 	}
 
+	restClientConfig := clientgorest.CopyConfig(clientConfig)
+	restClientConfig.GroupVersion = &apiv1.GroupVersion
+	restClientConfig.NegotiatedSerializer = serializer.NewCodecFactory(dcpclient.NewScheme())
+	restClientConfig.APIPath = "/apis"
+	var restClientErr error
+	restClient, restClientErr = clientgorest.RESTClientFor(restClientConfig)
+	if restClientErr != nil {
+		return fmt.Errorf("failed to create raw (client-go REST) Kubernetes client: %w", restClientErr)
+	}
+
 	opts := controllers.NewControllerManagerOptions(ctx, client.Scheme(), log)
-	mgr, err := ctrl.NewManager(config, opts)
+	mgr, err := ctrl.NewManager(clientConfig, opts)
 	if err != nil {
 		return fmt.Errorf("failed to initialize controller manager: %w", err)
 	}
@@ -376,4 +397,141 @@ func retryOnConflict[T controllers.ObjectStruct, PT controllers.PObjectStruct[T]
 	}
 
 	return resiliency.RetryExponential(ctx, try)
+}
+
+func openLogStream[T controllers.ObjectStruct, PT controllers.PObjectStruct[T]](
+	ctx context.Context,
+	obj PT,
+	opts apiv1.LogOptions,
+	logStreamOpen *concurrency.AutoResetEvent,
+) (io.ReadCloser, error) {
+	stream, err := restClient.Get().
+		NamespaceIfScoped(obj.GetObjectMeta().Namespace, obj.NamespaceScoped()).
+		Resource(obj.GetGroupVersionResource().Resource).
+		Name(obj.GetObjectMeta().Name).
+		SubResource(apiv1.LogSubresourceName).
+		VersionedParams(&opts, apiruntime.NewParameterCodec(dcpclient.NewScheme())).
+		Stream(ctx)
+	if logStreamOpen != nil {
+		logStreamOpen.Set() // Set even if error occurs to unblock the test continuation
+	}
+	return stream, err
+}
+
+func waitForObjectLogs[T controllers.ObjectStruct, PT controllers.PObjectStruct[T]](
+	ctx context.Context,
+	obj PT,
+	opts apiv1.LogOptions,
+	expectedLogLines [][]byte,
+	logStreamOpen *concurrency.AutoResetEvent,
+) error {
+	if opts.Follow {
+		// In follow mode we open the log stream once and then scan for expected lines
+		// until the expectation is satisfied or the context is cancelled.
+
+		logStream, logStreamErr := openLogStream(ctx, obj, opts, logStreamOpen)
+		if logStreamErr != nil {
+			return fmt.Errorf("could not get log stream %s for %s '%s': %v",
+				opts.String(),
+				obj.GetObjectKind().GroupVersionKind().Kind,
+				obj.GetObjectMeta().Name,
+				logStreamErr)
+		}
+		var logLines [][]byte
+		scanner := bufio.NewScanner(usvc_io.NewContextReader(ctx, logStream, true /* leverageReadCloser */))
+
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			logLines = append(logLines, line)
+
+			if len(logLines) < len(expectedLogLines) {
+				continue // Not enough data yet
+			}
+
+			var matchErr error
+			allLinesMatch := std_slices.EqualFunc(logLines[len(logLines)-len(expectedLogLines):], expectedLogLines, func(read, pattern []byte) bool {
+				var matched bool
+				matched, matchErr = regexp.Match(string(pattern), read)
+				return matched
+			})
+			if matchErr != nil {
+				return fmt.Errorf("Error occurred while matching logs: %w", matchErr)
+			}
+
+			if allLinesMatch {
+				return nil // Expected logs arrived = success
+			}
+		}
+
+		if scanner.Err() == nil && ctx.Err() == nil {
+			return fmt.Errorf("Log stream ended before expected logs arrived for %s '%s'. Logs written so far: %s",
+				obj.GetObjectKind().GroupVersionKind().Kind,
+				obj.GetObjectMeta().Name,
+				string(bytes.Join(logLines, osutil.LineSep())))
+		} else {
+			return fmt.Errorf("An error occurred while reading logs from %s '%s': %w. Logs written so far: %s",
+				obj.GetObjectKind().GroupVersionKind().Kind,
+				obj.GetObjectMeta().Name,
+				errors.Join(scanner.Err(), ctx.Err()),
+				string(bytes.Join(logLines, osutil.LineSep())))
+		}
+	} else {
+		// In non-follow mode we will repeatedly query the logs until we get the expected lines.
+		// This deals with the issue that the log stream content may not be available immediately after
+		// we simulate writing to the log.
+
+		lastLogContents := []byte{}
+		hasExpectedLogLines := func(ctx context.Context) (bool, error) {
+			logStream, logStreamErr := openLogStream(ctx, obj, opts, logStreamOpen)
+			if logStreamErr != nil {
+				return false, fmt.Errorf("could not get log stream %s for %s '%s': %w",
+					opts.String(),
+					obj.GetObjectKind().GroupVersionKind().Kind,
+					obj.GetObjectMeta().Name,
+					logStreamErr)
+			}
+			defer logStream.Close()
+
+			logContents, logReadErr := io.ReadAll(logStream)
+			if logReadErr != nil {
+				return false, fmt.Errorf("could not read the contents of log stream %s for %s '%s': %w",
+					opts.String(),
+					obj.GetObjectKind().GroupVersionKind().Kind,
+					obj.GetObjectMeta().Name,
+					logReadErr)
+			}
+
+			lastLogContents = logContents
+			logLines := bytes.Split(logContents, osutil.LineSep())
+			logLines = std_slices.DeleteFunc(logLines, func(s []byte) bool { return len(s) == 0 }) // Remove empty "lines" from Split() result.
+			var matchErr error
+			allLinesMatch := std_slices.EqualFunc(logLines, expectedLogLines, func(read, pattern []byte) bool {
+				var matched bool
+				matched, matchErr = regexp.Match(string(pattern), read)
+				return matched
+			})
+			if matchErr != nil {
+				return false, fmt.Errorf("Error occurred while matching logs: %w", matchErr)
+			}
+
+			if allLinesMatch {
+				return true, nil // Expected logs arrived = success
+			} else {
+				return false, nil
+			}
+		}
+
+		err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, hasExpectedLogLines)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return fmt.Errorf("Timeout occurred while waiting for expected logs from %s '%s'. Last log contents: %s",
+					obj.GetObjectKind().GroupVersionKind().Kind,
+					obj.GetObjectMeta().Name,
+					string(lastLogContents))
+			} else {
+				return fmt.Errorf("Expected logs could not be retrieved: %w", err)
+			}
+		}
+		return nil
+	}
 }

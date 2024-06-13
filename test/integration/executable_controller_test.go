@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"math/rand"
@@ -8,6 +9,7 @@ import (
 	std_slices "slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,6 +23,8 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
+	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
@@ -1411,6 +1415,456 @@ func TestExecutableStatusUpdatedByIdeRunner(t *testing.T) {
 			_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(tc.exe), tc.verifyExe)
 		})
 	}
+}
+
+// Verify that stdout and stderr logs can be captured in non-follow mode.
+// The two sub-tests are verifying that logs can be captured when Executable is runnning,
+// and when it has finished.
+func TestExecutableLogsNonFollow(t *testing.T) {
+	type testcase struct {
+		description     string
+		exeName         string
+		finishExecution *concurrency.AutoResetEvent
+		readyToReadLogs func(*apiv1.Executable) (bool, error)
+	}
+
+	const runningExeName = "test-executable-logs-non-follow-running"
+	const finishedExeName = "test-executable-logs-non-follow-finished"
+
+	testcases := []testcase{
+		{
+			description:     "running",
+			exeName:         runningExeName,
+			finishExecution: concurrency.NewAutoResetEvent(false), // Do not exit until told so
+			readyToReadLogs: func(currentExe *apiv1.Executable) (bool, error) {
+				return currentExe.Status.State == apiv1.ExecutableStateRunning, nil
+			},
+		},
+		{
+			description:     "finished",
+			exeName:         finishedExeName,
+			finishExecution: concurrency.NewAutoResetEvent(true), // Exit immediately
+			readyToReadLogs: func(currentExe *apiv1.Executable) (bool, error) {
+				return currentExe.Status.State == apiv1.ExecutableStateFinished, nil
+			},
+		},
+	}
+
+	t.Parallel()
+
+	for _, tc := range testcases {
+		t.Run(tc.description, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+
+			// Ensure test cases will not block forever, but instead exit after context expires
+			defer tc.finishExecution.Set()
+
+			exe := apiv1.Executable{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: apiv1.GroupVersion.Version,
+					Kind:       "Executable",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      tc.exeName,
+					Namespace: metav1.NamespaceNone,
+				},
+				Spec: apiv1.ExecutableSpec{
+					ExecutablePath: "path/to/" + tc.exeName,
+				},
+			}
+
+			testProcessExecutor.InstallAutoExecution(ctrl_testutil.AutoExecution{
+				Condition: ctrl_testutil.ProcessSearchCriteria{
+					Command: []string{exe.Spec.ExecutablePath},
+				},
+				RunCommand: func(pe *ctrl_testutil.ProcessExecution) int32 {
+					_, stdoutErr := pe.Cmd.Stdout.Write(osutil.WithNewline([]byte("Standard output log line 1")))
+					require.NoError(t, stdoutErr, "Could not write to stdout of Executable '%s'", exe.ObjectMeta.Name)
+					_, stderrErr := pe.Cmd.Stderr.Write(osutil.WithNewline([]byte("Standard error log line 1")))
+					require.NoError(t, stderrErr, "Could not write to stderr of Executable '%s'", exe.ObjectMeta.Name)
+
+					<-tc.finishExecution.Wait()
+					return 0
+				},
+			})
+			defer testProcessExecutor.RemoveAutoExecution(ctrl_testutil.ProcessSearchCriteria{
+				Command: []string{exe.Spec.ExecutablePath},
+			})
+
+			t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
+			err := client.Create(ctx, exe.DeepCopy())
+			require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+
+			t.Logf("Ensure Executable '%s' is in the expected state...", exe.ObjectMeta.Name)
+			_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), tc.readyToReadLogs)
+
+			t.Logf("Ensure logs for Executable '%s' can be captured...", exe.ObjectMeta.Name)
+			opts := apiv1.LogOptions{
+				Follow:     false,
+				Source:     "stdout",
+				Timestamps: false,
+			}
+			err = waitForObjectLogs(ctx, &exe, opts, [][]byte{[]byte("Standard output log line 1")}, nil)
+			require.NoError(t, err)
+
+			opts = apiv1.LogOptions{
+				Follow:     false,
+				Source:     "stderr",
+				Timestamps: false,
+			}
+			err = waitForObjectLogs(ctx, &exe, opts, [][]byte{[]byte("Standard error log line 1")}, nil)
+			require.NoError(t, err)
+		})
+	}
+}
+
+// Verify stdout and stderr logs can be captured in follow mode,
+// The two sub-tests are verifying that logs can be captured when Executable is runnning,
+// and when it has finished.
+func TestExecutableLogsFollow(t *testing.T) {
+	type testcase struct {
+		description     string
+		exeName         string
+		startWriting    *concurrency.AutoResetEvent
+		finishExecution *concurrency.AutoResetEvent
+		readyToReadLogs func(*apiv1.Executable) (bool, error)
+	}
+
+	const runningExeName = "test-executable-logs-follow-running"
+	const finishedExeName = "test-executable-logs-follow-finished"
+
+	testcases := []testcase{
+		{
+			description: "running",
+			exeName:     runningExeName,
+			// In the running case we want the log stream to be open BEFORE any logs were written,
+			// to ensure that all logs are captured and delivered.
+			startWriting:    concurrency.NewAutoResetEvent(false),
+			finishExecution: concurrency.NewAutoResetEvent(false),
+			// Logs in follow mode should be captured even if the stream is open before Executable is running
+			readyToReadLogs: func(currentExe *apiv1.Executable) (bool, error) {
+				return true, nil
+			},
+		},
+		{
+			description: "finished",
+			exeName:     finishedExeName,
+			// In the "finished" case we want the log stream to be opened AFTER the logs were written
+			// and the Executable finished running.
+			startWriting:    concurrency.NewAutoResetEvent(true),
+			finishExecution: concurrency.NewAutoResetEvent(true),
+			readyToReadLogs: func(currentExe *apiv1.Executable) (bool, error) {
+				return currentExe.Status.State == apiv1.ExecutableStateFinished, nil
+			},
+		},
+	}
+
+	t.Parallel()
+
+	for _, tc := range testcases {
+		t.Run(tc.description, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+
+			// Ensure test cases will not block forever, but instead exit after context expires
+			defer tc.finishExecution.Set()
+			defer tc.startWriting.Set()
+
+			exe := apiv1.Executable{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: apiv1.GroupVersion.Version,
+					Kind:       "Executable",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      tc.exeName,
+					Namespace: metav1.NamespaceNone,
+				},
+				Spec: apiv1.ExecutableSpec{
+					ExecutablePath: "path/to/" + tc.exeName,
+				},
+			}
+
+			lines := [][]byte{
+				[]byte("Standard output log line 1"),
+				[]byte("Standard output log line 2"),
+				[]byte("Standard output log line 3"),
+			}
+
+			testProcessExecutor.InstallAutoExecution(ctrl_testutil.AutoExecution{
+				Condition: ctrl_testutil.ProcessSearchCriteria{
+					Command: []string{exe.Spec.ExecutablePath},
+				},
+				RunCommand: func(pe *ctrl_testutil.ProcessExecution) int32 {
+					<-tc.startWriting.Wait()
+
+					for i, line := range lines {
+						_, stdoutErr := pe.Cmd.Stdout.Write(osutil.WithNewline(line))
+						require.NoError(t, stdoutErr, "Could not write line %d to stdout of Executable '%s'", i, exe.ObjectMeta.Name)
+					}
+
+					<-tc.finishExecution.Wait()
+					return 0
+				},
+			})
+			defer testProcessExecutor.RemoveAutoExecution(ctrl_testutil.ProcessSearchCriteria{
+				Command: []string{exe.Spec.ExecutablePath},
+			})
+
+			t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
+			err := client.Create(ctx, exe.DeepCopy())
+			require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+
+			t.Logf("Ensure Executable '%s' is in the expected state...", exe.ObjectMeta.Name)
+			_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), tc.readyToReadLogs)
+
+			t.Logf("Start following Executable '%s' logs...", exe.ObjectMeta.Name)
+			logsErrCh := make(chan error, 1)
+			logStreamOpen := concurrency.NewAutoResetEvent(false)
+			opts := apiv1.LogOptions{
+				Follow:     true,
+				Source:     "stdout",
+				Timestamps: false,
+			}
+			go func() {
+				// Run this in a separate goroutine to make sure we open the log stream before the Executable starts writing logs
+				logsErrCh <- waitForObjectLogs(ctx, &exe, opts, lines, logStreamOpen)
+			}()
+
+			<-logStreamOpen.Wait()
+			tc.startWriting.Set()
+			err = <-logsErrCh
+			require.NoError(t, err, "Could not follow logs for Executable '%s'", exe.ObjectMeta.Name)
+		})
+	}
+}
+
+// Verify that additional logs are reported in follow mode as soon as they are written
+// This is similar to TestExecutableLogsFollow, but we write logs one line at a time, and verify each line separately,
+// including measuring time-to-arrive.
+func TestExecutableLogsFollowIncremental(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const exeName = "test-executable-logs-follow-incremental"
+
+	exe := apiv1.Executable{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: apiv1.GroupVersion.Version,
+			Kind:       "Executable",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      exeName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/" + exeName,
+		},
+	}
+
+	type logLine struct {
+		content []byte
+		written time.Time
+	}
+	lines := []*logLine{
+		{content: []byte("Standard output log line 1")},
+		{content: []byte("Standard output log line 2")},
+		{content: []byte("Standard output log line 3")},
+	}
+	// The lock is necessary to avoid race conditions when various parts of the test are reading and writing line timestamps
+	linesLock := &sync.Mutex{}
+	writeLine := concurrency.NewAutoResetEvent(false)
+
+	testProcessExecutor.InstallAutoExecution(ctrl_testutil.AutoExecution{
+		Condition: ctrl_testutil.ProcessSearchCriteria{
+			Command: []string{exe.Spec.ExecutablePath},
+		},
+		RunCommand: func(pe *ctrl_testutil.ProcessExecution) int32 {
+			for i, line := range lines {
+				<-writeLine.Wait()
+				linesLock.Lock()
+				line.written = time.Now()
+				linesLock.Unlock()
+				_, stdoutErr := pe.Cmd.Stdout.Write(osutil.WithNewline(line.content))
+				require.NoError(t, stdoutErr, "Could not write line %d to stdout of Executable '%s'", i, exe.ObjectMeta.Name)
+			}
+			return 0
+		},
+	})
+	defer testProcessExecutor.RemoveAutoExecution(ctrl_testutil.ProcessSearchCriteria{
+		Command: []string{exe.Spec.ExecutablePath},
+	})
+
+	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
+	err := client.Create(ctx, exe.DeepCopy())
+	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+
+	// We might need to tweak this value if it turns that the test is unreliable on slow CI machines.
+	const maxLogCaptureDelay time.Duration = 2 * time.Second
+
+	t.Logf("Start following Executable '%s' logs...", exe.ObjectMeta.Name)
+	opts := apiv1.LogOptions{
+		Follow:     true,
+		Source:     "stdout",
+		Timestamps: false,
+	}
+	logStream, logStreamErr := openLogStream(ctx, &exe, opts, nil)
+	require.NoError(t, logStreamErr, "Could not open log stream for Executable '%s'", exe.ObjectMeta.Name)
+
+	scanner := bufio.NewScanner(usvc_io.NewContextReader(ctx, logStream, true /* leverageReadCloser */))
+	for i, line := range lines {
+		writeLine.Set()
+		gotLine := scanner.Scan()
+		require.True(t, gotLine, "Could not read line %d from log stream for Executable '%s', the reported error was %v", i, exe.ObjectMeta.Name, scanner.Err())
+		linesLock.Lock()
+		logCaptureDelay := time.Since(line.written)
+		linesLock.Unlock()
+		require.Equal(t, string(line.content), scanner.Text(), "Log line %d does not match expected content for Executable '%s'", i, exe.ObjectMeta.Name)
+		require.Lessf(t, logCaptureDelay, maxLogCaptureDelay, "Log line %d took too long to arrive for Executable '%s'", i, exe.ObjectMeta.Name)
+	}
+}
+
+// Verify that stdout and stderr logs can be timestamped.
+func TestExecutableLogsTimestamped(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const exeName = "test-executable-logs-timestamped"
+
+	exe := apiv1.Executable{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: apiv1.GroupVersion.Version,
+			Kind:       "Executable",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      exeName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/" + exeName,
+		},
+	}
+
+	testProcessExecutor.InstallAutoExecution(ctrl_testutil.AutoExecution{
+		Condition: ctrl_testutil.ProcessSearchCriteria{
+			Command: []string{exe.Spec.ExecutablePath},
+		},
+		RunCommand: func(pe *ctrl_testutil.ProcessExecution) int32 {
+			_, stdoutErr := pe.Cmd.Stdout.Write(osutil.WithNewline([]byte("Standard output log line 1")))
+			require.NoError(t, stdoutErr, "Could not write to stdout of Executable '%s'", exe.ObjectMeta.Name)
+			_, stderrErr := pe.Cmd.Stderr.Write(osutil.WithNewline([]byte("Standard error log line 1")))
+			require.NoError(t, stderrErr, "Could not write to stderr of Executable '%s'", exe.ObjectMeta.Name)
+			return 0
+		},
+	})
+	defer testProcessExecutor.RemoveAutoExecution(ctrl_testutil.ProcessSearchCriteria{
+		Command: []string{exe.Spec.ExecutablePath},
+	})
+
+	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
+	err := client.Create(ctx, exe.DeepCopy())
+	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+
+	const rfc3339MiliTimestampRegex = `\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z`
+
+	t.Logf("Ensure logs for Executable '%s' can be captured...", exe.ObjectMeta.Name)
+	opts := apiv1.LogOptions{
+		Follow:     true,
+		Source:     "stdout",
+		Timestamps: true,
+	}
+	err = waitForObjectLogs(ctx, &exe, opts, [][]byte{[]byte(rfc3339MiliTimestampRegex + " " + "Standard output log line 1")}, nil)
+	require.NoError(t, err)
+
+	opts = apiv1.LogOptions{
+		Follow:     true,
+		Source:     "stderr",
+		Timestamps: true,
+	}
+	err = waitForObjectLogs(ctx, &exe, opts, [][]byte{[]byte(rfc3339MiliTimestampRegex + " " + "Standard error log line 1")}, nil)
+	require.NoError(t, err)
+}
+
+// Verify that logs in follow mode end when Executable is deleted
+func TestExecutableLogsFollowStreamEndsOnDelete(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const exeName = "test-executable-logs-follow-stream-ends-on-delete"
+
+	exe := apiv1.Executable{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: apiv1.GroupVersion.Version,
+			Kind:       "Executable",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      exeName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/" + exeName,
+		},
+	}
+
+	finishExecution := concurrency.NewAutoResetEvent(false)
+	defer finishExecution.Set()
+
+	testProcessExecutor.InstallAutoExecution(ctrl_testutil.AutoExecution{
+		Condition: ctrl_testutil.ProcessSearchCriteria{
+			Command: []string{exe.Spec.ExecutablePath},
+		},
+		RunCommand: func(pe *ctrl_testutil.ProcessExecution) int32 {
+			_, stdoutErr := pe.Cmd.Stdout.Write(osutil.WithNewline([]byte("Standard output log line 1")))
+			require.NoError(t, stdoutErr, "Could not write first line to stdout of Executable '%s'", exe.ObjectMeta.Name)
+			_, stdoutErr = pe.Cmd.Stdout.Write(osutil.WithNewline([]byte("Standard output log line 2")))
+			require.NoError(t, stdoutErr, "Could not write second line to stdout of Executable '%s'", exe.ObjectMeta.Name)
+
+			<-finishExecution.Wait()
+			return 0
+		},
+	})
+	defer testProcessExecutor.RemoveAutoExecution(ctrl_testutil.ProcessSearchCriteria{
+		Command: []string{exe.Spec.ExecutablePath},
+	})
+
+	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
+	err := client.Create(ctx, exe.DeepCopy())
+	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+
+	t.Logf("Start following Executable '%s' logs...", exe.ObjectMeta.Name)
+	opts := apiv1.LogOptions{
+		Follow:     true,
+		Source:     "stdout",
+		Timestamps: false,
+	}
+	logStream, logStreamErr := openLogStream(ctx, &exe, opts, nil)
+	require.NoError(t, logStreamErr, "Could not open log stream for Executable '%s'", exe.ObjectMeta.Name)
+
+	t.Logf("Ensure Executable '%s' logs are captured...", exe.ObjectMeta.Name)
+	scanner := bufio.NewScanner(usvc_io.NewContextReader(ctx, logStream, true /* leverageReadCloser */))
+	gotLine := scanner.Scan()
+	require.True(t, gotLine, "Could not read first line from log stream for Executable '%s', the reported error was %v", exe.ObjectMeta.Name, scanner.Err())
+	require.Equal(t, "Standard output log line 1", scanner.Text(), "First log line does not match expected content for Executable '%s'", exe.ObjectMeta.Name)
+	gotLine = scanner.Scan()
+	require.True(t, gotLine, "Could not read second line from log stream for Executable '%s', the reported error was %v", exe.ObjectMeta.Name, scanner.Err())
+	require.Equal(t, "Standard output log line 2", scanner.Text(), "Second log line does not match expected content for Executable '%s'", exe.ObjectMeta.Name)
+
+	t.Logf("Deleting Executable '%s'...", exe.ObjectMeta.Name)
+	err = client.Delete(ctx, exe.DeepCopy())
+	require.NoError(t, err, "Could not delete Executable '%s'", exe.ObjectMeta.Name)
+
+	t.Logf("Ensure log stream for Executable '%s' has ended...", exe.ObjectMeta.Name)
+	gotLine = scanner.Scan()
+	require.False(t, gotLine, "Unexpectedly read another line from log stream for Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, scanner.Err(), "The log stream for Executable '%s' did not end gracefully", exe.ObjectMeta.Name)
 }
 
 func ensureProcessRunning(ctx context.Context, cmdPath string) (process.Pid_t, error) {

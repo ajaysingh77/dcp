@@ -297,14 +297,17 @@ endif
 
 ##@ Test targets
 
+.PHONY: test-prereqs
+test-prereqs: build-dcp delay-tool lfwriter-tool ## Ensures all prerequisites for running tests are built (run this before running tests selectively)
+
 .PHONY: test
 ifeq ($(CGO_ENABLED),0)
 test: TEST_OPTS = -coverprofile cover.out -count 1
-test: build-dcp delay-tool lfwriter-tool ## Run all tests in the repository
+test: test-prereqs ## Run all tests in the repository
 	$(GO_BIN) test ./... $(TEST_OPTS)
 else
 test: TEST_OPTS = -coverprofile cover.out -race -count 1
-test: build-dcp delay-tool lfwriter-tool ## Run all tests in the repository
+test: test-prereqs ## Run all tests in the repository
 	$(GO_BIN) test ./... $(TEST_OPTS)
 endif
 
@@ -312,11 +315,11 @@ endif
 ifeq ($(CGO_ENABLED),0)
 # On Windows enabling -race requires additional components to be installed (gcc), so we do not support it at the moment.
 test-ci: TEST_OPTS = -coverprofile cover.out -count 1
-test-ci: lint build-dcp delay-tool lfwriter-tool
+test-ci: lint test-prereqs ## Runs tests in a way appropriate for CI pipeline, with linting etc.
 	$(GO_BIN) test ./... $(TEST_OPTS)
 else
 test-ci: TEST_OPTS = -coverprofile cover.out -race -count 1
-test-ci: lint build-dcp delay-tool lfwriter-tool ## Runs tests in a way appropriate for CI pipeline, with linting etc.
+test-ci: lint test-prereqs ## Runs tests in a way appropriate for CI pipeline, with linting etc.
 	$(GO_BIN) test ./... $(TEST_OPTS)
 endif
 
