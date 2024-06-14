@@ -139,6 +139,18 @@ type ContainerBuildContext struct {
 
 	// Optional: The name of the build stage to use for the build
 	Stage string `json:"stage,omitempty"`
+
+	// Labels to apply to the built image
+	Labels []ContainerLabel `json:"labels,omitempty"`
+}
+
+// +k8s:openapi-gen=true
+type ContainerLabel struct {
+	// The label key
+	Key string `json:"key"`
+
+	// The label value
+	Value string `json:"value"`
 }
 
 // ContainerSpec defines the desired state of a Container
@@ -191,6 +203,9 @@ type ContainerSpec struct {
 	// Additional arguments to pass to the container run command
 	// +listType:=atomic
 	RunArgs []string `json:"runArgs,omitempty"`
+
+	// Labels to apply to the container
+	Labels []ContainerLabel `json:"labels,omitempty"`
 }
 
 // +k8s:openapi-gen=true
@@ -369,6 +384,28 @@ func (e *Container) Validate(ctx context.Context) field.ErrorList {
 				errorList = append(errorList, field.Required(field.NewPath("spec", "build", "secrets").Index(i).Child("source"), "source must be set to a non-empty value"))
 			}
 		}
+
+		for i, label := range e.Spec.Build.Labels {
+			// TODO: Validate key format?
+			if label.Key == "" {
+				errorList = append(errorList, field.Required(field.NewPath("spec", "build", "labels").Index(i).Child("name"), "name must be set to a non-empty value"))
+			}
+
+			if label.Value == "" {
+				errorList = append(errorList, field.Required(field.NewPath("spec", "build", "labels").Index(i).Child("value"), "value must be set to a non-empty value"))
+			}
+		}
+	}
+
+	for i, label := range e.Spec.Labels {
+		// TODO: Validate key format?
+		if label.Key == "" {
+			errorList = append(errorList, field.Required(field.NewPath("spec", "labels").Index(i).Child("name"), "name must be set to a non-empty value"))
+		}
+
+		if label.Value == "" {
+			errorList = append(errorList, field.Required(field.NewPath("spec", "labels").Index(i).Child("value"), "value must be set to a non-empty value"))
+		}
 	}
 
 	// Validate the object name to ensure it is a valid container name
@@ -428,6 +465,11 @@ func (e *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 	// Ensure that we forbid attempting to stop persistent resources
 	if e.Spec.Persistent && e.Spec.Stop {
 		errorList = append(errorList, field.Invalid(field.NewPath("spec", "stop"), e.NamespacedName().Name, "stop cannot be set to true if persistent is true"))
+	}
+
+	// Forbid changing labels after the resource is created
+	if !slices.Equal(oldContainer.Spec.Labels, e.Spec.Labels) {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "labels"), "labels cannot be changed"))
 	}
 
 	return errorList

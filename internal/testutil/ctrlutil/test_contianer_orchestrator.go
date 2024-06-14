@@ -495,25 +495,9 @@ func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options con
 		for _, imageTag := range options.Tags {
 			to.imageIds[imageTag] = guid
 		}
-
-		for _, imageTag := range options.AdditionalTags {
-			to.imageIds[imageTag] = guid
-		}
 	}
 
 	for _, image := range options.Tags {
-		to.images[image] = true
-
-		to.imageSecrets[image] = map[string]string{}
-
-		for _, secret := range options.Secrets {
-			if secret.Type == apiv1.EnvSecret && secret.Value != "" {
-				to.imageSecrets[image][secret.ID] = secrets.DecryptSecret(secret.Value)
-			}
-		}
-	}
-
-	for _, image := range options.AdditionalTags {
 		to.images[image] = true
 
 		to.imageSecrets[image] = map[string]string{}

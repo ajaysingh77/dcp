@@ -252,11 +252,6 @@ func (dco *DockerCliOrchestrator) BuildImage(ctx context.Context, options contai
 		args = append(args, "--iidfile", options.IidFile)
 	}
 
-	// Apply all tags from the controller
-	for _, tag := range options.AdditionalTags {
-		args = append(args, "-t", tag)
-	}
-
 	// Apply all tags specified in the build context to the image
 	for _, tag := range options.Tags {
 		args = append(args, "-t", tag)
@@ -297,6 +292,11 @@ func (dco *DockerCliOrchestrator) BuildImage(ctx context.Context, options contai
 	// If a build stage is given, use it
 	if options.Stage != "" {
 		args = append(args, "--target", options.Stage)
+	}
+
+	// Apply any specified labels
+	for _, label := range options.Labels {
+		args = append(args, "--label", fmt.Sprintf("%s=%s", label.Key, label.Value))
 	}
 
 	// Append the build context argument
@@ -361,6 +361,10 @@ func applyCreateContainerOptions(args []string, options apiv1.ContainerSpec) []s
 
 	for _, envFile := range options.EnvFiles {
 		args = append(args, "--env-file", envFile)
+	}
+
+	for _, label := range options.Labels {
+		args = append(args, "--label", fmt.Sprintf("%s=%s", label.Key, label.Value))
 	}
 
 	if options.RestartPolicy != "" && options.RestartPolicy != apiv1.RestartPolicyNone {

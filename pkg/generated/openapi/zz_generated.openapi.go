@@ -21,6 +21,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/microsoft/usvc-apiserver/api/v1.Container":                        schema_microsoft_usvc_apiserver_api_v1_Container(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildContext":            schema_microsoft_usvc_apiserver_api_v1_ContainerBuildContext(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildSecret":             schema_microsoft_usvc_apiserver_api_v1_ContainerBuildSecret(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerLabel":                   schema_microsoft_usvc_apiserver_api_v1_ContainerLabel(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerList":                    schema_microsoft_usvc_apiserver_api_v1_ContainerList(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetwork":                 schema_microsoft_usvc_apiserver_api_v1_ContainerNetwork(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnection":       schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnection(ref),
@@ -249,12 +250,26 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerBuildContext(ref common.Ref
 							Format:      "",
 						},
 					},
+					"labels": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Labels to apply to the built image",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerLabel"),
+									},
+								},
+							},
+						},
+					},
 				},
 				Required: []string{"context"},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildSecret", "github.com/microsoft/usvc-apiserver/api/v1.EnvVar"},
+			"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildSecret", "github.com/microsoft/usvc-apiserver/api/v1.ContainerLabel", "github.com/microsoft/usvc-apiserver/api/v1.EnvVar"},
 	}
 }
 
@@ -295,6 +310,35 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerBuildSecret(ref common.Refe
 					},
 				},
 				Required: []string{"id"},
+			},
+		},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_ContainerLabel(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"key": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The label key",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"value": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The label value",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"key", "value"},
 			},
 		},
 	}
@@ -948,11 +992,25 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 							},
 						},
 					},
+					"labels": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Labels to apply to the container",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerLabel"),
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildContext", "github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionConfig", "github.com/microsoft/usvc-apiserver/api/v1.ContainerPort", "github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.VolumeMount"},
+			"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildContext", "github.com/microsoft/usvc-apiserver/api/v1.ContainerLabel", "github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionConfig", "github.com/microsoft/usvc-apiserver/api/v1.ContainerPort", "github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.VolumeMount"},
 	}
 }
 

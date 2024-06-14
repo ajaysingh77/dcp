@@ -49,9 +49,6 @@ type StreamCommandOptions struct {
 }
 
 type BuildImageOptions struct {
-	// Additional tags (in addition to those specified in the ContainerBuildContext)
-	AdditionalTags []string
-
 	IidFile string
 
 	*apiv1.ContainerBuildContext

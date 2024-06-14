@@ -28,8 +28,8 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
-	ct "github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
+	"github.com/microsoft/usvc-apiserver/internal/version"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
@@ -44,6 +44,10 @@ const (
 	noDelay                           = 0 * time.Second
 	stopContainerTimeoutSeconds       = 10                          // How long the container orchestrator will wait for a container to stop before killing it
 	ownerKey                          = ".metadata.controllerOwner" // client index key for child ContainerNetworkConnections
+	dcpBuildLabel                     = "com.microsoft.developer.usvc-dev.build"
+	groupVersionLabel                 = "com.microsoft.developer.usvc-dev.group-version"
+	nameLabel                         = "com.microsoft.developer.usvc-dev.name"
+	uidLabel                          = "com.microsoft.developer.usvc-dev.uid"
 )
 
 var (
@@ -78,7 +82,7 @@ type ContainerReconciler struct {
 	ctrl_client.Client
 	Log                 logr.Logger
 	reconciliationSeqNo uint32
-	orchestrator        ct.ContainerOrchestrator
+	orchestrator        containers.ContainerOrchestrator
 
 	// Channel used to trigger reconciliation when underlying containers change
 	notifyContainerChanged *chanx.UnboundedChan[ctrl_event.GenericEvent]
@@ -96,13 +100,13 @@ type ContainerReconciler struct {
 	startupQueue *resiliency.WorkQueue
 
 	// Container events subscription
-	containerEvtSub *ct.EventSubscription
+	containerEvtSub *containers.EventSubscription
 	// Network events subscription
-	networkEvtSub *ct.EventSubscription
+	networkEvtSub *containers.EventSubscription
 	// Channel to receive container change events
-	containerEvtCh *chanx.UnboundedChan[ct.EventMessage]
+	containerEvtCh *chanx.UnboundedChan[containers.EventMessage]
 	// Channel to receive network change events
-	networkEvtCh *chanx.UnboundedChan[ct.EventMessage]
+	networkEvtCh *chanx.UnboundedChan[containers.EventMessage]
 	// Channel to stop the event worker
 	containerEvtWorkerStop chan struct{}
 
@@ -119,7 +123,7 @@ type ContainerReconciler struct {
 	lifetimeCtx context.Context
 }
 
-func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Client, log logr.Logger, orchestrator ct.ContainerOrchestrator) *ContainerReconciler {
+func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Client, log logr.Logger, orchestrator containers.ContainerOrchestrator) *ContainerReconciler {
 	r := ContainerReconciler{
 		Client:                 client,
 		orchestrator:           orchestrator,
@@ -710,13 +714,22 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 		err := func() error {
 			log.V(1).Info("building image", "dockerfile", container.Spec.Build.Dockerfile, "context", container.Spec.Build.Context)
 
-			tags := []string{container.SpecifiedImageNameOrDefault()}
+			rcd.runSpec.Build.Tags = append(rcd.runSpec.Build.Tags, container.SpecifiedImageNameOrDefault())
+			rcd.runSpec.Build.Labels = append(rcd.runSpec.Build.Labels, []apiv1.ContainerLabel{
+				{
+					Key:   dcpBuildLabel,
+					Value: version.ProductVersion,
+				},
+				{
+					Key:   groupVersionLabel,
+					Value: apiv1.GroupVersion.String(),
+				},
+			}...)
 
-			buildOptions := ct.BuildImageOptions{
-				AdditionalTags:        tags,
+			buildOptions := containers.BuildImageOptions{
 				IidFile:               filepath.Join(usvc_io.DcpTempDir, fmt.Sprintf("%s_iid_%s", container.Name, container.UID)),
-				ContainerBuildContext: container.Spec.Build,
-				StreamCommandOptions: ct.StreamCommandOptions{
+				ContainerBuildContext: rcd.runSpec.Build,
+				StreamCommandOptions: containers.StreamCommandOptions{
 					// Always append timestamp to startup logs; we'll strip them out if the streaming request doesn't ask for them
 					StdOutStream: usvc_io.NewTimestampWriter(rcd.startupStdOutFile),
 					StdErrStream: usvc_io.NewTimestampWriter(rcd.startupStdErrFile),
@@ -804,11 +817,30 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				defaultNetwork = r.orchestrator.DefaultNetworkName()
 			}
 
-			creationOptions := ct.CreateContainerOptions{
+			rcd.runSpec.Labels = append(rcd.runSpec.Labels, []apiv1.ContainerLabel{
+				{
+					Key:   dcpBuildLabel,
+					Value: version.ProductVersion,
+				},
+				{
+					Key:   groupVersionLabel,
+					Value: apiv1.GroupVersion.String(),
+				},
+				{
+					Key:   uidLabel,
+					Value: string(container.UID),
+				},
+				{
+					Key:   nameLabel,
+					Value: string(container.Name),
+				},
+			}...)
+
+			creationOptions := containers.CreateContainerOptions{
 				ContainerSpec: *rcd.runSpec,
 				Name:          containerName,
 				Network:       defaultNetwork,
-				StreamCommandOptions: ct.StreamCommandOptions{
+				StreamCommandOptions: containers.StreamCommandOptions{
 					// Always append timestamp to startup logs; we'll strip them out if the streaming request doesn't ask for them
 					StdOutStream: usvc_io.NewTimestampWriter(rcd.startupStdOutFile),
 					StdErrStream: usvc_io.NewTimestampWriter(rcd.startupStdErrFile),
@@ -862,7 +894,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				// The Network controller takes care of connecting the container resournce to requested networks.
 				for i := range inspected.Networks {
 					network := inspected.Networks[i].Id
-					err = r.orchestrator.DisconnectNetwork(startupCtx, ct.DisconnectNetworkOptions{Network: network, Container: containerID, Force: true})
+					err = r.orchestrator.DisconnectNetwork(startupCtx, containers.DisconnectNetworkOptions{Network: network, Container: containerID, Force: true})
 					if err != nil {
 						log.Error(err, "could not detach network from the container", "ContainerID", containerID, "Network", network)
 						return err
@@ -1010,7 +1042,7 @@ func (r *ContainerReconciler) handleInitialNetworkConnections(
 func (r *ContainerReconciler) handleRunningContainerNetworkConnections(
 	ctx context.Context,
 	container *apiv1.Container,
-	inspected *ct.InspectedContainer,
+	inspected *containers.InspectedContainer,
 	log logr.Logger,
 ) ([]string, objectChange) {
 	connected, connectionErr := r.ensureContainerNetworkConnections(ctx, container, inspected, inspected.Id, log)
@@ -1064,7 +1096,7 @@ func (r *ContainerReconciler) removeContainerNetworkConnections(
 func (r *ContainerReconciler) ensureContainerNetworkConnections(
 	ctx context.Context,
 	container *apiv1.Container,
-	inspected *ct.InspectedContainer,
+	inspected *containers.InspectedContainer,
 	containerID string,
 	log logr.Logger,
 ) ([]*apiv1.ContainerNetwork, error) {
@@ -1325,7 +1357,7 @@ func (r *ContainerReconciler) getHostAddressAndPortForContainerPort(
 		return "", 0, fmt.Errorf("container '%s' is not running: %s", inspected.Name, inspected.Status)
 	}
 
-	var matchedHostPort ct.InspectedContainerHostPortConfig
+	var matchedHostPort containers.InspectedContainerHostPortConfig
 	found = false
 	for k, v := range inspected.Ports {
 		ctrPort := strings.Split(k, "/")[0]
@@ -1354,14 +1386,14 @@ func (r *ContainerReconciler) getHostAddressAndPortForContainerPort(
 
 // CONTAINER RESOURCE MANAGEMENT METHODS
 
-func (r *ContainerReconciler) findContainer(ctx context.Context, container string) (*ct.InspectedContainer, error) {
+func (r *ContainerReconciler) findContainer(ctx context.Context, container string) (*containers.InspectedContainer, error) {
 	res, err := r.orchestrator.InspectContainers(ctx, []string{container})
 	if err != nil {
 		return nil, err
 	}
 
 	if len(res) == 0 {
-		return nil, ct.ErrNotFound
+		return nil, containers.ErrNotFound
 	}
 
 	return &res[0], nil
@@ -1381,8 +1413,8 @@ func (r *ContainerReconciler) ensureContainerWatch(container *apiv1.Container, l
 		return // We're already watching container events, nothing to do
 	}
 
-	r.containerEvtCh = chanx.NewUnboundedChan[ct.EventMessage](r.lifetimeCtx, containerEventChanInitialCapacity)
-	r.networkEvtCh = chanx.NewUnboundedChan[ct.EventMessage](r.lifetimeCtx, containerEventChanInitialCapacity)
+	r.containerEvtCh = chanx.NewUnboundedChan[containers.EventMessage](r.lifetimeCtx, containerEventChanInitialCapacity)
+	r.networkEvtCh = chanx.NewUnboundedChan[containers.EventMessage](r.lifetimeCtx, containerEventChanInitialCapacity)
 
 	r.containerEvtWorkerStop = make(chan struct{})
 	go r.containerEventWorker(r.containerEvtWorkerStop, r.containerEvtCh.Out, r.networkEvtCh.Out)
@@ -1432,19 +1464,19 @@ func (r *ContainerReconciler) cancelContainerWatch() {
 
 func (r *ContainerReconciler) containerEventWorker(
 	stopCh chan struct{},
-	containerEvtCh <-chan ct.EventMessage,
-	networkEvtCh <-chan ct.EventMessage,
+	containerEvtCh <-chan containers.EventMessage,
+	networkEvtCh <-chan containers.EventMessage,
 ) {
 	for {
 		select {
 		case cem := <-containerEvtCh:
-			if cem.Source != ct.EventSourceContainer {
+			if cem.Source != containers.EventSourceContainer {
 				continue
 			}
 
 			r.processContainerEvent(cem)
 		case nem := <-networkEvtCh:
-			if nem.Source != ct.EventSourceNetwork {
+			if nem.Source != containers.EventSourceNetwork {
 				continue
 			}
 
@@ -1456,10 +1488,10 @@ func (r *ContainerReconciler) containerEventWorker(
 	}
 }
 
-func (r *ContainerReconciler) processContainerEvent(em ct.EventMessage) {
+func (r *ContainerReconciler) processContainerEvent(em containers.EventMessage) {
 	switch em.Action {
 	// Any event that means the container has been started, stopped, or was removed, is interesting
-	case ct.EventActionCreate, ct.EventActionDestroy, ct.EventActionDie, ct.EventActionKill, ct.EventActionOom, ct.EventActionStop, ct.EventActionRestart, ct.EventActionStart, ct.EventActionPrune:
+	case containers.EventActionCreate, containers.EventActionDestroy, containers.EventActionDie, containers.EventActionKill, containers.EventActionOom, containers.EventActionStop, containers.EventActionRestart, containers.EventActionStart, containers.EventActionPrune:
 		containerID := em.Actor.ID
 		owner, _, running := r.runningContainers.FindBySecondKey(containerID)
 		if !running {
@@ -1475,9 +1507,9 @@ func (r *ContainerReconciler) processContainerEvent(em ct.EventMessage) {
 	}
 }
 
-func (r *ContainerReconciler) processNetworkEvent(em ct.EventMessage) {
+func (r *ContainerReconciler) processNetworkEvent(em containers.EventMessage) {
 	switch em.Action {
-	case ct.EventActionConnect, ct.EventActionDisconnect:
+	case containers.EventActionConnect, containers.EventActionDisconnect:
 		containerID, found := em.Attributes["container"]
 		if !found {
 			// We could not identify the container this event applies to
