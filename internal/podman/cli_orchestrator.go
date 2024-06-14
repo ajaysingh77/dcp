@@ -853,7 +853,15 @@ func unmarshalContainer(pci *podmanInspectedContainer, ic *containers.InspectedC
 	ic.FinishedAt = pci.State.FinishedAt
 	ic.Status = pci.State.Status
 	ic.ExitCode = pci.State.ExitCode
-	ic.Ports = pci.NetworkSettings.Ports
+
+	ic.Ports = make(containers.InspectedContainerPortMapping)
+	for portAndProtocol, portBindings := range pci.NetworkSettings.Ports {
+		if len(portAndProtocol) == 0 || len(portBindings) == 0 {
+			continue // Skip ports that are published but not mapped to host.
+		}
+		ic.Ports[portAndProtocol] = portBindings
+	}
+
 	ic.Env = make(map[string]string)
 	for _, envVar := range pci.Config.Env {
 		parts := strings.SplitN(envVar, "=", 2)
@@ -863,8 +871,10 @@ func unmarshalContainer(pci *podmanInspectedContainer, ic *containers.InspectedC
 			ic.Env[parts[0]] = ""
 		}
 	}
+
 	ic.Args = append(ic.Args, pci.Config.Entrypoint...)
 	ic.Args = append(ic.Args, pci.Config.Cmd...)
+
 	for name, network := range pci.NetworkSettings.Networks {
 		ic.Networks = append(
 			ic.Networks,

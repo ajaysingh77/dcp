@@ -917,7 +917,15 @@ func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
 	ic.FinishedAt = dci.State.FinishedAt
 	ic.Status = dci.State.Status
 	ic.ExitCode = dci.State.ExitCode
-	ic.Ports = dci.NetworkSettings.Ports
+
+	ic.Ports = make(containers.InspectedContainerPortMapping)
+	for portAndProtocol, portBindings := range dci.NetworkSettings.Ports {
+		if len(portAndProtocol) == 0 || len(portBindings) == 0 {
+			continue // Skip ports that are published but not mapped to host.
+		}
+		ic.Ports[portAndProtocol] = portBindings
+	}
+
 	ic.Env = make(map[string]string)
 	for _, envVar := range dci.Config.Env {
 		parts := strings.SplitN(envVar, "=", 2)
@@ -927,8 +935,10 @@ func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
 			ic.Env[parts[0]] = ""
 		}
 	}
+
 	ic.Args = append(ic.Args, dci.Config.Entrypoint...)
 	ic.Args = append(ic.Args, dci.Config.Cmd...)
+
 	for name, network := range dci.NetworkSettings.Networks {
 		ic.Networks = append(
 			ic.Networks,
