@@ -12,7 +12,7 @@ import (
 	"go.uber.org/zap/zaptest"
 )
 
-func Test_Host_RequiresServices(t *testing.T) {
+func Test_Host_CanRunWithNoServices(t *testing.T) {
 	ctx, cancel := context.WithDeadline(createContext(t), time.Now().Add(time.Second*5))
 	defer cancel()
 
@@ -21,7 +21,7 @@ func Test_Host_RequiresServices(t *testing.T) {
 	}
 
 	err := host.Run(ctx, nil)
-	require.Error(t, err)
+	require.NoError(t, err)
 }
 
 func Test_Host_DetectsDuplicates(t *testing.T) {

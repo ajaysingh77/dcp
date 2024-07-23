@@ -112,7 +112,7 @@ func (lsl *LogOptionsList) GetListMeta() *metav1.ListMeta {
 // and is failing. Probably a bug. As a workaround we will implement the conversion functions manually.
 // We might try harder to use the code generator if we end up having more type conversions
 // (e.g. if we support multiple schema versions for DCP).
-func urlValuesToLogOptions(in *url.Values, out *LogOptions, cscope conversion.Scope) error {
+func UrlValuesToLogOptions(in *url.Values, out *LogOptions, cscope conversion.Scope) error {
 	if in == nil {
 		return fmt.Errorf("expected a valid net/url.Values object, but got nil")
 	}
@@ -152,7 +152,7 @@ func urlValuesToLogOptions(in *url.Values, out *LogOptions, cscope conversion.Sc
 
 func RegisterLogOptionsConversions(scheme *runtime.Scheme) error {
 	registrationErr := scheme.AddConversionFunc((*url.Values)(nil), (*LogOptions)(nil), func(from, to interface{}, scope conversion.Scope) error {
-		return urlValuesToLogOptions(from.(*url.Values), to.(*LogOptions), scope)
+		return UrlValuesToLogOptions(from.(*url.Values), to.(*LogOptions), scope)
 	})
 	return registrationErr
 }

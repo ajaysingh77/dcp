@@ -152,6 +152,11 @@ type StreamContainerLogsOptions struct {
 	Timestamps bool
 }
 
+type ContainerLogSource interface {
+	// Starts capturing container logs to the provided writers
+	CaptureContainerLogs(ctx context.Context, container string, stdout io.WriteCloser, stderr io.WriteCloser, options StreamContainerLogsOptions) error
+}
+
 // Represents portion of container orchestrator functionality that is related to container management
 type ContainerOrchestrator interface {
 	// Get the container machine host name for the runtime
@@ -191,9 +196,7 @@ type ContainerOrchestrator interface {
 	// When the subscription is cancelled, the channel will be closed
 	WatchContainers(sink chan<- EventMessage) (*EventSubscription, error)
 
-	// Starts capturing container logs to the provided writers
-	CaptureContainerLogs(ctx context.Context, container string, stdout io.WriteCloser, stderr io.WriteCloser, options StreamContainerLogsOptions) error
-
+	ContainerLogSource
 	VolumeOrchestrator
 	NetworkOrchestrator
 }

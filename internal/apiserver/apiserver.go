@@ -4,6 +4,7 @@ package apiserver
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/spf13/pflag"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/sets"
 	kubeapiserver "k8s.io/apiserver/pkg/server"
 	"k8s.io/apiserver/pkg/server/dynamiccertificates"
@@ -141,7 +143,7 @@ func (s *ApiServer) Run(ctx context.Context) (<-chan struct{}, error) {
 
 	addDcpHttpHandlers(config, ctx, log)
 
-	err = configureForLogServing(config, s.persistentDcpTypes)
+	err = configureForLogServing(config, s.persistentDcpTypes, log)
 	if err != nil {
 		return nil, err
 	}
@@ -162,6 +164,15 @@ func (s *ApiServer) Run(ctx context.Context) (<-chan struct{}, error) {
 	log.Info("API server started", "Address", options.ServingOptions.BindAddress.String(), "Port", options.ServingOptions.BindPort)
 
 	return stoppedCh, nil
+}
+
+func (s *ApiServer) Dispose() error {
+	var allErrors error
+	apiv1.ResourceLogStreamers.Range(func(_ schema.GroupVersionResource, rls apiv1.ResourceLogStreamer) bool {
+		allErrors = errors.Join(allErrors, rls.Dispose())
+		return true // Continue iteration
+	})
+	return allErrors
 }
 
 func (s *ApiServer) computeServerOptions(log logr.Logger) (*start.TiltServerOptions, error) {
@@ -233,7 +244,7 @@ func (s *ApiServer) computeServerOptions(log logr.Logger) (*start.TiltServerOpti
 // Configures various API serving options so that requests for logs are handled correctly,
 // including body and options serialization/deserialization and marking long requests
 // as long-running, so they do not time out prematurely.
-func configureForLogServing(config *apiserver.Config, persistentDcpTypes []apiserver_resource.Object) error {
+func configureForLogServing(config *apiserver.Config, persistentDcpTypes []apiserver_resource.Object, log logr.Logger) error {
 	// The following is necessary for the API server to correctly deserialize log request parameters into LogOptions instance.
 	// (the scheme in ExtraConfig contains DCP type definitions, including LogOptions).
 	disableOpenApiForLogsSubresource(config.GenericConfig, persistentDcpTypes)
@@ -255,7 +266,7 @@ func configureForLogServing(config *apiserver.Config, persistentDcpTypes []apise
 	)
 	apiv1.ResourceLogStreamers.Store(
 		(&apiv1.Container{}).GetGroupVersionResource(),
-		containerlogs.LogStreamer(),
+		containerlogs.NewLogStreamer(log.WithName("container-logstreamer")),
 	)
 
 	return nil

@@ -7,18 +7,27 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/davidwartell/go-onecontext/onecontext"
 	"github.com/go-logr/logr"
 	"github.com/google/uuid"
+
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/secrets"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
+	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
 var (
@@ -28,20 +37,25 @@ var (
 
 const (
 	TestEventActionStopWithoutRemove containers.EventAction = "stop_without_remove"
+	maxContainerLogSize              uint                   = 1024 * 1024
+	containerLogsHttpPath            string                 = "/apis/usvc-dev.developer.microsoft.com/v1/containers/%s/log"
 )
 
 type TestContainerOrchestrator struct {
 	randomNameLength       int
 	volumes                map[string]containerVolume
-	networks               map[string]containerNetwork
+	networks               map[string]*containerNetwork
 	images                 map[string]bool
 	imageIds               map[string]string
 	imageSecrets           map[string]map[string]string
-	containers             map[string]testContainer
+	containers             map[string]*testContainer
 	containersToFail       map[string]containerExit
 	containerEventsWatcher *containers.EventWatcher
 	networkEventsWatcher   *containers.EventWatcher
+	socketServer           *http.Server
+	socketFilePath         string
 	mutex                  *sync.Mutex
+	lifetimeCtx            context.Context
 	log                    logr.Logger
 }
 
@@ -50,11 +64,11 @@ type containerExit struct {
 	stdErr   string
 }
 
-func NewTestContainerOrchestrator(log logr.Logger) *TestContainerOrchestrator {
+func NewTestContainerOrchestrator(lifetimeCtx context.Context, log logr.Logger) (*TestContainerOrchestrator, error) {
 	to := &TestContainerOrchestrator{
 		randomNameLength: 20,
 		volumes:          map[string]containerVolume{},
-		networks: map[string]containerNetwork{
+		networks: map[string]*containerNetwork{
 			"bridge": {
 				withId:    newId("bridge"),
 				driver:    "bridge",
@@ -74,16 +88,165 @@ func NewTestContainerOrchestrator(log logr.Logger) *TestContainerOrchestrator {
 		images:           map[string]bool{},
 		imageIds:         map[string]string{},
 		imageSecrets:     map[string]map[string]string{},
-		containers:       map[string]testContainer{},
+		containers:       map[string]*testContainer{},
 		containersToFail: map[string]containerExit{},
 		mutex:            &sync.Mutex{},
+		lifetimeCtx:      lifetimeCtx,
 		log:              log,
 	}
 
 	to.containerEventsWatcher = containers.NewEventWatcher(to, to.doWatchContainers, log)
 	to.networkEventsWatcher = containers.NewEventWatcher(to, to.doWatchNetworks, log)
 
-	return to
+	err := setupSocketListener(to)
+
+	return to, err
+}
+
+func setupSocketListener(to *TestContainerOrchestrator) error {
+	const socketFileSuffixLength = 10
+	suffix, suffixErr := randdata.MakeRandomString(socketFileSuffixLength)
+	if suffixErr != nil {
+		return fmt.Errorf("could not create orchestrator socket file name: %w", suffixErr)
+	}
+	to.socketFilePath = filepath.Join(usvc_io.DcpTempDir, fmt.Sprintf("tco_sock_%s", string(suffix)))
+
+	socketListener, listenErr := net.Listen("unix", to.socketFilePath)
+	if listenErr != nil {
+		_ = os.Remove(to.socketFilePath)
+		to.socketFilePath = ""
+		return fmt.Errorf("could not create orchestrator socket: %w", listenErr)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc(
+		// Use template URL, enabling http.Request.PathValue method
+		fmt.Sprintf("GET "+containerLogsHttpPath, "{containerId}"),
+		func(w http.ResponseWriter, r *http.Request) { to.handleLogRequest(w, r) },
+	)
+	to.socketServer = &http.Server{Handler: mux}
+
+	go func() {
+		serveErr := to.socketServer.Serve(socketListener)
+		if serveErr != http.ErrServerClosed {
+			to.log.Error(serveErr, "socket server closed unexpectedly")
+		}
+	}()
+
+	return nil
+}
+
+func (to *TestContainerOrchestrator) handleLogRequest(resp http.ResponseWriter, req *http.Request) {
+	containerId := req.PathValue("containerId")
+	if containerId == "" {
+		http.Error(resp, "containerId is required", http.StatusBadRequest)
+		return
+	}
+
+	to.mutex.Lock()
+	matching := slices.Select(maps.Values(to.containers), func(c *testContainer) bool { return c.matches(containerId) })
+	to.mutex.Unlock()
+	if len(matching) == 0 {
+		http.Error(resp, "container not found", http.StatusNotFound)
+		return
+	}
+	if len(matching) > 1 {
+		http.Error(resp, "multiple containers found", http.StatusBadRequest)
+		return
+	}
+
+	logOptions := apiv1.LogOptions{}
+	query := req.URL.Query()
+	logOptionsErr := apiv1.UrlValuesToLogOptions(&query, &logOptions, nil)
+	if logOptionsErr != nil {
+		http.Error(resp, logOptionsErr.Error(), http.StatusBadRequest)
+		return
+	}
+
+	effectiveCtx, cancel := onecontext.Merge(req.Context(), to.lifetimeCtx)
+	defer cancel()
+
+	traceId := req.Header.Get("trace-id")
+	if traceId == "" {
+		http.Error(resp, "TestContainerOrchestrator endpoint requires a trace ID", http.StatusBadRequest)
+		return
+	}
+	requestLog := to.log.WithValues(
+		"containerId", containerId,
+		"traceId", traceId,
+		"source", logOptions.Source,
+		"timestamps", logOptions.Timestamps,
+		"follow", logOptions.Follow,
+	)
+	requestLog.V(1).Info("serving container logs")
+	innerWriter := testutil.NewLoggingWriteCloser(requestLog, usvc_io.NewFlushWriter(resp))
+
+	var stdoutWriter, stderrWriter usvc_io.NotifyWriteCloser
+	switch logOptions.Source {
+	case string(apiv1.LogStreamSourceStdout):
+		stdoutWriter = usvc_io.NewContextWriteCloser(effectiveCtx, innerWriter)
+	case string(apiv1.LogStreamSourceStderr):
+		stderrWriter = usvc_io.NewContextWriteCloser(effectiveCtx, innerWriter)
+	default:
+		http.Error(resp, fmt.Sprintf("invalid source '%s'", logOptions.Source), http.StatusBadRequest)
+		return
+	}
+
+	var containerLogOptions containers.StreamContainerLogsOptions
+	containerLogOptions.Timestamps = logOptions.Timestamps
+	containerLogOptions.Follow = logOptions.Follow
+
+	resp.Header().Set("Content-Type", "application/octet-stream")
+	if flusher, ok := resp.(http.Flusher); ok {
+		flusher.Flush()
+	}
+
+	capturingErr := to.CaptureContainerLogs(effectiveCtx, containerId, stdoutWriter, stderrWriter, containerLogOptions)
+	if capturingErr != nil {
+		requestLog.Info("failed to serve logs for container",
+			"error", capturingErr.Error(),
+		)
+		http.Error(resp, capturingErr.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if stdoutWriter != nil {
+		<-stdoutWriter.Closed()
+	} else if stderrWriter != nil {
+		<-stderrWriter.Closed()
+	} else {
+		panic("neither stdoutWriter nor stderrWriter was set")
+	}
+
+	requestLog.Info("finished serving container logs")
+}
+
+func (to *TestContainerOrchestrator) Close() error {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	var allCloseErrors error = nil
+
+	for _, container := range to.containers {
+		stopErr := to.doStopContainer(to.lifetimeCtx, container, stopAndRemove)
+		allCloseErrors = errors.Join(allCloseErrors, stopErr)
+	}
+
+	if to.socketServer != nil {
+		allCloseErrors = errors.Join(allCloseErrors, to.socketServer.Close())
+		to.socketServer = nil
+	}
+
+	if len(to.socketFilePath) > 0 {
+		allCloseErrors = errors.Join(allCloseErrors, os.Remove(to.socketFilePath))
+		to.socketFilePath = ""
+	}
+
+	return allCloseErrors
+}
+
+func (to *TestContainerOrchestrator) GetSocketFilePath() string {
+	return to.socketFilePath
 }
 
 func (to *TestContainerOrchestrator) FailMatchingContainers(ctx context.Context, name string, exitCode int32, stdErr string) {
@@ -166,6 +329,8 @@ type testContainer struct {
 	networks   []string
 	args       []string
 	env        map[string]string
+	stdoutLog  *testutil.BufferWriter
+	stderrLog  *testutil.BufferWriter
 }
 
 func getID() string {
@@ -270,7 +435,7 @@ func (to *TestContainerOrchestrator) CreateNetwork(ctx context.Context, options 
 
 	id := newId(options.Name)
 
-	to.networks[options.Name] = containerNetwork{
+	to.networks[options.Name] = &containerNetwork{
 		withId:     id,
 		driver:     "bridge",
 		ipv6:       options.IPv6,
@@ -402,7 +567,7 @@ func (to *TestContainerOrchestrator) ConnectNetwork(ctx context.Context, options
 	return errors.Join(containers.ErrNotFound, fmt.Errorf("network not found"))
 }
 
-func (to *TestContainerOrchestrator) doConnectNetwork(ctx context.Context, network containerNetwork, container testContainer) error {
+func (to *TestContainerOrchestrator) doConnectNetwork(ctx context.Context, network *containerNetwork, container *testContainer) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -410,9 +575,6 @@ func (to *TestContainerOrchestrator) doConnectNetwork(ctx context.Context, netwo
 	if !slices.Contains(network.containers, container.id) {
 		network.containers = append(network.containers, container.id)
 		container.networks = append(container.networks, network.name)
-
-		to.containers[container.id] = container
-		to.networks[network.name] = network
 
 		// Notify listeners that we've connected the container to the network
 		to.networkEventsWatcher.Notify(containers.EventMessage{
@@ -559,20 +721,20 @@ func (to *TestContainerOrchestrator) CreateContainer(ctx context.Context, option
 	return container.id, nil
 }
 
-func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, name string, options apiv1.ContainerSpec) (testContainer, error) {
+func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, name string, options apiv1.ContainerSpec) (*testContainer, error) {
 	if ctx.Err() != nil {
-		return testContainer{}, ctx.Err()
+		return nil, ctx.Err()
 	}
 
 	if name != "" {
 		for _, existing := range to.containers {
 			if existing.name == name {
-				return testContainer{}, containers.ErrAlreadyExists
+				return nil, containers.ErrAlreadyExists
 			}
 		}
 	} else {
 		if randomName, err := to.getRandomName(); err != nil {
-			return testContainer{}, err
+			return nil, err
 		} else {
 			name = randomName
 		}
@@ -589,6 +751,8 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, name
 		ports:     map[string][]containers.InspectedContainerHostPortConfig{},
 		args:      options.Args,
 		env:       map[string]string{},
+		stdoutLog: testutil.NewBufferWriter(maxContainerLogSize),
+		stderrLog: testutil.NewBufferWriter(maxContainerLogSize),
 	}
 
 	for _, env := range options.Env {
@@ -616,7 +780,7 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, name
 		}
 	}
 
-	to.containers[id.id] = container
+	to.containers[id.id] = &container
 
 	// Notify listeners that we've created the container
 	to.containerEventsWatcher.Notify(containers.EventMessage{
@@ -625,7 +789,7 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, name
 		Actor:  containers.EventActor{ID: id.id},
 	})
 
-	return container, nil
+	return &container, nil
 }
 
 func (to *TestContainerOrchestrator) StartContainers(ctx context.Context, names []string, streamOptions containers.StreamCommandOptions) ([]string, error) {
@@ -634,7 +798,7 @@ func (to *TestContainerOrchestrator) StartContainers(ctx context.Context, names 
 
 	var result []string
 
-	var containersToStart []testContainer
+	var containersToStart []*testContainer
 
 	for _, name := range names {
 		var found bool
@@ -662,7 +826,7 @@ func (to *TestContainerOrchestrator) StartContainers(ctx context.Context, names 
 	return result, nil
 }
 
-func (to *TestContainerOrchestrator) doStartContainer(ctx context.Context, container testContainer, streamOptions containers.StreamCommandOptions) (string, error) {
+func (to *TestContainerOrchestrator) doStartContainer(ctx context.Context, container *testContainer, streamOptions containers.StreamCommandOptions) (string, error) {
 	streamIfPossible := func(err error) error {
 		if streamOptions.StdErrStream != nil {
 			_, writeErr := streamOptions.StdErrStream.Write([]byte(err.Error()))
@@ -681,8 +845,8 @@ func (to *TestContainerOrchestrator) doStartContainer(ctx context.Context, conta
 			container.startedAt = time.Now().UTC()
 			container.finishedAt = time.Now().UTC()
 			container.exitCode = exit.exitCode
-
-			to.containers[container.id] = container
+			container.stdoutLog.Close()
+			container.stderrLog.Close()
 
 			to.containerEventsWatcher.Notify(containers.EventMessage{
 				Source: containers.EventSourceContainer,
@@ -700,8 +864,6 @@ func (to *TestContainerOrchestrator) doStartContainer(ctx context.Context, conta
 
 	container.status = containers.ContainerStatusRunning
 	container.startedAt = time.Now().UTC()
-
-	to.containers[container.id] = container
 
 	// Notify listeners that we've started the container
 	to.containerEventsWatcher.Notify(containers.EventMessage{
@@ -737,7 +899,7 @@ func (to *TestContainerOrchestrator) StopContainers(ctx context.Context, names [
 		return nil, fmt.Errorf("must specify at least one container")
 	}
 
-	var containersToStop []testContainer
+	var containersToStop []*testContainer
 	for _, name := range names {
 		var found bool
 		for _, container := range to.containers {
@@ -755,8 +917,7 @@ func (to *TestContainerOrchestrator) StopContainers(ctx context.Context, names [
 	var results []string
 
 	for _, container := range containersToStop {
-		_, err := to.doStopContainer(ctx, container, stoppingOnly)
-		if err != nil {
+		if err := to.doStopContainer(ctx, container, stoppingOnly); err != nil {
 			return results, err
 		}
 
@@ -771,20 +932,20 @@ type stopContainerAction string
 const stoppingOnly stopContainerAction = "stoppingOnly"
 const stopAndRemove stopContainerAction = "stopAndRemove"
 
-func (to *TestContainerOrchestrator) doStopContainer(ctx context.Context, container testContainer, stopAction stopContainerAction) (testContainer, error) {
+func (to *TestContainerOrchestrator) doStopContainer(ctx context.Context, container *testContainer, stopAction stopContainerAction) error {
 	if ctx.Err() != nil {
-		return container, ctx.Err()
+		return ctx.Err()
 	}
 
 	// Stop is a no-op if the container isn't running
 	if container.status != containers.ContainerStatusRunning {
-		return container, nil
+		return nil
 	}
 
 	container.status = containers.ContainerStatusExited
 	container.finishedAt = time.Now().UTC()
-
-	to.containers[container.id] = container
+	container.stdoutLog.Close()
+	container.stderrLog.Close()
 
 	// Notify listeners that we've stopped the container
 	to.containerEventsWatcher.Notify(containers.EventMessage{
@@ -802,7 +963,7 @@ func (to *TestContainerOrchestrator) doStopContainer(ctx context.Context, contai
 		})
 	}
 
-	return container, nil
+	return nil
 }
 
 func (to *TestContainerOrchestrator) RemoveContainers(ctx context.Context, names []string, force bool) ([]string, error) {
@@ -813,7 +974,7 @@ func (to *TestContainerOrchestrator) RemoveContainers(ctx context.Context, names
 		return nil, fmt.Errorf("must specify at least one container")
 	}
 
-	var containersToRemove []testContainer
+	var containersToRemove []*testContainer
 	for _, name := range names {
 		var found bool
 		for _, container := range to.containers {
@@ -833,12 +994,9 @@ func (to *TestContainerOrchestrator) RemoveContainers(ctx context.Context, names
 	for i := range containersToRemove {
 		container := containersToRemove[i]
 		if force {
-			stoppedContainer, err := to.doStopContainer(ctx, container, stopAndRemove)
-			if err != nil {
+			if err := to.doStopContainer(ctx, container, stopAndRemove); err != nil {
 				return results, err
 			}
-
-			container = stoppedContainer
 		}
 
 		id, err := to.doRemoveContainer(ctx, container)
@@ -852,7 +1010,7 @@ func (to *TestContainerOrchestrator) RemoveContainers(ctx context.Context, names
 	return results, nil
 }
 
-func (to *TestContainerOrchestrator) doRemoveContainer(ctx context.Context, container testContainer) (string, error) {
+func (to *TestContainerOrchestrator) doRemoveContainer(ctx context.Context, container *testContainer) (string, error) {
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
@@ -935,6 +1093,8 @@ func (to *TestContainerOrchestrator) SimulateContainerExit(ctx context.Context, 
 			container.status = containers.ContainerStatusExited
 			container.exitCode = 0
 			container.finishedAt = time.Now().UTC()
+			container.stdoutLog.Close()
+			container.stderrLog.Close()
 
 			to.containers[container.id] = container
 
@@ -952,29 +1112,114 @@ func (to *TestContainerOrchestrator) SimulateContainerExit(ctx context.Context, 
 	return containers.ErrNotFound
 }
 
-func (to *TestContainerOrchestrator) CaptureContainerLogs(ctx context.Context, name string, stdout io.WriteCloser, stderr io.WriteCloser, options containers.StreamContainerLogsOptions) error {
-	to.mutex.Lock()
-	defer to.mutex.Unlock()
-
+func (to *TestContainerOrchestrator) CaptureContainerLogs(ctx context.Context, containerNameOrId string, stdout io.WriteCloser, stderr io.WriteCloser, options containers.StreamContainerLogsOptions) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	/*
-		for _, container := range to.containers {
-			if container.matches(name) {
-				// TODO: simulate log streaming
+
+	if options.Tail != 0 {
+		return fmt.Errorf("tail option is not implemented")
+	}
+	if !options.Since.IsZero() {
+		return fmt.Errorf("since option is not implemented")
+	}
+	if !options.Until.IsZero() {
+		return fmt.Errorf("until option is not implemented")
+	}
+	if stdout == nil && stderr == nil {
+		return fmt.Errorf("at least one of stdout or stderr must be provided")
+	}
+
+	to.mutex.Lock()
+	matching := slices.Select(maps.Values(to.containers), func(tc *testContainer) bool { return tc.matches(containerNameOrId) })
+	to.mutex.Unlock()
+	if len(matching) == 0 {
+		return containers.ErrNotFound
+	}
+	if len(matching) > 1 {
+		return fmt.Errorf("multiple containers match the name")
+	}
+	tc := matching[0]
+
+	var effectiveStdout, effecitveStderr io.WriteCloser
+	if options.Timestamps {
+		if stdout != nil {
+			effectiveStdout = usvc_io.NewTimestampWriter(stdout)
+		}
+		if stderr != nil {
+			effecitveStderr = usvc_io.NewTimestampWriter(stderr)
+		}
+	} else {
+		effectiveStdout = stdout
+		effecitveStderr = stderr
+	}
+
+	// Account for the possibility that the capturing context, or the orchestrator lifetime context, may be cancelled.
+	if effectiveStdout != nil {
+		effectiveStdout = usvc_io.NewContextWriteCloser(ctx, effectiveStdout)
+	}
+	if effecitveStderr != nil {
+		effecitveStderr = usvc_io.NewContextWriteCloser(ctx, effecitveStderr)
+	}
+
+	var logErrors error
+	if !options.Follow {
+		if effectiveStdout != nil {
+			if _, stdOutWriteErr := effectiveStdout.Write(tc.stdoutLog.Bytes()); stdOutWriteErr != nil {
+				logErrors = errors.Join(logErrors, stdOutWriteErr)
+			} else {
+				logErrors = errors.Join(logErrors, effectiveStdout.Close())
 			}
 		}
-	*/
 
-	if stdOutCloseErr := stdout.Close(); stdOutCloseErr != nil {
-		to.log.Error(stdOutCloseErr, "closing stdout log destination failed", "Container", name)
-	}
-	if stdErrCloseErr := stderr.Close(); stdErrCloseErr != nil {
-		to.log.Error(stdErrCloseErr, "closing stderr log destination failed", "Container", name)
+		if effecitveStderr != nil {
+			if _, stdErrWriteErr := effecitveStderr.Write(tc.stderrLog.Bytes()); stdErrWriteErr != nil {
+				logErrors = errors.Join(logErrors, stdErrWriteErr)
+			} else {
+				logErrors = errors.Join(logErrors, effecitveStderr.Close())
+			}
+		}
+	} else {
+		if effectiveStdout != nil {
+			logErrors = errors.Join(logErrors, tc.stdoutLog.AddTarget(effectiveStdout))
+		}
+		if effecitveStderr != nil {
+			logErrors = errors.Join(logErrors, tc.stderrLog.AddTarget(effecitveStderr))
+		}
 	}
 
-	return containers.ErrNotFound
+	return logErrors
+}
+
+func (to *TestContainerOrchestrator) SimulateContainerLogging(containerName string, target apiv1.LogStreamSource, content []byte) error {
+	to.mutex.Lock()
+	matching := slices.Select(maps.Values(to.containers), func(tc *testContainer) bool { return tc.matches(containerName) })
+	to.mutex.Unlock()
+	if len(matching) == 0 {
+		return containers.ErrNotFound
+	}
+	if len(matching) > 1 {
+		return fmt.Errorf("multiple containers match the name")
+	}
+	tc := matching[0]
+
+	if tc.status != containers.ContainerStatusRunning {
+		return fmt.Errorf("container is not running; only running containers can emit logs")
+	}
+
+	var writer io.Writer
+	switch target {
+	case apiv1.LogStreamSourceStdout:
+		writer = tc.stdoutLog
+	case apiv1.LogStreamSourceStderr:
+		writer = tc.stderrLog
+	default:
+		return fmt.Errorf("only stdout and stderr log targets are supported")
+	}
+
+	_, writeErr := writer.Write(content)
+	return writeErr
 }
 
 var _ containers.ContainerOrchestrator = (*TestContainerOrchestrator)(nil)
+var _ io.Closer = (*TestContainerOrchestrator)(nil)

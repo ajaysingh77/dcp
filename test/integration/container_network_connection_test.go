@@ -195,12 +195,12 @@ func TestContainerDoesNotStartUntilNetworkExists(t *testing.T) {
 	err := client.Create(ctx, &ctr)
 	require.NoError(t, err, "Could not create a Container object")
 
-	_ = ensureContainerStarting(t, ctx, &ctr)
+	_ = ensureContainerState(t, ctx, &ctr, apiv1.ContainerStateStarting)
 
 	time.Sleep(1 * time.Second)
 
 	// Ensure the container is still starting
-	_ = ensureContainerStarting(t, ctx, &ctr)
+	_ = ensureContainerState(t, ctx, &ctr, apiv1.ContainerStateStarting)
 
 	net := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{

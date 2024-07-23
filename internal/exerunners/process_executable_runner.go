@@ -23,6 +23,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+const (
+	DCP_SKIP_MONITOR_PROCESSES = "DCP_SKIP_MONITOR_PROCESSES"
+)
+
 type processRunState struct {
 	stdOutFile *os.File
 	stdErrFile *os.File
@@ -128,26 +132,28 @@ func (r *ProcessExecutableRunner) StopRun(_ context.Context, runID controllers.R
 }
 
 func (r *ProcessExecutableRunner) runWatcher(ctx context.Context, pid process.Pid_t, log logr.Logger) {
+	if _, found := os.LookupEnv(DCP_SKIP_MONITOR_PROCESSES); found {
+		return
+	}
+
 	// This is a best effort and will only log errors if the process watcher can't be started
-	if _, found := os.LookupEnv(controllers.DCP_SKIP_MONITOR_PROCESSES); !found {
-		binPath, binPathErr := dcppaths.GetDcpBinDir()
-		if binPathErr != nil {
-			log.Error(binPathErr, "could not resolve path to process monitor", "PID", pid)
-		} else {
-			procMonitorPath := filepath.Join(binPath, "dcpproc")
-			if runtime.GOOS == "windows" {
-				procMonitorPath += ".exe"
-			}
+	binPath, binPathErr := dcppaths.GetDcpBinDir()
+	if binPathErr != nil {
+		log.Error(binPathErr, "could not resolve path to process monitor", "PID", pid)
+	} else {
+		procMonitorPath := filepath.Join(binPath, "dcpproc")
+		if runtime.GOOS == "windows" {
+			procMonitorPath += ".exe"
+		}
 
-			// DCP doesn't shut down if DCPCTRL goes away, but DCPCTRL will shut down if DCP goes away. For now, watching DCPCTRL is the safer bet.
-			monitorPid := os.Getpid()
+		// DCP doesn't shut down if DCPCTRL goes away, but DCPCTRL will shut down if DCP goes away. For now, watching DCPCTRL is the safer bet.
+		monitorPid := os.Getpid()
 
-			// Monitor the parent process and the service process
-			monitorCmd := exec.Command(procMonitorPath, "--monitor", strconv.Itoa(monitorPid), "--proc", strconv.FormatInt(int64(pid), 10))
-			_, _, monitorErr := r.pe.StartProcess(ctx, monitorCmd, nil)
-			if monitorErr != nil {
-				log.Error(monitorErr, "failed to start process monitor", "executable", procMonitorPath, "PID", pid)
-			}
+		// Monitor the parent process and the service process
+		monitorCmd := exec.Command(procMonitorPath, "--monitor", strconv.Itoa(monitorPid), "--proc", strconv.FormatInt(int64(pid), 10))
+		_, _, monitorErr := r.pe.StartProcess(ctx, monitorCmd, nil)
+		if monitorErr != nil {
+			log.Error(monitorErr, "failed to start process monitor", "executable", procMonitorPath, "PID", pid)
 		}
 	}
 }

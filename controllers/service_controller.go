@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
-	"os"
 	"path/filepath"
 	"sync/atomic"
 
@@ -32,6 +31,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/proxy"
 	"github.com/microsoft/usvc-apiserver/internal/telemetry"
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
@@ -75,7 +75,7 @@ func NewServiceReconciler(lifetimeCtx context.Context, client ctrl_client.Client
 	r := ServiceReconciler{
 		Client:                client,
 		ProcessExecutor:       processExecutor,
-		ProxyConfigDir:        filepath.Join(os.TempDir(), "usvc-servicecontroller-serviceconfig"),
+		ProxyConfigDir:        filepath.Join(usvc_io.DcpTempDir, "usvc-servicecontroller-serviceconfig"),
 		proxyData:             &syncmap.Map[types.NamespacedName, []proxyInstanceData]{},
 		notifyProxyRunChanged: chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
 		lifetimeCtx:           lifetimeCtx,

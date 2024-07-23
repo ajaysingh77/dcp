@@ -25,8 +25,9 @@ const (
 	cleanupReadyPollInterval = 200 * time.Millisecond
 )
 
-// LogDescriptor is a struct that holds information about logs beloning to a DCP resource
-// (e.g. Container, Executable etc).
+// LogDescriptor is a struct that holds information about logs beloning to a single DCP resource
+// (e.g. Container, Executable etc). LogDescriptor manages a set of two files for capturing logs of the resource,
+// (for stdout and stderr output), and tracks the number of active log watchers.
 type LogDescriptor struct {
 	ResourceName types.NamespacedName
 	ResourceUID  types.UID

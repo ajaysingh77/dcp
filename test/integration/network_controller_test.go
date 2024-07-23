@@ -63,7 +63,7 @@ func TestRemoveNetworkInstance(t *testing.T) {
 	require.NoError(t, err, "could not delete a ContainerNetwork object")
 
 	err = wait.PollUntilContextCancel(ctx, waitPollInterval, true, func(_ context.Context) (bool, error) {
-		inspectedNetworks, networkInspectionErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{updatedNet.Status.ID}})
+		inspectedNetworks, networkInspectionErr := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{updatedNet.Status.ID}})
 		if !errors.Is(networkInspectionErr, containers.ErrNotFound) || len(inspectedNetworks) != 0 {
 			return false, nil
 		}
@@ -116,7 +116,7 @@ func TestCreateExistingPersistentNetworkInstance(t *testing.T) {
 		},
 	}
 
-	id, err := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{
+	id, err := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{
 		Name: testName,
 	})
 	require.NoError(t, err, "could not create a network")
@@ -161,7 +161,7 @@ func TestRemovePersistentNetworkInstance(t *testing.T) {
 
 	waitObjectDeleted[apiv1.ContainerNetwork](t, ctx, ctrl_client.ObjectKeyFromObject(&net))
 
-	inspected, err := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
+	inspected, err := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
 		Networks: []string{updatedNet.Status.ID},
 	})
 	require.NoError(t, err, "could not inspect the network")
@@ -177,7 +177,7 @@ func ensureNetworkCreated(t *testing.T, ctx context.Context, network *apiv1.Cont
 		return currentNet.Status.ID != "", nil
 	})
 
-	inspectedNetworks, err := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{updatedNet.Status.ID}})
+	inspectedNetworks, err := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{updatedNet.Status.ID}})
 	require.NoError(t, err, "could not inspect the network")
 	require.Len(t, inspectedNetworks, 1, "expected to find a single network")
 

@@ -100,7 +100,7 @@ func TestEndpointCreatedAndDeletedForContainer(t *testing.T) {
 	t.Logf("Ensure that Container object really disappeared from the API server, '%s'...", container.ObjectMeta.Name)
 	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&container))
 
-	inspected, err := orchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
 	require.Error(t, err, "expected the container to be gone")
 	require.Len(t, inspected, 0, "expected the container to be gone")
 
@@ -193,7 +193,7 @@ func TestEndpointDeletedIfContainerStopped(t *testing.T) {
 	t.Log("Found Endpoint with correct spec")
 
 	t.Log("Simulate Container stopping...")
-	err = orchestrator.SimulateContainerExit(ctx, inspected.Id)
+	err = containerOrchestrator.SimulateContainerExit(ctx, inspected.Id)
 	require.NoError(t, err, "Could not simulate container exit")
 
 	t.Log("Ensure Container object status reflects the state of the running container...")

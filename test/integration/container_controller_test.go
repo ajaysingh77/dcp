@@ -17,33 +17,28 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/secrets"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
 func ensureContainerRunning(t *testing.T, ctx context.Context, container *apiv1.Container) (*apiv1.Container, containers.InspectedContainer) {
-	updated := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(container), func(currentContainer *apiv1.Container) (bool, error) {
-		if currentContainer.Status.State == apiv1.ContainerStateFailedToStart {
-			return false, fmt.Errorf("container creation failed: %s", currentContainer.Status.Message)
-		}
+	updated := ensureContainerState(t, ctx, container, apiv1.ContainerStateRunning)
 
-		return currentContainer.Status.State == apiv1.ContainerStateRunning, nil
-	})
-
-	inspectedContainers, err := orchestrator.InspectContainers(ctx, []string{updated.Status.ContainerID})
+	inspectedContainers, err := containerOrchestrator.InspectContainers(ctx, []string{updated.Status.ContainerID})
 	require.NoError(t, err, "could not inspect the container")
 	require.Len(t, inspectedContainers, 1, "expected to find a single container")
 
 	return updated, inspectedContainers[0]
 }
 
-func ensureContainerStarting(t *testing.T, ctx context.Context, container *apiv1.Container) *apiv1.Container {
+func ensureContainerState(t *testing.T, ctx context.Context, container *apiv1.Container, state apiv1.ContainerState) *apiv1.Container {
 	updated := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(container), func(currentContainer *apiv1.Container) (bool, error) {
 		if currentContainer.Status.State == apiv1.ContainerStateFailedToStart {
 			return false, fmt.Errorf("container creation failed: %s", currentContainer.Status.Message)
 		}
 
-		return currentContainer.Status.State == apiv1.ContainerStateStarting, nil
+		return currentContainer.Status.State == state, nil
 	})
 
 	return updated
@@ -131,7 +126,7 @@ func TestContainerMarkedDone(t *testing.T) {
 
 	updatedContainer, _ := ensureContainerRunning(t, ctx, &ctr)
 
-	err = orchestrator.SimulateContainerExit(ctx, updatedContainer.Status.ContainerID)
+	err = containerOrchestrator.SimulateContainerExit(ctx, updatedContainer.Status.ContainerID)
 	require.NoError(t, err, "could not simulate container exit")
 
 	t.Log("Ensure Container object status reflects the state of the running container...")
@@ -160,7 +155,7 @@ func TestContainerStartupFailure(t *testing.T) {
 
 	// Cause the orchestrator to fail to create the container
 	errMsg := fmt.Sprintf("Container '%s' could not be run because it is just a test :-)", testName)
-	orchestrator.FailMatchingContainers(ctx, testName, 1, errMsg)
+	containerOrchestrator.FailMatchingContainers(ctx, testName, 1, errMsg)
 
 	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
 	err := client.Create(ctx, &ctr)
@@ -376,7 +371,7 @@ func TestContainerStop(t *testing.T) {
 		return c.Status.State == apiv1.ContainerStateExited, nil
 	})
 
-	inspected, err := orchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
 	require.NoError(t, err, "could not inspect the container")
 	require.Len(t, inspected, 1, "expected to find a single container")
 	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
@@ -390,7 +385,7 @@ func TestContainerStop(t *testing.T) {
 	t.Logf("Ensure that Container object really disappeared from the API server, '%s'...", ctr.ObjectMeta.Name)
 	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&ctr))
 
-	inspected, err = orchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	inspected, err = containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
 	require.Error(t, err, "expected the container to be gone")
 	require.Len(t, inspected, 0, "expected the container to be gone")
 }
@@ -421,7 +416,7 @@ func TestContainerDeletion(t *testing.T) {
 
 	// Subscribe to container events to verify that the container is deleted gracefully
 	ctrEventCh := chanx.NewUnboundedChan[containers.EventMessage](ctx, 2)
-	ctrEventSub, watchErr := orchestrator.WatchContainers(ctrEventCh.In)
+	ctrEventSub, watchErr := containerOrchestrator.WatchContainers(ctrEventCh.In)
 	require.NoError(t, watchErr, "could not subscribe to container events")
 	defer func() {
 		cancelErr := ctrEventSub.Cancel()
@@ -497,7 +492,7 @@ func TestContainerRestart(t *testing.T) {
 	require.NoError(t, err, "could not create a Container")
 
 	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
-	err = orchestrator.SimulateContainerExit(ctx, updatedCtr.Status.ContainerID)
+	err = containerOrchestrator.SimulateContainerExit(ctx, updatedCtr.Status.ContainerID)
 	require.NoError(t, err, "could not simulate container exit")
 
 	t.Log("Ensure container state is 'stopped'...")
@@ -506,7 +501,7 @@ func TestContainerRestart(t *testing.T) {
 		return statusUpdated, nil
 	})
 
-	_, err = orchestrator.StartContainers(ctx, []string{updatedCtr.Status.ContainerID}, containers.StreamCommandOptions{})
+	_, err = containerOrchestrator.StartContainers(ctx, []string{updatedCtr.Status.ContainerID}, containers.StreamCommandOptions{})
 	require.NoError(t, err, "could not simulate container start")
 
 	t.Log("Ensure container state is 'running'...")
@@ -747,7 +742,7 @@ func TestPersistentContainerDeletion(t *testing.T) {
 	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
 	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&ctr))
 
-	inspected, err := orchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
 	require.NoError(t, err, "expected to find a container")
 	require.Len(t, inspected, 1, "expected to find a single container")
 	require.Equal(t, inspected[0].Status, containers.ContainerStatusRunning, "expected the container to be running")
@@ -773,13 +768,13 @@ func TestPersistentContainerAlreadyExists(t *testing.T) {
 		},
 	}
 
-	id, err := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 		Name:          testName,
 		ContainerSpec: ctr.Spec,
 	})
 	require.NoError(t, err, "could not create container resource")
 
-	_, err = orchestrator.StartContainers(ctx, []string{id}, containers.StreamCommandOptions{})
+	_, err = containerOrchestrator.StartContainers(ctx, []string{id}, containers.StreamCommandOptions{})
 	require.NoError(t, err, "could not start container resource")
 
 	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
@@ -799,7 +794,7 @@ func TestPersistentContainerAlreadyExists(t *testing.T) {
 	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
 	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&ctr))
 
-	inspected, err := orchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
 	require.NoError(t, err, "expected to find a container")
 	require.Len(t, inspected, 1, "expected to find a single container")
 }
@@ -833,8 +828,8 @@ func TestContainerWithBuildContextInstanceStarts(t *testing.T) {
 
 	_, _ = ensureContainerRunning(t, ctx, &ctr)
 
-	require.True(t, orchestrator.HasImage(ctr.SpecifiedImageNameOrDefault()), "expected image to be present in the orchestrator")
-	_, found := orchestrator.GetImageId(ctr.SpecifiedImageNameOrDefault())
+	require.True(t, containerOrchestrator.HasImage(ctr.SpecifiedImageNameOrDefault()), "expected image to be present in the orchestrator")
+	_, found := containerOrchestrator.GetImageId(ctr.SpecifiedImageNameOrDefault())
 	require.True(t, found, "expected image ID to be found")
 }
 
@@ -862,13 +857,13 @@ func TestPersistentContainerWithBuildContextAlreadyExists(t *testing.T) {
 		},
 	}
 
-	id, err := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 		Name:          testName,
 		ContainerSpec: ctr.Spec,
 	})
 	require.NoError(t, err, "could not create container resource")
 
-	_, err = orchestrator.StartContainers(ctx, []string{id}, containers.StreamCommandOptions{})
+	_, err = containerOrchestrator.StartContainers(ctx, []string{id}, containers.StreamCommandOptions{})
 	require.NoError(t, err, "could not start container resource")
 
 	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
@@ -888,11 +883,11 @@ func TestPersistentContainerWithBuildContextAlreadyExists(t *testing.T) {
 	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
 	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&ctr))
 
-	inspected, err := orchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
 	require.NoError(t, err, "expected to find a container")
 	require.Len(t, inspected, 1, "expected to find a single container")
 
-	require.False(t, orchestrator.HasImage(ctr.SpecifiedImageNameOrDefault()), "expected image build to be skipped")
+	require.False(t, containerOrchestrator.HasImage(ctr.SpecifiedImageNameOrDefault()), "expected image build to be skipped")
 }
 
 func TestContainerWithBuildContextDecryptsSecrets(t *testing.T) {
@@ -933,7 +928,7 @@ func TestContainerWithBuildContextDecryptsSecrets(t *testing.T) {
 
 	require.NotEqual(t, plainText, newCtr.Spec.Build.Secrets[0].Value, "expected secret to be encrypted")
 
-	secrets, found := orchestrator.GetImageSecrets(ctr.SpecifiedImageNameOrDefault())
+	secrets, found := containerOrchestrator.GetImageSecrets(ctr.SpecifiedImageNameOrDefault())
 	require.True(t, found, "expected secrets to be present for container ")
 	require.Len(t, secrets, 1, "expected one secret to be present for container")
 	require.Equal(t, plainText, secrets[secretName], "expected secret to be decrypted")
@@ -964,7 +959,7 @@ func TestContainerStateBecomesUnknownIfContainerResourceDeleted(t *testing.T) {
 	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
 
 	t.Logf("Deleting Container resource '%s'...", updatedCtr.Status.ContainerID)
-	_, err = orchestrator.RemoveContainers(ctx, []string{updatedCtr.Status.ContainerID}, true /* force */)
+	_, err = containerOrchestrator.RemoveContainers(ctx, []string{updatedCtr.Status.ContainerID}, true /* force */)
 	require.NoError(t, err, "could not remove container resource '%s'", updatedCtr.Status.ContainerID)
 
 	t.Logf("Ensure Container object status becomes 'Unknown'...")
@@ -972,3 +967,85 @@ func TestContainerStateBecomesUnknownIfContainerResourceDeleted(t *testing.T) {
 		return c.Status.State == apiv1.ContainerStateUnknown, nil
 	})
 }
+
+// Verify that stdout and stderr logs can be captured in non-follow mode.
+// The sub-tests are verifying that the logs can be obtained when Container is running,
+// and when it has finished running.
+func TestContainerLogsNonFollow(t *testing.T) {
+	type testcase struct {
+		description        string
+		containerName      string
+		ensureDesiredState func(*testing.T, context.Context, *apiv1.Container)
+	}
+
+	const runningContainerName = "test-container-logs-non-follow-running"
+	const exitedContainerName = "test-container-logs-non-follow-exited"
+
+	testcases := []testcase{
+		{
+			description:   "running",
+			containerName: runningContainerName,
+			ensureDesiredState: func(t *testing.T, ctx context.Context, c *apiv1.Container) {
+				require.True(t, c.Status.State == apiv1.ContainerStateRunning)
+			},
+		},
+		{
+			description:   "finished",
+			containerName: exitedContainerName,
+			ensureDesiredState: func(t *testing.T, ctx context.Context, c *apiv1.Container) {
+				require.True(t, c.Status.State == apiv1.ContainerStateRunning)
+				exitErr := containerOrchestrator.SimulateContainerExit(ctx, c.Status.ContainerID)
+				require.NoError(t, exitErr)
+				_ = ensureContainerState(t, ctx, c, apiv1.ContainerStateExited)
+			},
+		},
+	}
+
+	t.Parallel()
+
+	for _, tc := range testcases {
+		t.Run(tc.description, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+
+			var imageName = tc.containerName + "-image"
+
+			ctr := apiv1.Container{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      tc.containerName,
+					Namespace: metav1.NamespaceNone,
+				},
+				Spec: apiv1.ContainerSpec{
+					Image: imageName,
+				},
+			}
+
+			t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+			err := client.Create(ctx, &ctr)
+			require.NoError(t, err, "Could not create Container '%s'", ctr.ObjectMeta.Name)
+
+			updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+
+			t.Logf("Simulating logging for Container '%s'...", ctr.ObjectMeta.Name)
+			logErr := containerOrchestrator.SimulateContainerLogging(updatedCtr.Status.ContainerID, apiv1.LogStreamSourceStdout,
+				osutil.WithNewline([]byte("Standard output log line 1")))
+			require.NoError(t, logErr)
+
+			t.Logf("Transitioning Container '%s' to desired state...", ctr.ObjectMeta.Name)
+			tc.ensureDesiredState(t, ctx, updatedCtr)
+
+			t.Logf("Ensure logs can be captured for Container '%s'...", ctr.ObjectMeta.Name)
+			opts := apiv1.LogOptions{
+				Follow:     false,
+				Source:     "stdout",
+				Timestamps: false,
+			}
+			err = waitForObjectLogs(ctx, updatedCtr, opts, [][]byte{[]byte("Standard output log line 1")}, nil)
+			require.NoError(t, err)
+		})
+	}
+}
+
+// TODO: verify that startup (stdout, stderr) logs can be captured as well.

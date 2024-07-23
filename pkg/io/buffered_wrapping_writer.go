@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-// BufferedWrappingWriter is an io.Writer that wraps another writer.
+// BufferedWrappingWriter is an io.WriteCloser that wraps another writer.
 // It will buffer the data until the target writer is available.
 // Once the target writer is available, all buffered data will be written to it.
 // Subsequent writes will be written directly to the target writer.

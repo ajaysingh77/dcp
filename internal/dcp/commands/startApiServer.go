@@ -43,6 +43,7 @@ func NewStartApiSrvCommand(log logger.Logger) (*cobra.Command, error) {
 	startApiSrvCmd.Flags().BoolVar(&serverOnly, "server-only", false, "If present, instructs DCP to start only the API server and not the controllers. This is useful for testing the API server in isolation.")
 
 	container_flags.EnsureRuntimeFlag(startApiSrvCmd.Flags())
+	container_flags.EnsureTestContainerLogSourceFlag(startApiSrvCmd.Flags())
 	cmds.AddMonitorFlags(startApiSrvCmd)
 
 	return startApiSrvCmd, nil
@@ -127,6 +128,13 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 
 		runEvtHandlers := bootstrap.DcpRunEventHandlers{
 			BeforeApiSrvShutdown: func() error {
+				// If we are in server-only mode (no standard controllers) such as when running tests,
+				// there is high likelihood that we won't be able to delete all the application resources,
+				// becasue no one will be able to complete the resource-related cleanup and remove all finalizers from the resources.
+				if serverOnly {
+					return nil
+				}
+
 				// Shut down the application.
 				//
 				// Don't use ctx here--it is already cancelled when this function is called,

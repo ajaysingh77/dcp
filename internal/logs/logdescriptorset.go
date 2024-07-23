@@ -4,37 +4,76 @@ package logs
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
+	"github.com/microsoft/usvc-apiserver/pkg/maps"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"k8s.io/apimachinery/pkg/types"
 )
 
 const (
-	oldDescriptorScavengeInterval    = 30 * time.Second
-	oldDescriptorNonUseTimeout       = 10 * time.Second
-	DefaultDescriptorDisposalTimeout = 2 * time.Second
+	oldDescriptorScavengeInterval     = 30 * time.Second
+	oldDescriptorNonUseTimeout        = 10 * time.Second
+	DefaultDescriptorDisposalTimeout  = 2 * time.Second
+	shutdownDescriptorDisposalTimeout = 5 * time.Second
 )
 
+// A LogDescriptorSet is a set of log descriptors for specific kind of a resource.
+// We have one descriptor set for Containers and another for Executables.
+// LogDescriptorSet ensures that there is at most one log descriptor per resource UID,
+// and that the descriptors are disposed when there are no clients interested in logs
+// from a corresponding resource.
 type LogDescriptorSet struct {
 	lock        *sync.Mutex
 	lifetimeCtx context.Context
 	descriptors map[types.UID]*LogDescriptor
 	logsFolder  string
+	log         logr.Logger
 }
 
-func NewLogDescriptorSet(lifetimeCtx context.Context, logsFolder string) *LogDescriptorSet {
+func NewLogDescriptorSet(lifetimeCtx context.Context, logsFolder string, log logr.Logger) *LogDescriptorSet {
 	lds := &LogDescriptorSet{
 		lock:        &sync.Mutex{},
 		lifetimeCtx: lifetimeCtx,
 		descriptors: make(map[types.UID]*LogDescriptor),
 		logsFolder:  logsFolder,
+		log:         log,
 	}
 
 	go lds.scavenger()
 
 	return lds
+}
+
+func (lds *LogDescriptorSet) Dispose() error {
+	lds.lock.Lock()
+	allDescriptors := maps.Values(lds.descriptors)
+	clear(lds.descriptors)
+	lds.lock.Unlock()
+
+	ldDisposeErrors := slices.MapConcurrent[*LogDescriptor, error](allDescriptors, func(ld *LogDescriptor) error {
+		if ld.IsDisposed() {
+			return nil // Dispose() on a disposed descriptor is a no-op, but let's not do it anyway.
+		}
+
+		// We are shutting down and the lifetime context is already done, so not using it.
+		// Best-effort attempt to do a cleanup.
+
+		disposeErr := ld.Dispose(context.Background(), shutdownDescriptorDisposalTimeout)
+		if disposeErr != nil {
+			lds.log.Error(disposeErr, "Error disposing log descriptor",
+				"ResourceName", ld.ResourceName,
+				"ResourceUID", ld.ResourceUID,
+			)
+		}
+		return disposeErr
+	}, slices.MaxConcurrency)
+
+	return errors.Join(ldDisposeErrors...)
 }
 
 // Acquires a log descriptor for the given resource UID. If the descriptor does not exist, it is created.
@@ -50,6 +89,11 @@ func (lds *LogDescriptorSet) AcquireForResource(
 	resourceUID types.UID,
 ) (*LogDescriptor, io.WriteCloser, io.WriteCloser, bool, error) {
 	lds.lock.Lock()
+
+	if lds.lifetimeCtx.Err() != nil {
+		lds.lock.Unlock()
+		return nil, nil, nil, false, lds.lifetimeCtx.Err()
+	}
 
 	ld, found := lds.descriptors[resourceUID]
 	if !found || ld.IsDisposed() {
@@ -77,9 +121,19 @@ func (lds *LogDescriptorSet) ReleaseForResource(resourceUID types.UID) {
 		return
 	}
 	delete(lds.descriptors, resourceUID)
+
+	if ld.IsDisposed() {
+		return
+	}
+
 	go func() {
-		// CONSIDER logging errors from descriptor disposal
-		_ = ld.Dispose(lds.lifetimeCtx, DefaultDescriptorDisposalTimeout)
+		disposeErr := ld.Dispose(lds.lifetimeCtx, DefaultDescriptorDisposalTimeout)
+		if disposeErr != nil {
+			lds.log.Error(disposeErr, "Error disposing log descriptor",
+				"ResourceName", ld.ResourceName,
+				"ResourceUID", resourceUID,
+			)
+		}
 	}()
 }
 
@@ -113,8 +167,13 @@ func (lds *LogDescriptorSet) scavenger() {
 			// This should be relatively fast since there are no watchers, but still,
 			// better to do this not holding the lock.
 			for _, ld := range oldDescriptors {
-				// CONSIDER logging errors from descriptor disposal
-				_ = ld.Dispose(lds.lifetimeCtx, DefaultDescriptorDisposalTimeout)
+				disposeErr := ld.Dispose(lds.lifetimeCtx, DefaultDescriptorDisposalTimeout)
+				if disposeErr != nil {
+					lds.log.Error(disposeErr, "Error disposing log descriptor",
+						"ResourceName", ld.ResourceName,
+						"ResourceUID", ld.ResourceUID,
+					)
+				}
 			}
 
 			timer.Reset(oldDescriptorScavengeInterval)

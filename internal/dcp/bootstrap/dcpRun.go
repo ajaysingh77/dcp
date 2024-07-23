@@ -35,9 +35,6 @@ func DcpRun(
 	controllers := slices.Select(allExtensions, func(ext DcpExtension) bool {
 		return slices.Contains(ext.Capabilities, extensions.ControllerCapability)
 	})
-	if len(controllers) == 0 {
-		log.Info("No controllers found. Check DCP installation.")
-	}
 
 	apiServer := apiserver.NewApiServer(string(extensions.ApiServerCapability), kconfig, log)
 
@@ -65,13 +62,16 @@ func DcpRun(
 	shutdownErrors, lifecycleMsgs := host.RunAsync(hostCtx)
 	shutdownHost := func() error {
 		cancelHostCtx()
+		var allErrors error
+
 		shutdownErr := <-shutdownErrors
 		if shutdownErr != nil {
-			log.Error(shutdownErr, "one or more services failed to shut down gracefully")
-			return fmt.Errorf("the API server or some controllers failed to shut down gracefully: %w", shutdownErr)
-		} else {
-			return nil
+			log.Error(shutdownErr, "one or more hosted services failed to shut down gracefully")
+			allErrors = errors.Join(allErrors, shutdownErr)
 		}
+
+		allErrors = errors.Join(allErrors, apiServer.Dispose())
+		return allErrors
 	}
 
 	var err error

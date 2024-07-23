@@ -21,12 +21,14 @@ import (
 )
 
 const (
-	DCP_DIAGNOSTICS_LOG_FOLDER = "DCP_DIAGNOSTICS_LOG_FOLDER" // Folder to write debug logs to (defaults to a temp folder)
-	DCP_DIAGNOSTICS_LOG_LEVEL  = "DCP_DIAGNOSTICS_LOG_LEVEL"  // Log level to include in debug logs (defaults to none)
-	DCP_LOG_SOCKET             = "DCP_LOG_SOCKET"             // Unix socket to write console logs to instead of stderr
-	verbosityFlagName          = "verbosity"
-	verbosityFlagShortName     = "v"
-	stdOutMaxLevel             = zapcore.InfoLevel
+	DCP_DIAGNOSTICS_LOG_FOLDER   = "DCP_DIAGNOSTICS_LOG_FOLDER"   // Folder to write debug logs to (defaults to a temp folder)
+	DCP_DIAGNOSTICS_LOG_LEVEL    = "DCP_DIAGNOSTICS_LOG_LEVEL"    // Log level to include in debug logs (defaults to none)
+	DCP_LOG_SOCKET               = "DCP_LOG_SOCKET"               // Unix socket to write console logs to instead of stderr
+	DCP_PRESERVE_EXECUTABLE_LOGS = "DCP_PRESERVE_EXECUTABLE_LOGS" // If truthy ("1", "true", "on", "yes"), preserve logs from executable runs
+
+	verbosityFlagName      = "verbosity"
+	verbosityFlagShortName = "v"
+	stdOutMaxLevel         = zapcore.InfoLevel
 )
 
 var (
@@ -161,6 +163,10 @@ func PreserveSessionFolder() {
 
 func CleanupSessionFolderIfNeeded() {
 	if !shouldCleanupSessionFolder {
+		return
+	}
+
+	if osutil.EnvVarSwitchEnabled(DCP_PRESERVE_EXECUTABLE_LOGS) {
 		return
 	}
 

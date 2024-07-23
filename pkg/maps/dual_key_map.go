@@ -117,19 +117,33 @@ func (m *DualKeyMap[K1, K2, V]) DeleteBySecondKey(k2 K2) {
 func (m *DualKeyMap[K1, K2, V]) DebugDump(w io.Writer) {
 	fmt.Fprintf(w, "{\n")
 
-	for k1, entry := range m.firstMap {
-		k2 := entry.k2
-		val := entry.val
-
+	m.Range(func(k1 K1, k2 K2, val V) bool {
 		fmt.Fprint(w, " (")
 		fmt.Fprintf(w, "%v", k1)
 		fmt.Fprint(w, ", ")
 		fmt.Fprintf(w, "%v", k2)
 		fmt.Fprint(w, "): ")
 		fmt.Fprintf(w, "%v,\n", val)
-	}
+		return true
+	})
 
 	fmt.Fprint(w, "}")
+}
+
+func (m *DualKeyMap[K1, K2, V]) Range(f func(k1 K1, k2 K2, val V) bool) {
+	for k1, entry := range m.firstMap {
+		k2 := entry.k2
+		val := entry.val
+
+		if !f(k1, k2, val) {
+			break
+		}
+	}
+}
+
+func (m *DualKeyMap[K1, K2, V]) Clear() {
+	clear(m.firstMap)
+	clear(m.secondMap)
 }
 
 type DeferredMapOperation[K1 comparable, K2 comparable, V any] func(*DualKeyMap[K1, K2, V])
@@ -250,4 +264,29 @@ func (m *SynchronizedDualKeyMap[K1, K2, V]) DebugDump(w io.Writer) {
 	defer m.lock.RUnlock()
 
 	m.inner.DebugDump(w)
+}
+
+func (m *SynchronizedDualKeyMap[K1, K2, V]) Range(f func(k1 K1, k2 K2, val V) bool) {
+	m.lock.RLock()
+	var entries []dualKeyMapEntry[K1, K2, V]
+	m.inner.Range(func(k1 K1, k2 K2, val V) bool {
+		entries = append(entries, dualKeyMapEntry[K1, K2, V]{k1, k2, val})
+		return true
+	})
+	m.lock.RUnlock()
+
+	// Now we can iterate over the entries without holding the lock,
+	// effectively iterating over a snapshot of the map.
+	for _, entry := range entries {
+		if !f(entry.k1, entry.k2, entry.val) {
+			break
+		}
+	}
+}
+
+func (m *SynchronizedDualKeyMap[K1, K2, V]) Clear() {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	m.inner.Clear()
 }

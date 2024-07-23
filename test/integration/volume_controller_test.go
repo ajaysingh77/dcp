@@ -23,7 +23,7 @@ func ensureVolumeCreated(t *testing.T, ctx context.Context, volume *apiv1.Contai
 
 	var inspected []containers.InspectedVolume
 	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
-		inspectedVolumes, err := orchestrator.InspectVolumes(ctx, []string{volume.Spec.Name})
+		inspectedVolumes, err := containerOrchestrator.InspectVolumes(ctx, []string{volume.Spec.Name})
 		if err != nil {
 			if !errors.Is(err, containers.ErrNotFound) {
 				return false, err
@@ -101,7 +101,7 @@ func TestVolumeDeletion(t *testing.T) {
 	waitObjectDeleted[apiv1.ContainerVolume](t, ctx, ctrl_client.ObjectKeyFromObject(&vol))
 
 	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
-		_, inspectionErr := orchestrator.InspectVolumes(ctx, []string{testName})
+		_, inspectionErr := containerOrchestrator.InspectVolumes(ctx, []string{testName})
 		if inspectionErr != nil {
 			if errors.Is(inspectionErr, containers.ErrNotFound) {
 				return true, nil

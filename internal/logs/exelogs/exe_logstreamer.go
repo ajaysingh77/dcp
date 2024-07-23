@@ -142,4 +142,18 @@ func (els *executableLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEve
 	}
 }
 
+func (els *executableLogStreamer) Dispose() error {
+	els.lock.Lock()
+	defer els.lock.Unlock()
+
+	for _, objStreams := range els.activeStreams {
+		for _, cancel := range objStreams {
+			cancel()
+		}
+	}
+
+	clear(els.activeStreams)
+	return nil
+}
+
 var _ apiv1.ResourceLogStreamer = (*executableLogStreamer)(nil)

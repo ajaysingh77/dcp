@@ -1,13 +1,15 @@
-package io
+package io_test
 
 import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 )
 
 func TestMultipleRwOps(t *testing.T) {
-	reader, writer := NewBufferedPipe()
+	reader, writer := usvc_io.NewBufferedPipe()
 	sync := make(chan struct{})
 
 	doReading := func(what string) {

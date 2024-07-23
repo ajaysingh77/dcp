@@ -60,7 +60,9 @@ func (host *Host) Run(ctx context.Context, lifecycleMsgs chan<- LifecycleMessage
 	}
 
 	if len(host.Services) == 0 {
-		return errors.New("at least one service is required")
+		// Nothing really to do. This can happen if we are running in server-only mode
+		// (no controllers, and no other extensions).
+		return nil
 	}
 
 	if host.Logger == (logr.Logger{}) {

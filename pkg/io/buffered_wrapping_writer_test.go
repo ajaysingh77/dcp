@@ -1,14 +1,16 @@
-package io
+package io_test
 
 import (
 	"bytes"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 )
 
 func TestTargetWriterSetImmediately(t *testing.T) {
-	bww := NewBufferedWrappingWriter()
+	bww := usvc_io.NewBufferedWrappingWriter()
 	target := &bytes.Buffer{}
 	err := bww.SetTarget(target)
 	require.NoError(t, err)
@@ -20,7 +22,7 @@ func TestTargetWriterSetImmediately(t *testing.T) {
 }
 
 func TestTargetWriterSetAfterWrite(t *testing.T) {
-	bww := NewBufferedWrappingWriter()
+	bww := usvc_io.NewBufferedWrappingWriter()
 
 	content := "alpha"
 	n, err := bww.Write([]byte(content))
@@ -34,7 +36,7 @@ func TestTargetWriterSetAfterWrite(t *testing.T) {
 }
 
 func TestWriterUsableAfterTargetSet(t *testing.T) {
-	bww := NewBufferedWrappingWriter()
+	bww := usvc_io.NewBufferedWrappingWriter()
 
 	content1 := "alpha"
 	n, err := bww.Write([]byte(content1))

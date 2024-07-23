@@ -10,19 +10,20 @@ const (
 	timestampFormat = "2006-01-02T15:04:05.000Z07:00" // RFC3339 with milliseconds, fixed width
 )
 
-// TimestampWriter is an io.Writer that wraps another writer and appends timestamps before the first content
+// TimestampWriter is an io.WriteCloser that wraps another writer and appends timestamps before the first content
 // of each new line. Doesn't append timestamps to empty lines.
 type timestampWriter struct {
 	// The underlying writer to write to
-	inner io.Writer
+	inner io.WriteCloser
 	// Do we need to write a timestamp before we output the next byte?
 	needsTimestamp bool
 	// Buffer for processing output
 	buffer *bytes.Buffer
+	closed bool
 }
 
 // NewTimestampWriter creates a new TimestampWriter that wraps the given writer and sets needsTimestamp to true.
-func NewTimestampWriter(inner io.Writer) *timestampWriter {
+func NewTimestampWriter(inner io.WriteCloser) io.WriteCloser {
 	return &timestampWriter{
 		inner:          inner,
 		needsTimestamp: true,
@@ -32,6 +33,10 @@ func NewTimestampWriter(inner io.Writer) *timestampWriter {
 
 // Writes the given bytes, appending a timestamp in RFC3339 format before the first content of each new line.
 func (tw *timestampWriter) Write(p []byte) (int, error) {
+	if tw.closed {
+		return 0, ErrClosedWriter
+	}
+
 	// Reset the buffer before every read
 	tw.buffer.Reset()
 
@@ -71,3 +76,13 @@ func (tw *timestampWriter) Write(p []byte) (int, error) {
 	// a short write error in the caller.
 	return len(p), nil
 }
+
+func (tw *timestampWriter) Close() error {
+	if tw.closed {
+		return nil
+	}
+	tw.closed = true
+	return tw.inner.Close()
+}
+
+var _ io.WriteCloser = (*timestampWriter)(nil)

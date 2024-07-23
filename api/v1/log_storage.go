@@ -36,8 +36,12 @@ const (
 type ResourceLogStreamer interface {
 	// StreamLogs returns a boolean indicating if the logs are ready to be streamed, a channel that will be closed when the logs are done streaming, and an error if one occurred.
 	StreamLogs(ctx context.Context, dest io.Writer, obj apiserver_resource.Object, opts *LogOptions, log logr.Logger) (ResourceStreamStatus, <-chan struct{}, error)
+
 	// Callback when a resource of the type this streamer is registered for is deleted to allow for resource cleanup.
 	OnResourceUpdated(evt ResourceWatcherEvent, log logr.Logger)
+
+	// Disposes the log streamer and underlying resources.
+	Dispose() error
 }
 
 // +kubebuilder:object:generate=false

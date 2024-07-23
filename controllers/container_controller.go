@@ -740,12 +740,18 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 			buildOptions := containers.BuildImageOptions{
 				IidFile:               filepath.Join(usvc_io.DcpTempDir, fmt.Sprintf("%s_iid_%s", container.Name, container.UID)),
 				ContainerBuildContext: rcd.runSpec.Build,
-				StreamCommandOptions: containers.StreamCommandOptions{
-					// Always append timestamp to startup logs; we'll strip them out if the streaming request doesn't ask for them
-					StdOutStream: usvc_io.NewTimestampWriter(rcd.startupStdOutFile),
-					StdErrStream: usvc_io.NewTimestampWriter(rcd.startupStdErrFile),
-				},
 			}
+			// Always append timestamp to startup logs; we'll strip them out if the streaming request doesn't ask for them
+			startupStdOutFile := rcd.startupStdOutFile.Load()
+			startupStdErrFile := rcd.startupStdErrFile.Load()
+			streamOptions := containers.StreamCommandOptions{}
+			if startupStdOutFile != nil {
+				streamOptions.StdOutStream = usvc_io.NewTimestampWriter(startupStdOutFile)
+			}
+			if startupStdErrFile != nil {
+				streamOptions.StdErrStream = usvc_io.NewTimestampWriter(startupStdErrFile)
+			}
+			buildOptions.StreamCommandOptions = streamOptions
 
 			buildErr := r.orchestrator.BuildImage(buildCtx, buildOptions)
 			if buildErr != nil {
@@ -970,6 +976,7 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 	}
 
 	rcd.closeStartupLogFiles(log)
+	defer rcd.deleteStartupLogFiles(log)
 
 	if container.Spec.Persistent {
 		log.V(1).Info("Container is not using Managed mode, leaving underlying resources")
@@ -1623,4 +1630,11 @@ func (r *ContainerReconciler) onShutdown() {
 	r.lock.Lock()
 	defer r.lock.Unlock()
 	r.cancelContainerWatch()
+
+	r.runningContainers.Range(func(_ types.NamespacedName, _ string, rcd *runningContainerData) bool {
+		rcd.closeStartupLogFiles(r.Log)
+		rcd.deleteStartupLogFiles(r.Log)
+		return true
+	})
+	r.runningContainers.Clear()
 }

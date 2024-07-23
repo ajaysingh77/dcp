@@ -50,11 +50,11 @@ import (
 )
 
 var (
-	testProcessExecutor *ctrl_testutil.TestProcessExecutor
-	ideRunner           *ctrl_testutil.TestIdeRunner
-	client              ctrl_client.Client
-	restClient          *clientgorest.RESTClient
-	orchestrator        *ctrl_testutil.TestContainerOrchestrator
+	testProcessExecutor   *ctrl_testutil.TestProcessExecutor
+	ideRunner             *ctrl_testutil.TestIdeRunner
+	client                ctrl_client.Client
+	restClient            *clientgorest.RESTClient
+	containerOrchestrator *ctrl_testutil.TestContainerOrchestrator
 )
 
 const (
@@ -119,6 +119,12 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 		return kubeconfigErr
 	}
 
+	var orchestratorErr error
+	containerOrchestrator, orchestratorErr = ctrl_testutil.NewTestContainerOrchestrator(ctx, ctrl.Log.WithName("TestContainerOrchestrator"))
+	if orchestratorErr != nil {
+		return fmt.Errorf("failed to create test container orchestrator: %w", orchestratorErr)
+	}
+
 	// We are going to stop the API server only after all the controller manager is done.
 	// This avoids a bunch of shutdown errors from the manager.
 	dcpCtx, stopDcp := context.WithCancel(context.Background())
@@ -129,6 +135,7 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 	_ = context.AfterFunc(ctx, func() {
 		<-managerDone.Wait()
 		stopDcp()
+		containerOrchestrator.Close()
 	})
 
 	testSecretKey := make([]byte, 24)
@@ -141,7 +148,15 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 	// Enable secrets for this test
 	secrets.SetSecretsKey(testSecretKey)
 
-	cmd := exec.CommandContext(ctx, dcpPath, "start-apiserver", "--server-only", "--kubeconfig", kubeconfigPath, "--monitor", strconv.Itoa(os.Getpid()))
+	// Do not use exec.CommandContext() because on Unix-like OSes it will kill the process DEAD
+	// immediately after the context is cancelled, preventing dcp from cleaning up properly.
+	cmd := exec.Command(dcpPath,
+		"start-apiserver",
+		"--server-only",
+		"--kubeconfig", kubeconfigPath,
+		"--test-container-log-source", containerOrchestrator.GetSocketFilePath(),
+		"--monitor", strconv.Itoa(os.Getpid()),
+	)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -196,7 +211,6 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 	}
 
 	testProcessExecutor = ctrl_testutil.NewTestProcessExecutor(ctx)
-	orchestrator = ctrl_testutil.NewTestContainerOrchestrator(ctrl.Log.WithName("TestContainerOrchestrator"))
 	exeRunner := exerunners.NewProcessExecutableRunner(testProcessExecutor)
 	ideRunner = ctrl_testutil.NewTestIdeRunner(ctx)
 
@@ -225,7 +239,7 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 		ctx,
 		mgr.GetClient(),
 		ctrl.Log.WithName("NetworkReconciler"),
-		orchestrator,
+		containerOrchestrator,
 	)
 	if err = networkR.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("failed to initialize Network reconciler: %w", err)
@@ -235,7 +249,7 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 		ctx,
 		mgr.GetClient(),
 		ctrl.Log.WithName("ContainerReconciler"),
-		orchestrator,
+		containerOrchestrator,
 	)
 	if err = containerR.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("failed to initialize Container reconciler: %w", err)
@@ -244,7 +258,7 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 	volumeR := controllers.NewVolumeReconciler(
 		mgr.GetClient(),
 		ctrl.Log.WithName("VolumeReconciler"),
-		orchestrator,
+		containerOrchestrator,
 	)
 	if err = volumeR.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("failed to initialize ContainerVolume reconciler: %w", err)

@@ -1,4 +1,4 @@
-package io
+package io_test
 
 import (
 	"fmt"
@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 	"github.com/stretchr/testify/require"
 )
@@ -18,7 +19,7 @@ func TestTimestampAwareReaderIncludesNonTimestampPrefix(t *testing.T) {
 	testReader := testutil.NewTestReader()
 	testReader.AddEntry(testutil.AsByteTimelineEntries([]byte(testText)...)...)
 
-	timestampReader := NewTimestampAwareReader(testReader, true)
+	timestampReader := usvc_io.NewTimestampAwareReader(testReader, true)
 	readBytes := make([]byte, len(testText))
 	n, err := timestampReader.Read(readBytes)
 	if err != nil && err != io.EOF {
@@ -37,7 +38,7 @@ func TestTimestampAwareReaderDoesNotIncludeTimestampPrefix(t *testing.T) {
 	testReader := testutil.NewTestReader()
 	testReader.AddEntry(testutil.AsByteTimelineEntries([]byte(testText)...)...)
 
-	timestampReader := NewTimestampAwareReader(testReader, false)
+	timestampReader := usvc_io.NewTimestampAwareReader(testReader, false)
 	readBytes := make([]byte, len(testText))
 	n, err := timestampReader.Read(readBytes)
 	if err != nil && err != io.EOF {
@@ -56,7 +57,7 @@ func TestTimestampAwareReaderIncludesTimestampPrefixIfRequested(t *testing.T) {
 	testReader := testutil.NewTestReader()
 	testReader.AddEntry(testutil.AsByteTimelineEntries([]byte(testText)...)...)
 
-	timestampReader := NewTimestampAwareReader(testReader, true)
+	timestampReader := usvc_io.NewTimestampAwareReader(testReader, true)
 	readBytes := make([]byte, len(testText))
 	n, err := timestampReader.Read(readBytes)
 	if err != nil && err != io.EOF {
@@ -75,7 +76,7 @@ func TestTimestampAwareReaderIgnoresTimestampWithNoSpace(t *testing.T) {
 	testReader := testutil.NewTestReader()
 	testReader.AddEntry(testutil.AsByteTimelineEntries([]byte(testText)...)...)
 
-	timestampReader := NewTimestampAwareReader(testReader, false)
+	timestampReader := usvc_io.NewTimestampAwareReader(testReader, false)
 	readBytes := make([]byte, len(testText))
 	n, err := timestampReader.Read(readBytes)
 	if err != nil && err != io.EOF {

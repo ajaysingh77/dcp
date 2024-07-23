@@ -31,11 +31,6 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
 
-const (
-	DCP_PRESERVE_EXECUTABLE_LOGS = "DCP_PRESERVE_EXECUTABLE_LOGS"
-	DCP_SKIP_MONITOR_PROCESSES   = "DCP_SKIP_MONITOR_PROCESSES"
-)
-
 // ExecutableReconciler reconciles a Executable object
 type ExecutableReconciler struct {
 	ctrl_client.Client
@@ -474,7 +469,7 @@ func (r *ExecutableReconciler) updateRunState(ctx context.Context, exe *apiv1.Ex
 func (r *ExecutableReconciler) deleteOutputFiles(exe *apiv1.Executable, log logr.Logger) {
 	// Do not bother updating the Executable object--this method is called when the object is being deleted.
 
-	if osutil.EnvVarSwitchEnabled(DCP_PRESERVE_EXECUTABLE_LOGS) {
+	if osutil.EnvVarSwitchEnabled(logger.DCP_PRESERVE_EXECUTABLE_LOGS) {
 		return
 	}
 
