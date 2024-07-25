@@ -317,7 +317,7 @@ func ensureBuildingState(
 
 		rcd = newRunningContainerData(container)
 		rcd.containerState = apiv1.ContainerStateBuilding
-		rcd.ensureStartupOutputFiles(container, log)
+		rcd.ensureStartupLogFiles(container, log)
 		r.runningContainers.Store(container.NamespacedName(), rcd.containerID, rcd)
 		r.ensureContainerWatch(container, log)
 
@@ -353,7 +353,7 @@ func ensureStartingState(
 
 		rcd = newRunningContainerData(container)
 		rcd.containerState = apiv1.ContainerStateStarting
-		rcd.ensureStartupOutputFiles(container, log)
+		rcd.ensureStartupLogFiles(container, log)
 		r.runningContainers.Store(container.NamespacedName(), rcd.containerID, rcd)
 		r.ensureContainerWatch(container, log)
 
@@ -363,7 +363,7 @@ func ensureStartingState(
 	} else if !rcd.startupAttempted {
 		// We haven't attempted to start the Container yet (likely we're here after build completed).
 
-		rcd.ensureStartupOutputFiles(container, log)
+		rcd.ensureStartupLogFiles(container, log)
 
 		r.createContainer(ctx, container, rcd, log, noDelay)
 		change |= statusChanged
@@ -741,19 +741,14 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 				IidFile:               filepath.Join(usvc_io.DcpTempDir, fmt.Sprintf("%s_iid_%s", container.Name, container.UID)),
 				ContainerBuildContext: rcd.runSpec.Build,
 			}
-			// Always append timestamp to startup logs; we'll strip them out if the streaming request doesn't ask for them
-			startupStdOutFile := rcd.startupStdOutFile.Load()
-			startupStdErrFile := rcd.startupStdErrFile.Load()
-			streamOptions := containers.StreamCommandOptions{}
-			if startupStdOutFile != nil {
-				streamOptions.StdOutStream = usvc_io.NewTimestampWriter(startupStdOutFile)
+			startupStdoutWriter, startupStderrWriter := rcd.getStartupLogWriters()
+			buildOptions.StreamCommandOptions = containers.StreamCommandOptions{
+				StdOutStream: startupStdoutWriter,
+				StdErrStream: startupStderrWriter,
 			}
-			if startupStdErrFile != nil {
-				streamOptions.StdErrStream = usvc_io.NewTimestampWriter(startupStdErrFile)
-			}
-			buildOptions.StreamCommandOptions = streamOptions
 
 			buildErr := r.orchestrator.BuildImage(buildCtx, buildOptions)
+			startupTaskFinished(startupStdoutWriter, startupStderrWriter)
 			if buildErr != nil {
 				log.Error(buildErr, "could not build the image")
 				return buildErr
@@ -853,7 +848,11 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				},
 			}...)
 
-			streamOptions := rcd.getStartupStreamOptions()
+			startupStdoutWriter, startupStderrWriter := rcd.getStartupLogWriters()
+			streamOptions := containers.StreamCommandOptions{
+				StdOutStream: startupStdoutWriter,
+				StdErrStream: startupStderrWriter,
+			}
 			creationOptions := containers.CreateContainerOptions{
 				ContainerSpec:        *rcd.runSpec,
 				Name:                 containerName,
@@ -861,9 +860,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				StreamCommandOptions: streamOptions,
 			}
 			containerID, err := r.orchestrator.CreateContainer(startupCtx, creationOptions)
-
-			// This starting attempt is done; add a separator line to the startup logs.
-			rcd.onStartupTaskFinished()
+			startupTaskFinished(startupStdoutWriter, startupStderrWriter)
 
 			// There are errors that can still result in a valid container ID, so we need to store it if one was returned
 			rcd.containerID = containerID
@@ -884,7 +881,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 
 			if rcd.runSpec.Networks == nil {
 				_, err = r.orchestrator.StartContainers(startupCtx, []string{containerID}, streamOptions)
-				rcd.onStartupTaskFinished()
+				startupTaskFinished(startupStdoutWriter, startupStderrWriter)
 				if err != nil {
 					log.Error(err, "could not start the container", "ContainerID", containerID)
 					return err
@@ -1041,7 +1038,14 @@ func (r *ContainerReconciler) handleInitialNetworkConnections(
 		return false, nil
 	}
 
-	if _, err = r.orchestrator.StartContainers(ctx, []string{rcd.containerID}, rcd.getStartupStreamOptions()); err != nil {
+	startupStdoutWriter, startupStderrWriter := rcd.getStartupLogWriters()
+	streamOptions := containers.StreamCommandOptions{
+		StdOutStream: startupStdoutWriter,
+		StdErrStream: startupStderrWriter,
+	}
+	_, err = r.orchestrator.StartContainers(ctx, []string{rcd.containerID}, streamOptions)
+	startupTaskFinished(startupStdoutWriter, startupStderrWriter)
+	if err != nil {
 		log.Error(err, "failed to start Container", "ContainerID", rcd.containerID)
 		return false, err
 	}
@@ -1637,4 +1641,12 @@ func (r *ContainerReconciler) onShutdown() {
 		return true
 	})
 	r.runningContainers.Clear()
+}
+
+func startupTaskFinished(writers ...usvc_io.ParagraphWriter) {
+	for _, writer := range writers {
+		if writer != nil {
+			writer.NewParagraph()
+		}
+	}
 }

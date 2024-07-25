@@ -1562,6 +1562,12 @@ func TestExecutableLogsFollow(t *testing.T) {
 		},
 	}
 
+	lines := [][]byte{
+		[]byte("Standard output log line 1"),
+		[]byte("Standard output log line 2"),
+		[]byte("Standard output log line 3"),
+	}
+
 	t.Parallel()
 
 	for _, tc := range testcases {
@@ -1587,12 +1593,6 @@ func TestExecutableLogsFollow(t *testing.T) {
 				Spec: apiv1.ExecutableSpec{
 					ExecutablePath: "path/to/" + tc.exeName,
 				},
-			}
-
-			lines := [][]byte{
-				[]byte("Standard output log line 1"),
-				[]byte("Standard output log line 2"),
-				[]byte("Standard output log line 3"),
 			}
 
 			testProcessExecutor.InstallAutoExecution(ctrl_testutil.AutoExecution{
@@ -1771,8 +1771,6 @@ func TestExecutableLogsTimestamped(t *testing.T) {
 	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
 	err := client.Create(ctx, exe.DeepCopy())
 	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
-
-	const rfc3339MiliTimestampRegex = `\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z`
 
 	t.Logf("Ensure logs for Executable '%s' can be captured...", exe.ObjectMeta.Name)
 	opts := apiv1.LogOptions{

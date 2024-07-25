@@ -16,12 +16,64 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/internal/containers"
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 )
+
+// A structure representing startup log file with an associated ParagraphWriter.
+// Having a shared writer enables separation of logs from multiple startup activities
+// (image build, container creation, container start, network configuration).
+type startupLog struct {
+	file     *os.File
+	writer   usvc_io.ParagraphWriter
+	disposed atomic.Bool
+}
+
+func newStartupLog(ctr *apiv1.Container, logSource apiv1.LogStreamSource) (*startupLog, error) {
+	var fileNameTemplate string
+	switch logSource {
+	case apiv1.LogStreamSourceStartupStdout:
+		fileNameTemplate = "%s_startout_%s"
+	case apiv1.LogStreamSourceStartupStderr:
+		fileNameTemplate = "%s_starterr_%s"
+	default:
+		return nil, fmt.Errorf("unknown log source %v", logSource) // Should never happen
+	}
+
+	file, err := usvc_io.OpenTempFile(fmt.Sprintf(fileNameTemplate, ctr.Name, ctr.UID), os.O_RDWR|os.O_CREATE|os.O_APPEND, osutil.PermissionOnlyOwnerReadWrite)
+	if err != nil {
+		return nil, err
+	}
+
+	// Always append timestamp to startup logs; we'll strip them out if the streaming request doesn't ask for them
+	writer := usvc_io.NewParagraphWriter(usvc_io.NewTimestampWriter(file), osutil.LineSep())
+
+	return &startupLog{file: file, writer: writer}, nil
+}
+
+func (sl *startupLog) Close() error {
+	return sl.writer.Close() // Will close the underlying file
+}
+
+func (sl *startupLog) Dispose() error {
+	alive := sl.disposed.CompareAndSwap(false, true)
+	if !alive {
+		return nil
+	}
+
+	var disposeErr error
+	closeErr := sl.Close()
+	if closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+		disposeErr = closeErr
+	}
+
+	if err := os.Remove(sl.file.Name()); err != nil {
+		disposeErr = errors.Join(disposeErr, err)
+	}
+	return disposeErr
+}
 
 // Data that we keep, in memory, about running containers.
 type runningContainerData struct {
@@ -49,13 +101,18 @@ type runningContainerData struct {
 	// Tracks whether startup has been attempted for the container
 	startupAttempted bool
 
-	// Standard output from startup commands will be streamed to this file for log streaming support.
-	// Atomic pointer is used because the file will be manipulated by the controller and the shutdown handler,
-	// which may happen concurrently. Same applies to the startup stderr file below.
-	startupStdOutFile atomic.Pointer[os.File]
+	// Standard output content from startup commands will be saved to this log and read back when DCP clients request them.
+	// Atomic pointer is used because the underlying file/writer combo is manipulated by the controller
+	// and the shutdown handler, which may act on it concurrently. Same applies to the startup stderr log below.
+	//
+	// Typically the file is filled during Container startup and then cleaned up when DCP is shut down,
+	// or when the Container is deleted. There is a small chance
+	// that the file might not be deleted if Container startup is in progress when DCP is asked to shut down,
+	// but we do not consider this a problem worth slowing down the shutdown process.
+	startupStdoutLog atomic.Pointer[startupLog]
 
-	// Standard error from startup commands will be streamed to this file for log streaming support.
-	startupStdErrFile atomic.Pointer[os.File]
+	// Standard error content from startup commands will be saved to this log.
+	startupStderrLog atomic.Pointer[startupLog]
 
 	// The time the start attempt finished (successfully or not).
 	startAttemptFinishedAt metav1.Time
@@ -96,7 +153,7 @@ func newRunningContainerData(ctr *apiv1.Container) *runningContainerData {
 }
 
 // Returns another instance of runningContainerData with the same data.
-// The copy is safe to update independently of the original EXCEPT for the startup file pointers,
+// The copy is safe to update independently of the original EXCEPT for the startup log pointers,
 // which are shared between the original and the copy.
 func (rcd *runningContainerData) clone() *runningContainerData {
 	clone := runningContainerData{
@@ -115,56 +172,52 @@ func (rcd *runningContainerData) clone() *runningContainerData {
 		clone.exitCode = new(int32)
 		*clone.exitCode = *rcd.exitCode
 	}
-	clone.startupStdErrFile.Store(rcd.startupStdErrFile.Load())
-	clone.startupStdOutFile.Store(rcd.startupStdOutFile.Load())
+	clone.startupStderrLog.Store(rcd.startupStderrLog.Load())
+	clone.startupStdoutLog.Store(rcd.startupStdoutLog.Load())
 
 	return &clone
 }
 
-func (rcd *runningContainerData) ensureStartupOutputFiles(ctr *apiv1.Container, log logr.Logger) {
-	if rcd.startupStdOutFile.Load() != nil || rcd.startupStdErrFile.Load() != nil {
+func (rcd *runningContainerData) ensureStartupLogFiles(ctr *apiv1.Container, log logr.Logger) {
+	if rcd.startupStdoutLog.Load() != nil || rcd.startupStderrLog.Load() != nil {
 		log.V(1).Info("startup output files already created")
 		return
 	}
 
-	// We might perform multiple startup attempts, so if the file(s) already exist, we will reuse them.
-
-	stdOutFile, err := usvc_io.OpenTempFile(fmt.Sprintf("%s_startout_%s", ctr.Name, ctr.UID), os.O_RDWR|os.O_CREATE|os.O_APPEND, osutil.PermissionOnlyOwnerReadWrite)
-	if err != nil {
-		log.Error(err, "failed to create temporary file for capturing container startup standard output data")
+	stdoutLog, stdoutLogErr := newStartupLog(ctr, apiv1.LogStreamSourceStartupStdout)
+	if stdoutLogErr != nil {
+		log.Error(stdoutLogErr, "failed to create temporary file for capturing container startup standard output data", "Container", ctr.NamespacedName().String())
 	} else {
-		swapped := rcd.startupStdOutFile.CompareAndSwap(nil, stdOutFile)
+		swapped := rcd.startupStdoutLog.CompareAndSwap(nil, stdoutLog)
 		if !swapped {
 			// This can happen if shutdown coincides with creation of a Container.
-			_ = stdOutFile.Close()
-			_ = os.Remove(stdOutFile.Name())
+			_ = stdoutLog.Dispose()
 		}
 	}
 
-	stdErrFile, err := usvc_io.OpenTempFile(fmt.Sprintf("%s_starterr_%s", ctr.Name, ctr.UID), os.O_RDWR|os.O_CREATE|os.O_APPEND, osutil.PermissionOnlyOwnerReadWrite)
-	if err != nil {
-		log.Error(err, "failed to create temporary file for capturing container startup standard error data")
+	stderrLog, stderrLogErr := newStartupLog(ctr, apiv1.LogStreamSourceStartupStderr)
+	if stderrLogErr != nil {
+		log.Error(stderrLogErr, "failed to create temporary file for capturing container startup standard error data", "Container", ctr.NamespacedName().String())
 	} else {
-		swapped := rcd.startupStdErrFile.CompareAndSwap(nil, stdErrFile)
+		swapped := rcd.startupStderrLog.CompareAndSwap(nil, stderrLog)
 		if !swapped {
-			_ = stdErrFile.Close()
-			_ = os.Remove(stdErrFile.Name())
+			_ = stderrLog.Dispose()
 		}
 	}
 }
 
 func (rcd *runningContainerData) closeStartupLogFiles(log logr.Logger) {
-	startupStdOutFile := rcd.startupStdOutFile.Load()
-	if startupStdOutFile != nil {
-		closeErr := startupStdOutFile.Close()
+	stdoutLog := rcd.startupStdoutLog.Load()
+	if stdoutLog != nil {
+		closeErr := stdoutLog.Close()
 		if closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
 			log.Error(closeErr, "failed to close startup standard output file")
 		}
 	}
 
-	startupStdErrFile := rcd.startupStdErrFile.Load()
-	if startupStdErrFile != nil {
-		closeErr := startupStdErrFile.Close()
+	stderrLog := rcd.startupStderrLog.Load()
+	if stderrLog != nil {
+		closeErr := stderrLog.Close()
 		if closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
 			log.Error(closeErr, "failed to close startup standard error file")
 		}
@@ -172,49 +225,34 @@ func (rcd *runningContainerData) closeStartupLogFiles(log logr.Logger) {
 }
 
 func (rcd *runningContainerData) deleteStartupLogFiles(_ logr.Logger) {
-	startupStdOutFile := rcd.startupStdOutFile.Swap(nil)
-	if startupStdOutFile != nil {
+	stdoutLog := rcd.startupStdoutLog.Swap(nil)
+	if stdoutLog != nil {
 		// Best effort. In particular, if multiple clones of runningContainerData share a file,
 		// only first deletion attempt will succeed.
-		_ = os.Remove(startupStdOutFile.Name())
+		_ = stdoutLog.Dispose()
 	}
 
-	startupStdErrFile := rcd.startupStdErrFile.Swap(nil)
-	if startupStdErrFile != nil {
+	stderrLog := rcd.startupStderrLog.Swap(nil)
+	if stderrLog != nil {
 		// Best effort, see comment above.
-		_ = os.Remove(startupStdErrFile.Name())
+		_ = stderrLog.Dispose()
 	}
 }
 
-func (rcd *runningContainerData) onStartupTaskFinished() {
-	// One of the startup tasks is done; make sure that the startup output file(s)
-	// have a couple of blank lines separating the current content from what follows (best effort).
-	startupStdOutFile := rcd.startupStdOutFile.Load()
-	if startupStdOutFile != nil {
-		_, _ = startupStdOutFile.Write(osutil.WithNewline(osutil.WithNewline(nil)))
+func (rcd *runningContainerData) getStartupLogWriters() (usvc_io.ParagraphWriter, usvc_io.ParagraphWriter) {
+	var stdoutWriter, stderrWriter usvc_io.ParagraphWriter
+
+	stdoutLog := rcd.startupStdoutLog.Load()
+	if stdoutLog != nil {
+		stdoutWriter = stdoutLog.writer
 	}
 
-	startupStdErrFile := rcd.startupStdErrFile.Load()
-	if startupStdErrFile != nil {
-		_, _ = startupStdErrFile.Write(osutil.WithNewline(osutil.WithNewline(nil)))
-	}
-}
-
-func (rcd *runningContainerData) getStartupStreamOptions() containers.StreamCommandOptions {
-	var streamOptions containers.StreamCommandOptions
-
-	// Always append timestamp to startup logs; we'll strip them out if the streaming request doesn't ask for them
-	startupStdOutFile := rcd.startupStdOutFile.Load()
-	if startupStdOutFile != nil {
-		streamOptions.StdOutStream = usvc_io.NewTimestampWriter(startupStdOutFile)
+	stderrLog := rcd.startupStderrLog.Load()
+	if stderrLog != nil {
+		stderrWriter = stderrLog.writer
 	}
 
-	startupStdErrFile := rcd.startupStdErrFile.Load()
-	if startupStdErrFile != nil {
-		streamOptions.StdErrStream = usvc_io.NewTimestampWriter(startupStdErrFile)
-	}
-
-	return streamOptions
+	return stdoutWriter, stderrWriter
 }
 
 func (rcd *runningContainerData) hasValidContainerID() bool {
@@ -276,15 +314,15 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container) objectChange {
 		}
 	}
 
-	startupStdOutFile := rcd.startupStdOutFile.Load()
-	if startupStdOutFile != nil && ctr.Status.StartupStdOutFile == "" {
-		ctr.Status.StartupStdOutFile = startupStdOutFile.Name()
+	startupStoutLog := rcd.startupStdoutLog.Load()
+	if startupStoutLog != nil && ctr.Status.StartupStdOutFile == "" {
+		ctr.Status.StartupStdOutFile = startupStoutLog.file.Name()
 		change |= statusChanged
 	}
 
-	startupStdErrFile := rcd.startupStdErrFile.Load()
-	if startupStdErrFile != nil && ctr.Status.StartupStdErrFile == "" {
-		ctr.Status.StartupStdErrFile = startupStdErrFile.Name()
+	startupStderrLog := rcd.startupStderrLog.Load()
+	if startupStderrLog != nil && ctr.Status.StartupStdErrFile == "" {
+		ctr.Status.StartupStdErrFile = startupStderrLog.file.Name()
 		change |= statusChanged
 	}
 

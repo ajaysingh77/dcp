@@ -1,6 +1,8 @@
 package integration_test
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -16,6 +18,8 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/secrets"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
+	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
@@ -1003,6 +1007,9 @@ func TestContainerLogsNonFollow(t *testing.T) {
 
 	t.Parallel()
 
+	stdoutLine := []byte("Standard output log line 1")
+	stderrLine := []byte("Standard error log line 1")
+
 	for _, tc := range testcases {
 		t.Run(tc.description, func(t *testing.T) {
 			t.Parallel()
@@ -1030,22 +1037,344 @@ func TestContainerLogsNonFollow(t *testing.T) {
 
 			t.Logf("Simulating logging for Container '%s'...", ctr.ObjectMeta.Name)
 			logErr := containerOrchestrator.SimulateContainerLogging(updatedCtr.Status.ContainerID, apiv1.LogStreamSourceStdout,
-				osutil.WithNewline([]byte("Standard output log line 1")))
-			require.NoError(t, logErr)
+				osutil.WithNewline(stdoutLine))
+			require.NoError(t, logErr, "could not simulate logging to stdout")
+			logErr = containerOrchestrator.SimulateContainerLogging(updatedCtr.Status.ContainerID, apiv1.LogStreamSourceStderr,
+				osutil.WithNewline(stderrLine))
+			require.NoError(t, logErr, "could not simulate logging to stderr")
 
 			t.Logf("Transitioning Container '%s' to desired state...", ctr.ObjectMeta.Name)
 			tc.ensureDesiredState(t, ctx, updatedCtr)
 
 			t.Logf("Ensure logs can be captured for Container '%s'...", ctr.ObjectMeta.Name)
-			opts := apiv1.LogOptions{
-				Follow:     false,
-				Source:     "stdout",
-				Timestamps: false,
+			useCases := []apiv1.LogOptions{
+				{Follow: false, Source: "stdout", Timestamps: false},
+				{Follow: false, Source: "stderr", Timestamps: false},
+				{Follow: false, Source: "stdout", Timestamps: true},
+				{Follow: false, Source: "stderr", Timestamps: true},
 			}
-			err = waitForObjectLogs(ctx, updatedCtr, opts, [][]byte{[]byte("Standard output log line 1")}, nil)
-			require.NoError(t, err)
+
+			for _, opts := range useCases {
+				var expected []byte
+				if opts.Source == "stdout" {
+					expected = stdoutLine
+				} else {
+					expected = stderrLine
+				}
+				if opts.Timestamps {
+					expected = bytes.Join([][]byte{[]byte(rfc3339MiliTimestampRegex), []byte(" "), expected}, nil)
+				}
+				waitErr := waitForObjectLogs(ctx, &ctr, opts, [][]byte{expected}, nil)
+				require.NoError(t, waitErr, "Could not capture startup logs for Container '%s' (with options %s)", ctr.ObjectMeta.Name, opts.String())
+			}
 		})
 	}
 }
 
-// TODO: verify that startup (stdout, stderr) logs can be captured as well.
+// Verify that logs can be captured in follow mode when log stream is open bofore any logs are written.
+func TestContainerLogsFollowFromStart(t *testing.T) {
+	const containerName = "test-container-logs-follow-from-start"
+	const imageName = containerName + "-image"
+
+	lines := [][]byte{
+		[]byte("Standard output log line 1"),
+		[]byte("Standard output log line 2"),
+		[]byte("Standard output log line 3"),
+	}
+
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      containerName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+		},
+	}
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create Container '%s'", ctr.ObjectMeta.Name)
+
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+
+	t.Logf("Start following logs for Container '%s'...", ctr.ObjectMeta.Name)
+	logsErrCh := make(chan error, 1)
+	logStreamOpen := concurrency.NewAutoResetEvent(false)
+	opts := apiv1.LogOptions{
+		Follow:     true,
+		Source:     "stdout",
+		Timestamps: false,
+	}
+	go func() {
+		// Run this in a separate goroutine to make sure we open the log stream before we start writing logs.
+		logsErrCh <- waitForObjectLogs(ctx, updatedCtr, opts, lines, logStreamOpen)
+	}()
+
+	<-logStreamOpen.Wait()
+
+	t.Logf("Simulating logging for Container '%s'...", ctr.ObjectMeta.Name)
+	for _, line := range lines {
+		logErr := containerOrchestrator.SimulateContainerLogging(updatedCtr.Status.ContainerID, apiv1.LogStreamSourceStdout, osutil.WithNewline(line))
+		require.NoError(t, logErr, "could not simulate logging to stdout")
+	}
+
+	err = <-logsErrCh
+	require.NoError(t, err, "Could not follow logs for Container '%s'", ctr.ObjectMeta.Name)
+}
+
+// Verify that logs can be captured in follow mode when log stream is opened after the Container has exited.
+func TestContainerLogsFollowAfterExit(t *testing.T) {
+	const containerName = "test-container-logs-follow-after-exit"
+	const imageName = containerName + "-image"
+
+	lines := [][]byte{
+		[]byte("Standard output log line 1"),
+		[]byte("Standard output log line 2"),
+		[]byte("Standard output log line 3"),
+	}
+
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      containerName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+		},
+	}
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create Container '%s'", ctr.ObjectMeta.Name)
+
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+
+	t.Logf("Simulating logging for Container '%s'...", ctr.ObjectMeta.Name)
+	for _, line := range lines {
+		logErr := containerOrchestrator.SimulateContainerLogging(updatedCtr.Status.ContainerID, apiv1.LogStreamSourceStdout, osutil.WithNewline(line))
+		require.NoError(t, logErr, "could not simulate logging to stdout")
+	}
+
+	t.Logf("Transitioning Container '%s' to 'Exited' state...", ctr.ObjectMeta.Name)
+	exitErr := containerOrchestrator.SimulateContainerExit(ctx, updatedCtr.Status.ContainerID)
+	require.NoError(t, exitErr)
+	updatedCtr = ensureContainerState(t, ctx, updatedCtr, apiv1.ContainerStateExited)
+
+	t.Logf("Start following logs for Container '%s'...", ctr.ObjectMeta.Name)
+	opts := apiv1.LogOptions{
+		Follow:     true,
+		Source:     "stdout",
+		Timestamps: false,
+	}
+	logsErr := waitForObjectLogs(ctx, updatedCtr, opts, lines, nil)
+	require.NoError(t, logsErr, "Could not follow logs for Container '%s'", ctr.ObjectMeta.Name)
+}
+
+// Verify that Container startup logs can be captured.
+func TestContainerStartupLogs(t *testing.T) {
+	const containerName = "test-container-startup-logs"
+	const imageName = containerName + "-image"
+
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      containerName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+		},
+	}
+
+	startupStdoutLines := [][]byte{
+		[]byte("Standard output startup log line 1"),
+		[]byte("Standard output startup log line 2"),
+	}
+	startupStderrLines := [][]byte{
+		[]byte("Standard error startup log line 1"),
+		[]byte("Standard error startup log line 2"),
+	}
+
+	containerOrchestrator.SimulateContainerStartupLogs(ctr.Spec.Image,
+		bytes.Join(startupStdoutLines, osutil.LineSep()),
+		bytes.Join(startupStderrLines, osutil.LineSep()),
+	)
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create Container '%s'", ctr.ObjectMeta.Name)
+
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+
+	t.Logf("Ensure startup logs can be captured for Container '%s'...", ctr.ObjectMeta.Name)
+	useCases := []apiv1.LogOptions{
+		{Follow: false, Source: "startup_stdout", Timestamps: false},
+		{Follow: false, Source: "startup_stderr", Timestamps: false},
+		{Follow: true, Source: "startup_stdout", Timestamps: false},
+		{Follow: true, Source: "startup_stderr", Timestamps: false},
+		{Follow: false, Source: "startup_stdout", Timestamps: true},
+		{Follow: false, Source: "startup_stderr", Timestamps: true},
+		{Follow: true, Source: "startup_stdout", Timestamps: true},
+		{Follow: true, Source: "startup_stderr", Timestamps: true},
+	}
+	for _, opts := range useCases {
+		var expected [][]byte
+		if opts.Source == "startup_stdout" {
+			expected = slices.Map[[]byte, []byte](startupStdoutLines, bytes.Clone)
+		} else {
+			expected = slices.Map[[]byte, []byte](startupStderrLines, bytes.Clone)
+		}
+		if opts.Timestamps {
+			for i, line := range expected {
+				expected[i] = bytes.Join([][]byte{[]byte(rfc3339MiliTimestampRegex), []byte(" "), line}, nil)
+			}
+		}
+		waitErr := waitForObjectLogs(ctx, updatedCtr, opts, expected, nil)
+		require.NoError(t, waitErr, "Could not capture startup logs for Container '%s' (with options %s)", updatedCtr.ObjectMeta.Name, opts.String())
+	}
+}
+
+// Verify that additional logs are reported in follow mode as soon as they are written.
+// This is similar to TestContainerLogsFollowFromStart, but we write logs one line at a time,
+// and verify each line separately.
+func TestContainerLogsFollowIncremental(t *testing.T) {
+	const containerName = "test-container-logs-follow-incremental"
+	const imageName = containerName + "-image"
+
+	lines := [][]byte{
+		[]byte("Standard output log line 1"),
+		[]byte("Standard output log line 2"),
+		[]byte("Standard output log line 3"),
+	}
+	writeLine := concurrency.NewAutoResetEvent(false)
+	defer writeLine.SetAndFreeze() // Make sure writer goroutine ends when the test exits, no matter the outcome.
+
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      containerName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+		},
+	}
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create Container '%s'", ctr.ObjectMeta.Name)
+
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+
+	go func() {
+		for _, line := range lines {
+			writeLine.Wait()
+			logErr := containerOrchestrator.SimulateContainerLogging(updatedCtr.Status.ContainerID, apiv1.LogStreamSourceStdout, osutil.WithNewline(line))
+			require.NoError(t, logErr, "could not simulate logging to stdout")
+		}
+	}()
+
+	t.Logf("Start following logs for Container '%s'...", ctr.ObjectMeta.Name)
+	opts := apiv1.LogOptions{
+		Follow:     true,
+		Source:     "stdout",
+		Timestamps: false,
+	}
+	logStream, logStreamErr := openLogStream(ctx, updatedCtr, opts, nil)
+	require.NoError(t, logStreamErr, "Could not open log stream for Container '%s'", updatedCtr.ObjectMeta.Name)
+
+	scanner := bufio.NewScanner(usvc_io.NewContextReader(ctx, logStream, true /* leverageReadCloser */))
+	for i, line := range lines {
+		writeLine.Set()
+		gotLine := scanner.Scan()
+		require.True(t, gotLine, "Could not read line %d from log stream for Container '%s', the reported error was %v", i, updatedCtr.ObjectMeta.Name, scanner.Err())
+		require.Equal(t, string(line), scanner.Text(), "Log line %d does not match expected content for Container '%s'", i, updatedCtr.ObjectMeta.Name)
+	}
+}
+
+// Verify that logs in follow mode end when Executable is deleted
+func TestContainerLogsFollowStreamEndsOnDelete(t *testing.T) {
+	const containerName = "test-container-logs-follow-stream-ends-on-delete"
+	const imageName = containerName + "-image"
+
+	lines := [][]byte{
+		[]byte("Standard output log line 1"),
+		[]byte("Standard output log line 2"),
+		[]byte("Standard output log line 3"),
+	}
+	startWriting := concurrency.NewAutoResetEvent(false)
+	defer startWriting.SetAndFreeze() // Make sure writer goroutine ends when the test exits, no matter the outcome.
+
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      containerName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+		},
+	}
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create Container '%s'", ctr.ObjectMeta.Name)
+
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+
+	go func() {
+		startWriting.Wait()
+		for _, line := range lines {
+			logErr := containerOrchestrator.SimulateContainerLogging(updatedCtr.Status.ContainerID, apiv1.LogStreamSourceStdout, osutil.WithNewline(line))
+			require.NoError(t, logErr, "could not simulate logging to stdout")
+		}
+	}()
+
+	t.Logf("Start following logs for Container '%s'...", updatedCtr.ObjectMeta.Name)
+	opts := apiv1.LogOptions{
+		Follow:     true,
+		Source:     "stdout",
+		Timestamps: false,
+	}
+	logStream, logStreamErr := openLogStream(ctx, updatedCtr, opts, startWriting)
+	require.NoError(t, logStreamErr, "Could not open log stream for Container '%s'", updatedCtr.ObjectMeta.Name)
+
+	scanner := bufio.NewScanner(usvc_io.NewContextReader(ctx, logStream, true /* leverageReadCloser */))
+	for i, line := range lines {
+		gotLine := scanner.Scan()
+		require.True(t, gotLine, "Could not read line %d from log stream for Container '%s', the reported error was %v", i, updatedCtr.ObjectMeta.Name, scanner.Err())
+		require.Equal(t, string(line), scanner.Text(), "Log line %d does not match expected content for Container '%s'", i, updatedCtr.ObjectMeta.Name)
+	}
+
+	t.Logf("Deleting Container '%s'...", ctr.ObjectMeta.Name)
+	err = client.Delete(ctx, updatedCtr.DeepCopy())
+	require.NoError(t, err, "Could not delete Container '%s'", updatedCtr.ObjectMeta.Name)
+
+	t.Logf("Ensure log stream ends when Container '%s' is deleted...", updatedCtr.ObjectMeta.Name)
+	gotLine := scanner.Scan()
+	require.False(t, gotLine, "Unexpectedly read a line from log stream for Container '%s' after it was deleted", updatedCtr.ObjectMeta.Name)
+	require.NoError(t, scanner.Err(), "The log stream for Container '%s' did not end gracefully", updatedCtr.ObjectMeta.Name)
+}

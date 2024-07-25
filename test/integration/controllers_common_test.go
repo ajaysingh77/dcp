@@ -58,7 +58,8 @@ var (
 )
 
 const (
-	pollImmediately = true // Don't wait before polling for the first time
+	pollImmediately           = true // Don't wait before polling for the first time
+	rfc3339MiliTimestampRegex = `\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z`
 )
 
 func TestMain(m *testing.M) {
@@ -436,9 +437,27 @@ func waitForObjectLogs[T controllers.ObjectStruct, PT controllers.PObjectStruct[
 	ctx context.Context,
 	obj PT,
 	opts apiv1.LogOptions,
-	expectedLogLines [][]byte,
+	expectedLines [][]byte,
 	logStreamOpen *concurrency.AutoResetEvent,
 ) error {
+	logsArrived := func(receivedLines [][]byte) (bool, error) {
+		if len(receivedLines) < len(expectedLines) {
+			return false, nil // Not enough data yet
+		}
+
+		var matchErr error
+		allLinesMatch := std_slices.EqualFunc(receivedLines[len(receivedLines)-len(expectedLines):], expectedLines, func(read, pattern []byte) bool {
+			var matched bool
+			matched, matchErr = regexp.Match(string(pattern), read)
+			return matched
+		})
+		if matchErr != nil {
+			return false, fmt.Errorf("Error occurred while matching logs: %w", matchErr)
+		}
+
+		return allLinesMatch, nil
+	}
+
 	if opts.Follow {
 		// In follow mode we open the log stream once and then scan for expected lines
 		// until the expectation is satisfied or the context is cancelled.
@@ -451,28 +470,18 @@ func waitForObjectLogs[T controllers.ObjectStruct, PT controllers.PObjectStruct[
 				obj.GetObjectMeta().Name,
 				logStreamErr)
 		}
-		var logLines [][]byte
+
 		scanner := bufio.NewScanner(usvc_io.NewContextReader(ctx, logStream, true /* leverageReadCloser */))
+		var logLines [][]byte
 
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			logLines = append(logLines, line)
 
-			if len(logLines) < len(expectedLogLines) {
-				continue // Not enough data yet
-			}
-
-			var matchErr error
-			allLinesMatch := std_slices.EqualFunc(logLines[len(logLines)-len(expectedLogLines):], expectedLogLines, func(read, pattern []byte) bool {
-				var matched bool
-				matched, matchErr = regexp.Match(string(pattern), read)
-				return matched
-			})
-			if matchErr != nil {
-				return fmt.Errorf("Error occurred while matching logs: %w", matchErr)
-			}
-
-			if allLinesMatch {
+			arrived, err := logsArrived(logLines)
+			if err != nil {
+				return err
+			} else if arrived {
 				return nil // Expected logs arrived = success
 			}
 		}
@@ -518,21 +527,8 @@ func waitForObjectLogs[T controllers.ObjectStruct, PT controllers.PObjectStruct[
 			lastLogContents = logContents
 			logLines := bytes.Split(logContents, osutil.LineSep())
 			logLines = std_slices.DeleteFunc(logLines, func(s []byte) bool { return len(s) == 0 }) // Remove empty "lines" from Split() result.
-			var matchErr error
-			allLinesMatch := std_slices.EqualFunc(logLines, expectedLogLines, func(read, pattern []byte) bool {
-				var matched bool
-				matched, matchErr = regexp.Match(string(pattern), read)
-				return matched
-			})
-			if matchErr != nil {
-				return false, fmt.Errorf("Error occurred while matching logs: %w", matchErr)
-			}
 
-			if allLinesMatch {
-				return true, nil // Expected logs arrived = success
-			} else {
-				return false, nil
-			}
+			return logsArrived(logLines)
 		}
 
 		err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, hasExpectedLogLines)

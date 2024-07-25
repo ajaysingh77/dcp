@@ -49,6 +49,7 @@ type TestContainerOrchestrator struct {
 	imageIds               map[string]string
 	imageSecrets           map[string]map[string]string
 	containers             map[string]*testContainer
+	startupLogs            map[string]containerStartupLogs
 	containersToFail       map[string]containerExit
 	containerEventsWatcher *containers.EventWatcher
 	networkEventsWatcher   *containers.EventWatcher
@@ -62,6 +63,11 @@ type TestContainerOrchestrator struct {
 type containerExit struct {
 	exitCode int32
 	stdErr   string
+}
+
+type containerStartupLogs struct {
+	stdout []byte
+	stderr []byte
 }
 
 func NewTestContainerOrchestrator(lifetimeCtx context.Context, log logr.Logger) (*TestContainerOrchestrator, error) {
@@ -89,6 +95,7 @@ func NewTestContainerOrchestrator(lifetimeCtx context.Context, log logr.Logger) 
 		imageIds:         map[string]string{},
 		imageSecrets:     map[string]map[string]string{},
 		containers:       map[string]*testContainer{},
+		startupLogs:      map[string]containerStartupLogs{},
 		containersToFail: map[string]containerExit{},
 		mutex:            &sync.Mutex{},
 		lifetimeCtx:      lifetimeCtx,
@@ -188,6 +195,9 @@ func (to *TestContainerOrchestrator) handleLogRequest(resp http.ResponseWriter, 
 	case string(apiv1.LogStreamSourceStderr):
 		stderrWriter = usvc_io.NewContextWriteCloser(effectiveCtx, innerWriter)
 	default:
+		// Note that startup logs are handled entirely by the Container log streamer,
+		// that is, the are read from files written by the Container controller,
+		// and this endpoint/container orchestrator is not involved.
 		http.Error(resp, fmt.Sprintf("invalid source '%s'", logOptions.Source), http.StatusBadRequest)
 		return
 	}
@@ -262,6 +272,13 @@ func (to *TestContainerOrchestrator) FailMatchingContainers(ctx context.Context,
 
 		delete(to.containersToFail, name)
 	}()
+}
+
+func (to *TestContainerOrchestrator) SimulateContainerStartupLogs(name string, stdout, stderr []byte) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	to.startupLogs[name] = containerStartupLogs{stdout: stdout, stderr: stderr}
 }
 
 func (to *TestContainerOrchestrator) doWatchContainers(watcherCtx context.Context) {
@@ -860,6 +877,29 @@ func (to *TestContainerOrchestrator) doStartContainer(ctx context.Context, conta
 
 	if container.status != containers.ContainerStatusCreated && container.status != containers.ContainerStatusExited {
 		return "", streamIfPossible(fmt.Errorf("container is not in a state to be started"))
+	}
+
+	for name, containerStartupLogs := range to.startupLogs {
+		if container.matches(name) || strings.HasPrefix(container.image, name) {
+			var startupLogsWriteErrors error
+
+			if len(containerStartupLogs.stdout) > 0 && streamOptions.StdOutStream != nil {
+				_, err := streamOptions.StdOutStream.Write([]byte(containerStartupLogs.stdout))
+				startupLogsWriteErrors = errors.Join(startupLogsWriteErrors, err)
+			}
+
+			if len(containerStartupLogs.stderr) > 0 && streamOptions.StdErrStream != nil {
+				_, err := streamOptions.StdErrStream.Write([]byte(containerStartupLogs.stderr))
+				startupLogsWriteErrors = errors.Join(startupLogsWriteErrors, err)
+			}
+
+			if startupLogsWriteErrors != nil {
+				return "", streamIfPossible(startupLogsWriteErrors)
+			} else {
+				delete(to.startupLogs, name)
+				break
+			}
+		}
 	}
 
 	container.status = containers.ContainerStatusRunning
