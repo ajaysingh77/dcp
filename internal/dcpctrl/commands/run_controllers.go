@@ -34,6 +34,7 @@ func NewRunControllersCommand(logger logger.Logger) *cobra.Command {
 
 	kubeconfig.EnsureKubeconfigFlag(runControllersCmd.Flags())
 	kubeconfig.EnsureKubeconfigPortFlag(runControllersCmd.Flags())
+	kubeconfig.EnsureKubeconfigTokenFlag(runControllersCmd.Flags())
 
 	cmds.AddMonitorFlags(runControllersCmd)
 
@@ -50,6 +51,10 @@ func getManager(ctx context.Context, log logr.Logger) (ctrl_manager.Manager, err
 	// Do some retries with exponential back-off before giving up
 	mgr, err := resiliency.RetryGetExponential(retryCtx, func() (ctrl_manager.Manager, error) {
 		config := ctrlruntime.GetConfigOrDie()
+		if kubeconfig.GetKubeconfigTokenFlagValue() != "" {
+			// If the token flag is set, use it to authenticate to the API server
+			config.BearerToken = kubeconfig.GetKubeconfigTokenFlagValue()
+		}
 		ctrlMgrOpts := controllers.NewControllerManagerOptions(ctx, scheme, log)
 		return ctrlruntime.NewManager(config, ctrlMgrOpts)
 	})

@@ -16,6 +16,7 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/dcpclient"
 	"github.com/microsoft/usvc-apiserver/internal/perftrace"
+	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 )
 
 func ShutdownApp(ctx context.Context, log logr.Logger) error {
@@ -42,6 +43,11 @@ func ShutdownApp(ctx context.Context, log logr.Logger) error {
 	if err != nil {
 		log.Error(err, "could not get config")
 		return err
+	}
+
+	if kubeconfig.GetKubeconfigTokenFlagValue() != "" {
+		// If the token flag is set, use it to authenticate to the API server
+		clusterConfig.BearerToken = kubeconfig.GetKubeconfigTokenFlagValue()
 	}
 
 	dynamicClient, err := dynamic.NewForConfig(clusterConfig)

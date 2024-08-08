@@ -39,6 +39,7 @@ const (
 	caKeyLength           = 4096
 	keyLength             = 2048
 	defaultExpirationDays = 7
+	PlaceholderToken      = "<placeholder>"
 )
 
 type certificateData struct {
@@ -137,9 +138,6 @@ func (k *Kubeconfig) GetData() (net.IP, int, string, *certificateData, error) {
 	if !found {
 		return nil, InvalidPort, "", nil, fmt.Errorf("Kubeconfig file is invalid; the user named '%s' (referred by current context) does not exist", kubeContext.AuthInfo)
 	}
-	if user.Token == "" {
-		return nil, InvalidPort, "", nil, fmt.Errorf("Kubeconfig file is invalid; the user named '%s' (referred by current context) is missing security token information ('token' property)", kubeContext.AuthInfo)
-	}
 
 	cluster, found := k.Config.Clusters[kubeContext.Cluster]
 	if !found {
@@ -178,7 +176,10 @@ func GetKubeconfigFromFlags(fs *pflag.FlagSet, port int32, log logr.Logger) (*Ku
 		return nil, err
 	}
 
-	return getKubeconfig(kubeconfigPath, port, true, log)
+	// If a token was not provided via --token flag, we need to generate one
+	generateToken := GetKubeconfigTokenFlagValue() == ""
+
+	return getKubeconfig(kubeconfigPath, port, true, generateToken, log)
 }
 
 // Validates and returns path to Kubeconfig file to be used for connecting to the DCP API server by clients.
@@ -206,7 +207,7 @@ func RequireKubeconfigFileFromFlags(fs *pflag.FlagSet, port int32) (string, erro
 // Creates the kubeconfig file using given path as necessary.
 // This function is primarily intended for use in tests; other code should use EnsureKubeconfigFileFromFlags() instead.
 func EnsureKubeconfigFile(kubeconfigPath string, log logr.Logger) error {
-	k, err := getKubeconfig(kubeconfigPath, 0, false, log)
+	k, err := getKubeconfig(kubeconfigPath, 0, false, true, log)
 	if err != nil {
 		return err
 	}
@@ -245,7 +246,7 @@ func getKubeConfigPath(fs *pflag.FlagSet) (string, error) {
 
 // For an existing kubeconfig file, read the data and return it. If no kubeconfig file exists, generate the
 // data and return that (to be persisted after API server starts).
-func getKubeconfig(kubeconfigPath string, port int32, useCertificate bool, log logr.Logger) (*Kubeconfig, error) {
+func getKubeconfig(kubeconfigPath string, port int32, useCertificate bool, generateToken bool, log logr.Logger) (*Kubeconfig, error) {
 	info, err := os.Stat(kubeconfigPath)
 
 	var config *clientcmd_api.Config
@@ -256,7 +257,7 @@ func getKubeconfig(kubeconfigPath string, port int32, useCertificate bool, log l
 		}
 
 		// Create a new config
-		config, certificateData, err = createKubeconfig(port, useCertificate, log)
+		config, certificateData, err = createKubeconfig(port, useCertificate, generateToken, log)
 		if err != nil {
 			return nil, err
 		}
@@ -340,7 +341,7 @@ func generateCertificates(ip net.IP) (*certificateData, error) {
 	}, nil
 }
 
-func createKubeconfig(port int32, useCertifiate bool, log logr.Logger) (*clientcmd_api.Config, *certificateData, error) {
+func createKubeconfig(port int32, useCertifiate bool, generateToken bool, log logr.Logger) (*clientcmd_api.Config, *certificateData, error) {
 	ips, err := networking.GetLocalhostIps()
 	if err != nil {
 		return nil, nil, fmt.Errorf("kubeconfig file creation failed: %w", err)
@@ -384,13 +385,16 @@ func createKubeconfig(port int32, useCertifiate bool, log logr.Logger) (*clientc
 		cluster.InsecureSkipTLSVerify = true
 	}
 
-	const authTokenLength = 32
-	token, err := randdata.MakeRandomString(authTokenLength)
-	if err != nil {
-		return nil, nil, fmt.Errorf("could not generate authentication token for the DCP API server: %w", err)
-	}
-	user := clientcmd_api.AuthInfo{
-		Token: string(token),
+	user := clientcmd_api.AuthInfo{}
+	if generateToken {
+		const authTokenLength = 32
+		token, tokenErr := randdata.MakeRandomString(authTokenLength)
+		if tokenErr != nil {
+			return nil, nil, fmt.Errorf("could not generate authentication token for the DCP API server: %w", tokenErr)
+		}
+		user.Token = string(token)
+	} else {
+		user.Token = PlaceholderToken
 	}
 
 	context := clientcmd_api.Context{

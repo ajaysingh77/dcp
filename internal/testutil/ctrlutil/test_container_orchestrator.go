@@ -21,7 +21,6 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
-	"github.com/microsoft/usvc-apiserver/internal/secrets"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
@@ -683,7 +682,7 @@ func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options con
 
 		for _, secret := range options.Secrets {
 			if secret.Type == apiv1.EnvSecret && secret.Value != "" {
-				to.imageSecrets[image][secret.ID] = secrets.DecryptSecret(secret.Value)
+				to.imageSecrets[image][secret.ID] = secret.Value
 			}
 		}
 	}

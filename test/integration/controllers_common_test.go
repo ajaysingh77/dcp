@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rand"
 	"errors"
 	"flag"
 	"fmt"
@@ -37,7 +36,6 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/exerunners"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
-	"github.com/microsoft/usvc-apiserver/internal/secrets"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
@@ -139,15 +137,11 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 		containerOrchestrator.Close()
 	})
 
-	testSecretKey := make([]byte, 24)
-	_, keyErr := rand.Read(testSecretKey)
-	if keyErr != nil {
-		log.Error(keyErr, "failed to generate a random key for testing secret encryption")
-		return keyErr
+	const authTokenLength = 32
+	bearerToken, err := randdata.MakeRandomString(authTokenLength)
+	if err != nil {
+		return fmt.Errorf("could not generate authentication token for the DCP API server: %w", err)
 	}
-
-	// Enable secrets for this test
-	secrets.SetSecretsKey(testSecretKey)
 
 	// Do not use exec.CommandContext() because on Unix-like OSes it will kill the process DEAD
 	// immediately after the context is cancelled, preventing dcp from cleaning up properly.
@@ -155,6 +149,7 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 		"start-apiserver",
 		"--server-only",
 		"--kubeconfig", kubeconfigPath,
+		"--token", string(bearerToken),
 		"--test-container-log-source", containerOrchestrator.GetSocketFilePath(),
 		"--monitor", strconv.Itoa(os.Getpid()),
 	)
@@ -187,6 +182,9 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 	if clientConfigErr != nil {
 		return fmt.Errorf("failed to build client-go config: %w", clientConfigErr)
 	}
+
+	// Use a pre-generated bearer token for the API server.
+	clientConfig.BearerToken = string(bearerToken)
 
 	// Using generous timeout because AzDO pipeline machines can be very slow at times.
 	var clientErr error

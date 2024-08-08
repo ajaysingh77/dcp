@@ -12,6 +12,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
+	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 )
 
 // NewClient() returns new client for the DCP API server.
@@ -103,4 +104,9 @@ func applyDcpOptions(config *clientgorest.Config) {
 	// unless the rate of requests becomes insane.
 	config.QPS = 1000
 	config.Burst = 2000
+
+	if kubeconfig.GetKubeconfigTokenFlagValue() != "" {
+		// If the token flag is set, use it to authenticate to the API server
+		config.BearerToken = kubeconfig.GetKubeconfigTokenFlagValue()
+	}
 }
