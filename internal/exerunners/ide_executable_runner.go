@@ -356,10 +356,7 @@ func (r *IdeExecutableRunner) prepareRunRequest(exe *apiv1.Executable) (*http.Re
 			return nil, nil, fmt.Errorf("failed to prepare IDE run request: %w", bodyErr)
 		}
 	} else {
-		isrBody, bodyErr = r.prepareRunRequestDeprecated(exe)
-		if bodyErr != nil {
-			return nil, nil, fmt.Errorf("failed to prepare IDE run request: %w", bodyErr)
-		}
+		return nil, nil, fmt.Errorf("Aspire IDE extension is older than the minimum supported version; DCP requires an extension that supports protocol version %s or newer", version20240303)
 	}
 
 	req, reqCancel, reqErr := r.makeRequest(ideRunSessionResourcePath, http.MethodPut, bytes.NewBuffer(isrBody))
@@ -367,58 +364,6 @@ func (r *IdeExecutableRunner) prepareRunRequest(exe *apiv1.Executable) (*http.Re
 		return nil, nil, fmt.Errorf("failed to create IDE run session request: %w", reqErr)
 	}
 	return req, reqCancel, nil
-}
-
-func (r *IdeExecutableRunner) prepareRunRequestDeprecated(exe *apiv1.Executable) ([]byte, error) {
-	if exe.Annotations[csharpProjectPathAnnotation] != "" {
-		projectPath := exe.Annotations[csharpProjectPathAnnotation]
-
-		isr := ideRunSessionRequestDeprecated{
-			ProjectPath: projectPath,
-			Env:         exe.Status.EffectiveEnv,
-			Args:        exe.Status.EffectiveArgs,
-		}
-		if _, disableLaunchProfile := exe.Annotations[csharpDisableLaunchProfileAnnotation]; disableLaunchProfile {
-			isr.DisableLaunchProfile = true
-		} else if launchProfile, haveLaunchProfile := exe.Annotations[csharpLaunchProfileAnnotation]; haveLaunchProfile {
-			isr.LaunchProfile = launchProfile
-		}
-
-		isrBody, err := json.Marshal(isr)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create Executable run request body: %w", err)
-		}
-		return isrBody, nil
-	} else if exe.Annotations[launchConfigurationsAnnotation] != "" {
-		// A bif of a transient situation, but possible in Aspire P5 timeframe: we have got the V1 annotation,
-		// but we are asked to speak the deprecated protocol.
-
-		var launchConfigs []projectLaunchConfiguration
-		unmarshalErr := json.Unmarshal([]byte(exe.Annotations[launchConfigurationsAnnotation]), &launchConfigs)
-		if unmarshalErr != nil {
-			return nil, fmt.Errorf("Executable cannot be run because its launch configuration is invalid: %w", unmarshalErr)
-		}
-		if len(launchConfigs) != 1 {
-			return nil, fmt.Errorf("Executable cannot be run; it must have exactly one launch configuration, but %d were provided", len(launchConfigs))
-		}
-
-		isr := ideRunSessionRequestDeprecated{
-			ProjectPath:          launchConfigs[0].ProjectPath,
-			Env:                  exe.Status.EffectiveEnv,
-			Args:                 exe.Status.EffectiveArgs,
-			LaunchProfile:        launchConfigs[0].LaunchProfile,
-			DisableLaunchProfile: launchConfigs[0].DisableLaunchProfile,
-			Debug:                launchConfigs[0].LaunchMode == projectLaunchModeDebug,
-		}
-
-		isrBody, err := json.Marshal(isr)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create Executable run request body: %w", err)
-		}
-		return isrBody, nil
-	} else {
-		return nil, fmt.Errorf("IDE execution was requested for the Executable but the required '%s' annotation is missing", launchConfigurationsAnnotation)
-	}
 }
 
 func (r *IdeExecutableRunner) prepareRunRequestV1(exe *apiv1.Executable) ([]byte, error) {
@@ -434,32 +379,6 @@ func (r *IdeExecutableRunner) prepareRunRequestV1(exe *apiv1.Executable) ([]byte
 			LaunchConfigurations: json.RawMessage(launchConfigs),
 			Env:                  exe.Status.EffectiveEnv,
 			Args:                 exe.Status.EffectiveArgs,
-		}
-
-		isrBody, marshalErr := json.Marshal(isr)
-		if marshalErr != nil {
-			return nil, fmt.Errorf("failed to create Executable run request body: %w", marshalErr)
-		}
-		return isrBody, nil
-	} else if exe.Annotations[csharpProjectPathAnnotation] != "" {
-		// A bif of a transient situation, but possible in Aspire P5 timeframe: we have got the old annotation,
-		// but we are asked to speak the new protocol.
-
-		isr := ideRunSessionRequestV1Explicit{
-			LaunchConfigurations: []projectLaunchConfiguration{
-				{
-					ideLaunchConfiguration: ideLaunchConfiguration{Type: launchConfigurationTypeProject},
-					ProjectPath:            exe.Annotations[csharpProjectPathAnnotation],
-				},
-			},
-			Env:  exe.Status.EffectiveEnv,
-			Args: exe.Status.EffectiveArgs,
-		}
-
-		if _, disableLaunchProfile := exe.Annotations[csharpDisableLaunchProfileAnnotation]; disableLaunchProfile {
-			isr.LaunchConfigurations[0].DisableLaunchProfile = true
-		} else if launchProfile, haveLaunchProfile := exe.Annotations[csharpLaunchProfileAnnotation]; haveLaunchProfile {
-			isr.LaunchConfigurations[0].LaunchProfile = launchProfile
 		}
 
 		isrBody, marshalErr := json.Marshal(isr)

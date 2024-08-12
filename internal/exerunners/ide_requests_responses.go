@@ -49,31 +49,6 @@ func (pcn *ideRunSessionProcessChangedNotification) ToString() string {
 	return retval
 }
 
-type launchConfigurationType string
-
-const (
-	launchConfigurationTypeProject launchConfigurationType = "project"
-)
-
-type ideLaunchConfiguration struct {
-	Type launchConfigurationType `json:"type"`
-}
-
-type projectLaunchMode string
-
-const (
-	projectLaunchModeDebug   projectLaunchMode = "Debug"
-	projectLaunchModeNoDebug projectLaunchMode = "NoDebug"
-)
-
-type projectLaunchConfiguration struct {
-	ideLaunchConfiguration
-	ProjectPath          string            `json:"project_path"`
-	LaunchMode           projectLaunchMode `json:"mode,omitempty"`
-	LaunchProfile        string            `json:"launch_profile,omitempty"`
-	DisableLaunchProfile bool              `json:"disable_launch_profile,omitempty"`
-}
-
 type ideRunSessionRequestV1 struct {
 	// This is typically an array of ideLaunchConfiguration-derived objects,
 	// but in this implementation we will take whatever the model annotation contains
@@ -83,25 +58,6 @@ type ideRunSessionRequestV1 struct {
 
 	Env  []apiv1.EnvVar `json:"env,omitempty"`
 	Args []string       `json:"args,omitempty"`
-}
-
-// This struct is defined solely for the purpose of supporting the transition between
-// the old and new IDE protocol. Will be removed in future release.
-type ideRunSessionRequestV1Explicit struct {
-	LaunchConfigurations []projectLaunchConfiguration `json:"launch_configurations"`
-
-	Env  []apiv1.EnvVar `json:"env,omitempty"`
-	Args []string       `json:"args,omitempty"`
-}
-
-// Deprecated, will be removed in future release
-type ideRunSessionRequestDeprecated struct {
-	ProjectPath          string         `json:"project_path"`
-	Debug                bool           `json:"debug,omitempty"`
-	Env                  []apiv1.EnvVar `json:"env,omitempty"`
-	Args                 []string       `json:"args,omitempty"`
-	LaunchProfile        string         `json:"launch_profile,omitempty"`
-	DisableLaunchProfile bool           `json:"disable_launch_profile,omitempty"`
 }
 
 type errorDetail struct {
@@ -157,11 +113,6 @@ const (
 	ideEndpointCertVar  = "DEBUG_SESSION_SERVER_CERTIFICATE"
 
 	launchConfigurationsAnnotation = "executable.usvc-dev.developer.microsoft.com/launch-configurations"
-
-	// The following 3 annotations are deprecated and will be removed in future release
-	csharpProjectPathAnnotation          = "csharp-project-path"
-	csharpLaunchProfileAnnotation        = "csharp-launch-profile"
-	csharpDisableLaunchProfileAnnotation = "csharp-disable-launch-profile"
 
 	version20240303      apiVersion = "2024-03-03"
 	version20240423      apiVersion = "2024-04-23"

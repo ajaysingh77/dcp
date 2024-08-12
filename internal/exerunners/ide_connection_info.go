@@ -28,8 +28,6 @@ type ideConnectionInfo struct {
 	instanceId      string // The DCP instance ID to use when connecting to the IDE
 
 	// The value of the api-version parameter, indicating protocol version the runner is using when talking tot the IDE
-	// If empty, it indicates "pre-Aspire GA" (obsolete) protocol version.
-	// TODO: remove pre-Aspire GA support after Aspire GA is released.
 	apiVersion apiVersion
 
 	httpClient *http.Client      // The client to make HTTP requests to the IDE
@@ -116,7 +114,6 @@ func NewIdeConnectionInfo(lifetimeCtx context.Context, log logr.Logger) (*ideCon
 
 	clientResp, reqErr := client.Do(req)
 
-	// We fall back to pre-Aspire GA protocol version if the request fails.
 	if reqErr == nil && clientResp.StatusCode == http.StatusOK {
 		defer clientResp.Body.Close()
 		respBody, bodyReadErr := io.ReadAll(clientResp.Body)
@@ -131,6 +128,10 @@ func NewIdeConnectionInfo(lifetimeCtx context.Context, log logr.Logger) (*ideCon
 				connInfo.apiVersion = version20240303
 			}
 		}
+	}
+
+	if connInfo.apiVersion == "" {
+		return nil, createAndLogError("an old or incompatible Aspire IDE extension was detected; only Aspire 8.0 and later versions are supported")
 	}
 
 	log.V(1).Info("IDE connection info created",
