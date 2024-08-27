@@ -78,69 +78,11 @@ If the test is killed while running under the debugger, may leave orphaned `dcp`
 We have seen the linter occasionally go into a persistent, bad state. Do `make clean`, then retry `make lint` again.
 
 ### Make it easier to use `kubectl` with DCP
-For working with DCP in the context of Aspire tooling (which creates a separate `kubeconfig` file for every application run) the following set of PowerShell functions and aliases might be useful:
+Aspire tooling is invoking DCP in "session" mode, which creates a separate `kubeconfig` file for every application run. If you want to interrogate the API server with `kubectl`, you must point it to the right `kubeconfig` file, there is no default. To help with that, we have created a script called `kk` (there is a PowerShell version for Windows development, and a Bash version for Mac/Linux). You will find it in the `scripts` folder in the repository. 
 
-```powershell
-function dcpKubeconfigPath() {
-    param (
-        [string]$dcpPid
-    )
+`kk` script will search for DCP process(es) running on the system and extract the `kubeconfig` path from its launch parameters. It will also extract the security token if DCP is using one externally supplied. Then the script will launch `kubectl` with the parameters you provided, but also pointing it to the DCP (session) `kubeconfig` file and supplying the security token, if any. For example, to display a list of running Executable objects do `kk get exe`.
 
-    if (-not [string]::IsNullOrWhiteSpace($dcpPid)) {
-        $dcpProcess = Get-Process -Id $dcpPid
-
-        if ($? -eq $false) {
-            throw "No DCP process with PID $dcpPid found"
-        }
-
-    } else {
-        # Use "dcp" process to figure out where the kubeconfig file is --
-        # when debugging the API server we might be running without a controllers process (dcpctrl).
-        $dcpProcesses = @(Get-Process | Where-Object { $_.Name -ceq "dcp" })
-        if ($dcpProcesses.Count -eq 0) {
-            throw "No DCP processes found"
-        } elseif ($dcpProcesses.Count -gt 1) {
-            $dcpProcesses | Select-Object Id, CommandLine | Format-List
-            throw "Multiple DCP processes found, use -DcpPid parameter to specify which one to use (pass DCP process ID)"
-        } else {
-            $dcpProcess = $dcpProcesses[0]
-        }
-    }
-
-    $kubeconfig = $dcpProcess | Select-Object -ExpandProperty CommandLine | ForEach-Object { $_.Split() } | Where-Object { $_.EndsWith("kubeconfig") -and ($_ -ne "--kubeconfig") }
-    if ([string]::IsNullOrWhiteSpace($kubeconfig)) {
-        $kubeconfig = "$env:USERPROFILE/.dcp/kubeconfig"
-    }
-
-    return $kubeconfig
-}
-
-function dcpKubeconfigContent() {
-    $kubeconfig = dcpKubeconfigPath
-    Get-Content $kubeconfig
-}
-
-function dcpKubectl() {
-    $dcpPid = $null
-    if ($args.Length -gt 1 -and $args[0] -eq "-DcpPid") {
-        $dcpPid = $args[1]
-        $args = $args | Select-Object -Skip 2
-    }
-
-    $kubeconfig = dcpKubeconfigPath $dcpPid
-
-    & kubectl --kubeconfig "$kubeconfig" $args
-}
-
-Set-Alias kk dcpKubectl
-Set-Alias kkconfig dcpKubeconfigContent
-```
-
-To issue a command against the DCP API server use `kk` alias. Fore example, to display a list of running Executable objects do `kk get exe`.
-
-`kkconfig` will display the content of the API server config file that is used by the running Aspire app. This can be useful to find out which port the API server is running at.
-
-> For debugging Aspire tests (part of `CloudApplicationTests` suite) the name of the relevant process that started DCP is `testhost`.
+> Note : for debugging Aspire tests (part of `CloudApplicationTests` suite) the name of the relevant process that started DCP is `testhost`.
 
 ### After `make generate-openapi` the generated file is empty (almost all contents has been removed).
 Looks like the OpenAPI code generator failed. Run `make generate-openapi-debug` to enable debug output and check if it contains any clues.
@@ -169,6 +111,8 @@ Alternatively, you can create a file named `AppHost.csproj.user` next to the `Ap
         </PropertyGroup>
     </Project>
 ```
+
+For the change to take effect, you might need to rebuild the AppHost project in Visual Studio.
 
 ### Need to get detailed logs from DCP run
 
