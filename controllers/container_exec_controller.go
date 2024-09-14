@@ -78,7 +78,7 @@ func NewContainerExecReconciler(lifetimeCtx context.Context, client ctrl_client.
 		orchestrator:      orchestrator,
 		executions:        syncmap.Map[types.UID, *runningContainerExecStatus]{},
 		notifyExecChanged: chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
-		debouncer:         newReconcilerDebouncer[string](reconciliationDebounceDelay),
+		debouncer:         newReconcilerDebouncer[string](),
 		lifetimeCtx:       lifetimeCtx,
 	}
 	return &r
@@ -269,17 +269,14 @@ func (r *ContainerExecReconciler) ensureExec(ctx context.Context, exec *apiv1.Co
 			execStatus.finishTimestamp = finishTimestamp
 
 			r.Log.V(1).Info("detected exec command completion, scheduling reconciliation for ContainerExec object", "ContainerExec", exec.Name)
-			reconciliationErr := r.debouncer.ReconciliationNeeded(exec.NamespacedName(), string(exec.UID), r.scheduleReconciliation)
-			if reconciliationErr != nil {
-				r.Log.Error(err, "could not schedule reconcilation for ContainerExec object")
-			}
+			r.debouncer.ReconciliationNeeded(r.lifetimeCtx, exec.NamespacedName(), string(exec.UID), r.scheduleReconciliation)
 		}
 	}()
 
 	return updateContainerExecStatus(exec, execStatus)
 }
 
-func (r *ContainerExecReconciler) scheduleReconciliation(rti reconcileTriggerInput[string]) error {
+func (r *ContainerExecReconciler) scheduleReconciliation(rti reconcileTriggerInput[string]) {
 	event := ctrl_event.GenericEvent{
 		Object: &apiv1.Container{
 			ObjectMeta: metav1.ObjectMeta{
@@ -289,7 +286,6 @@ func (r *ContainerExecReconciler) scheduleReconciliation(rti reconcileTriggerInp
 		},
 	}
 	r.notifyExecChanged.In <- event
-	return nil
 }
 
 func (r *ContainerExecReconciler) computeEffectiveEnvironment(

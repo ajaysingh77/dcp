@@ -84,7 +84,7 @@ func NewNetworkReconciler(lifetimeCtx context.Context, client ctrl_client.Client
 		networkEvtSub:        nil,
 		networkEvtCh:         nil,
 		networkEvtWorkerStop: nil,
-		debouncer:            newReconcilerDebouncer[string](reconciliationDebounceDelay),
+		debouncer:            newReconcilerDebouncer[string](),
 		watchingResources:    syncmap.Map[types.UID, bool]{},
 		lock:                 &sync.Mutex{},
 		lifetimeCtx:          lifetimeCtx,
@@ -507,10 +507,7 @@ func (r *NetworkReconciler) processNetworkEvent(em ct.EventMessage) {
 		}
 
 		r.Log.V(1).Info("detected network update, scheduling reconciliation for Network object", "Network", owner.Name)
-		err := r.debouncer.ReconciliationNeeded(owner, networkId, r.scheduleNetworkReconciliation)
-		if err != nil {
-			r.Log.Error(err, "could not schedule reconcilation for Network object")
-		}
+		r.debouncer.ReconciliationNeeded(r.lifetimeCtx, owner, networkId, r.scheduleNetworkReconciliation)
 	}
 }
 
@@ -526,9 +523,9 @@ func (r *NetworkReconciler) requestReconcileForNetwork(ctx context.Context, obj 
 	}
 }
 
-func (r *NetworkReconciler) scheduleNetworkReconciliation(rti reconcileTriggerInput[string]) error {
+func (r *NetworkReconciler) scheduleNetworkReconciliation(rti reconcileTriggerInput[string]) {
 	event := ctrl_event.GenericEvent{
-		Object: &apiv1.Container{
+		Object: &apiv1.ContainerNetwork{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      rti.target.Name,
 				Namespace: rti.target.Namespace,
@@ -536,7 +533,6 @@ func (r *NetworkReconciler) scheduleNetworkReconciliation(rti reconcileTriggerIn
 		},
 	}
 	r.notifyNetworkChanged.In <- event
-	return nil
 }
 
 func (r *NetworkReconciler) cancelNetworkWatch() {

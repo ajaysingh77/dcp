@@ -20,39 +20,32 @@ type reconcileTriggerInput[ReconcileInput any] struct {
 	input  ReconcileInput
 }
 
-type reconcileTrigger[ReconcileInput any] func(reconcileTriggerInput[ReconcileInput]) error
+type reconcileTrigger[ReconcileInput any] func(reconcileTriggerInput[ReconcileInput])
 
-type reconcilerDebounceRunner[ReconcileInput any] func(reconcileTriggerInput[ReconcileInput]) (any, error)
+type objectDebounce[ReconcileInput any] resiliency.DebounceLastAction[reconcileTriggerInput[ReconcileInput]]
 
-type objectDebounce[ReconcileInput any] resiliency.DebounceLast[reconcileTriggerInput[ReconcileInput], any, reconcilerDebounceRunner[ReconcileInput]]
-
-func (od *objectDebounce[ReconcileInput]) run(ctx context.Context, input reconcileTriggerInput[ReconcileInput]) (any, error) {
-	// Not exactly sure why Go cannot do this cast automatically, but whatever...
-	rawDebounce := (resiliency.DebounceLast[reconcileTriggerInput[ReconcileInput], any, reconcilerDebounceRunner[ReconcileInput]](*od))
-	return rawDebounce.Run(ctx, input)
+func (od *objectDebounce[ReconcileInput]) run(ctx context.Context, input reconcileTriggerInput[ReconcileInput]) {
+	debounceRaw := resiliency.DebounceLastAction[reconcileTriggerInput[ReconcileInput]](*od)
+	debounceRaw.Run(ctx, input)
 }
 
 type reconcilerDebouncer[ReconcileInput any] struct {
-	debounceMap   *syncmap.Map[types.NamespacedName, objectDebounce[ReconcileInput]]
+	debounceMap   *syncmap.Map[types.NamespacedName, *objectDebounce[ReconcileInput]]
 	debounceDelay time.Duration
+	maxDelay      time.Duration
 }
 
-func newReconcilerDebouncer[ReconcileInput any](debounceDelay time.Duration) *reconcilerDebouncer[ReconcileInput] {
+func newReconcilerDebouncer[ReconcileInput any]() *reconcilerDebouncer[ReconcileInput] {
 	return &reconcilerDebouncer[ReconcileInput]{
-		debounceMap:   &syncmap.Map[types.NamespacedName, objectDebounce[ReconcileInput]]{},
-		debounceDelay: debounceDelay,
+		debounceMap:   &syncmap.Map[types.NamespacedName, *objectDebounce[ReconcileInput]]{},
+		debounceDelay: reconciliationDebounceDelay,
+		maxDelay:      reconciliationMaxDelay,
 	}
 }
 
-func objectDebounceFactory[ReconcileInput any](trigger reconcileTrigger[ReconcileInput], debounceDelay time.Duration) objectDebounce[ReconcileInput] {
-	debounce := resiliency.NewDebounceLast[reconcileTriggerInput[ReconcileInput], any, reconcilerDebounceRunner[ReconcileInput]](
-		func(input reconcileTriggerInput[ReconcileInput]) (any, error) {
-			return nil, trigger(input)
-		},
-		debounceDelay,
-	)
-
-	return objectDebounce[ReconcileInput](debounce)
+func objectDebounceFactory[ReconcileInput any](trigger reconcileTrigger[ReconcileInput], debounceDelay, maxDelay time.Duration) *objectDebounce[ReconcileInput] {
+	debounce := resiliency.NewDebounceLastAction[reconcileTriggerInput[ReconcileInput]](trigger, debounceDelay, maxDelay)
+	return (*objectDebounce[ReconcileInput])(debounce)
 }
 
 // Call OnReconcile when an object is being reconciled. This prevents the inner debouncer map from growing indefinitely.
@@ -62,9 +55,9 @@ func (rd *reconcilerDebouncer[ReconcileInput]) OnReconcile(name types.Namespaced
 }
 
 // Tries to trigger reconciliation for an object identified by name, after appropriate debouncing.
-func (rd *reconcilerDebouncer[ReconcileInput]) ReconciliationNeeded(name types.NamespacedName, ri ReconcileInput, trigger reconcileTrigger[ReconcileInput]) error {
-	debounce, _ := rd.debounceMap.LoadOrStoreNew(name, func() objectDebounce[ReconcileInput] {
-		return objectDebounceFactory[ReconcileInput](trigger, rd.debounceDelay)
+func (rd *reconcilerDebouncer[ReconcileInput]) ReconciliationNeeded(ctx context.Context, name types.NamespacedName, ri ReconcileInput, trigger reconcileTrigger[ReconcileInput]) {
+	debounce, _ := rd.debounceMap.LoadOrStoreNew(name, func() *objectDebounce[ReconcileInput] {
+		return objectDebounceFactory[ReconcileInput](trigger, rd.debounceDelay, rd.maxDelay)
 	})
 
 	input := reconcileTriggerInput[ReconcileInput]{
@@ -72,6 +65,5 @@ func (rd *reconcilerDebouncer[ReconcileInput]) ReconciliationNeeded(name types.N
 		input:  ri,
 	}
 
-	_, err := debounce.run(context.Background(), input)
-	return err
+	debounce.run(context.Background(), input)
 }

@@ -1,0 +1,149 @@
+package resiliency
+
+import (
+	"context"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
+)
+
+func TestExecutesActionRunnerAfterDelay(t *testing.T) {
+	t.Parallel()
+
+	const debounceDelay = time.Millisecond * 100
+	const testTimeoutDelay = time.Millisecond * 1000
+
+	done := make(chan struct{})
+	deb := NewDebounceLastAction(func(_ int) { close(done) }, debounceDelay, testTimeoutDelay)
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeoutDelay)
+	defer cancel()
+
+	start := time.Now()
+	deb.Run(ctx, 0)
+	<-done
+	finish := time.Now()
+
+	// The call should happen after debounceDelay
+	require.WithinRange(t, finish, start.Add(debounceDelay), time.Now().Add(testTimeoutDelay))
+}
+
+func TestDebounceActionRapidInvocations(t *testing.T) {
+	t.Parallel()
+
+	const numCalls = 5
+	counter := atomic.Int32{}
+	lastFinished := &concurrency.AtomicTime{}
+
+	const debounceDelay = time.Millisecond * 200
+	const testTimeoutDelay = time.Millisecond * 1000
+
+	deb := NewDebounceLastAction(func(c *atomic.Int32) {
+		c.Add(1)
+		lastFinished.Store(time.Now())
+	}, debounceDelay, testTimeoutDelay)
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeoutDelay)
+	defer cancel()
+
+	start := time.Now()
+	// Make numCalls calls to runner, in order, as fast as possible
+	for i := 0; i < numCalls; i++ {
+		deb.Run(ctx, &counter)
+	}
+
+	time.Sleep(testTimeoutDelay)
+
+	require.WithinRange(t, lastFinished.Load(), start.Add(debounceDelay), time.Now().Add(testTimeoutDelay))
+}
+
+func TestDebounceActionIsReusable(t *testing.T) {
+	t.Parallel()
+
+	const debounceDelay = time.Millisecond * 150
+	const testTimeoutDelay = time.Millisecond * 1000
+
+	const numCalls = 3
+	event := concurrency.NewAutoResetEvent(false)
+
+	deb := NewDebounceLastAction(func(e *concurrency.AutoResetEvent) { e.Set() }, debounceDelay, testTimeoutDelay)
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeoutDelay)
+	defer cancel()
+
+	makeCalls := func() {
+		event.Clear()
+
+		for i := 0; i < numCalls; i++ {
+			deb.Run(ctx, event)
+		}
+
+		<-event.Wait()
+	}
+
+	start := time.Now()
+	testTimeout := start.Add(testTimeoutDelay)
+	makeCalls()
+	finish := time.Now()
+
+	require.WithinRange(t, finish, start.Add(debounceDelay), testTimeout)
+
+	// Now the same debounce should be ready for another round of calls
+
+	start = time.Now()
+	makeCalls()
+	finish = time.Now()
+
+	require.WithinRange(t, finish, start.Add(debounceDelay), testTimeout)
+}
+
+func TestDebounceActionDoesNotExecuteRunnerIfContextCancelled(t *testing.T) {
+	t.Parallel()
+
+	const debounceDelay = time.Millisecond * 500
+	const contextTimeoutDelay = time.Millisecond * 100
+
+	called := atomic.Bool{}
+	deb := NewDebounceLastAction(func(b *atomic.Bool) { b.Store(true) }, debounceDelay, time.Second)
+
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), contextTimeoutDelay)
+	defer cancel()
+	deb.Run(ctx, &called)
+
+	<-ctx.Done()
+	finish := time.Now()
+
+	require.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
+	// Assuming debounceDelay is significantly larger than contextTimeoutDelay, the call should return
+	// before debounceDelay.
+	require.WithinRange(t, finish, start.Add(contextTimeoutDelay), start.Add(debounceDelay))
+}
+
+func TestDebounceActionMaxDelay(t *testing.T) {
+	t.Parallel()
+
+	const debounceDelay = 50 * time.Millisecond
+	const maxDelay = 500 * time.Millisecond
+	counter := atomic.Int32{}
+	deb := NewDebounceLastAction(func(c *atomic.Int32) { c.Add(1) }, debounceDelay, maxDelay)
+
+	// Call in tight loop for longer than maxDelay, more frequently than debounceDelay
+	threshold := time.Now().Add(maxDelay).Add(maxDelay / 2)
+	for {
+		deb.Run(context.Background(), &counter)
+		if time.Now().After(threshold) {
+			break
+		}
+	}
+
+	currentCounter := counter.Load()
+	require.Equalf(t, int32(1), currentCounter, "Expecetd one call to action because max delay was reached")
+
+	// Ensure that the action is called again because we were calling past maxDelay
+	require.Eventuallyf(t, func() bool {
+		currentCounter = counter.Load()
+		return currentCounter == 2
+	}, maxDelay*10, maxDelay/2, "Expecetd two total calls to action")
+}

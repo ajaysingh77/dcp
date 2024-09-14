@@ -37,6 +37,7 @@ const (
 	additionalReconciliationDelay = 2 * time.Second
 	conflictRequeueDelay          = 100 * time.Millisecond
 	reconciliationDebounceDelay   = 500 * time.Millisecond
+	reconciliationMaxDelay        = 5 * time.Second
 )
 
 func ensureFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objectChange {

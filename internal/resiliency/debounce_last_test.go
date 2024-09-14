@@ -21,7 +21,7 @@ func TestExecutesRunnerAfterDelay(t *testing.T) {
 	const debounceDelay = time.Millisecond * 100
 	const testTimeoutDelay = time.Millisecond * 1000
 
-	deb := NewDebounceLast(runner, debounceDelay)
+	deb := NewDebounceLast(runner, debounceDelay, testTimeoutDelay)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeoutDelay)
 	defer cancel()
 
@@ -46,7 +46,7 @@ func TestReturnsErrorFromRunner(t *testing.T) {
 	const debounceDelay = time.Millisecond * 100
 	const testTimeoutDelay = time.Millisecond * 1000
 
-	deb := NewDebounceLast(runner, debounceDelay)
+	deb := NewDebounceLast(runner, debounceDelay, testTimeoutDelay)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeoutDelay)
 	defer cancel()
 
@@ -69,7 +69,7 @@ func TestDebouncesRapidInvocations(t *testing.T) {
 	const debounceDelay = time.Millisecond * 200
 	const testTimeoutDelay = time.Millisecond * 1000
 
-	deb := NewDebounceLast(runner, debounceDelay)
+	deb := NewDebounceLast(runner, debounceDelay, testTimeoutDelay)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeoutDelay)
 	defer cancel()
 
@@ -117,7 +117,7 @@ func TestDebounceIsReusable(t *testing.T) {
 	const testTimeoutDelay = time.Millisecond * 1000
 	const numCalls = 3
 
-	deb := NewDebounceLast(runner, debounceDelay)
+	deb := NewDebounceLast(runner, debounceDelay, testTimeoutDelay)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeoutDelay)
 	defer cancel()
 
@@ -170,7 +170,7 @@ func TestReturnsErrorIfContextCancelled(t *testing.T) {
 	const debounceDelay = time.Millisecond * 500
 	const contextTimeoutDelay = time.Millisecond * 100
 
-	deb := NewDebounceLast(runner, debounceDelay)
+	deb := NewDebounceLast(runner, debounceDelay, 2*time.Second)
 
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeoutDelay)
@@ -182,4 +182,42 @@ func TestReturnsErrorIfContextCancelled(t *testing.T) {
 	// Assuming debounceDelay is significantly larger than contextTimeoutDelay, the call should return
 	// before debounceDelay.
 	require.WithinRange(t, finish, start.Add(contextTimeoutDelay), start.Add(debounceDelay))
+}
+
+func TestDebounceMaxDelay(t *testing.T) {
+	t.Parallel()
+
+	const debounceDelay = time.Millisecond * 200
+	const maxDelay = time.Millisecond * 500
+	const testTimeoutDelay = time.Millisecond * 1000
+	counter := atomic.Int32{}
+
+	deb := NewDebounceLast(func(c *atomic.Int32) (int32, error) {
+		current := c.Add(1)
+		return current, nil
+	}, debounceDelay, maxDelay)
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeoutDelay)
+	defer cancel()
+
+	// Call more frequently than debounceDelay, for longer than maxDelay
+	const sleep = debounceDelay / 5
+	threshold := time.Now().Add(maxDelay).Add(maxDelay / 2)
+	for {
+		go func() {
+			_, _ = deb.Run(ctx, &counter)
+		}()
+		time.Sleep(sleep)
+		if time.Now().After(threshold) {
+			break
+		}
+	}
+
+	currentCounter := counter.Load()
+	require.Equalf(t, int32(1), currentCounter, "Expecetd one call to runner because max delay was reached")
+
+	// Ensure that the runner is called again because we were calling past maxDelay
+	require.Eventuallyf(t, func() bool {
+		currentCounter = counter.Load()
+		return currentCounter == 2
+	}, maxDelay*10, maxDelay/2, "Expecetd two total calls to runner")
 }

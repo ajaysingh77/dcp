@@ -204,7 +204,7 @@ func (r *TestIdeRunner) doStopRun(runID controllers.RunID, exitCode int32) error
 	}
 
 	if run.ChangeHandler != nil {
-		done := make(chan struct{}) // Make sure OnRunChanged is called before we return and let the test proceed.
+		done := make(chan struct{}) // Make sure OnRunCompleted is called before we return and let the test proceed.
 		go func() {
 			ec := new(int32)
 			*ec = exitCode
@@ -212,7 +212,7 @@ func (r *TestIdeRunner) doStopRun(runID controllers.RunID, exitCode int32) error
 			case <-r.lifetimeCtx.Done():
 				return
 			case <-run.startWaitingChan:
-				run.ChangeHandler.OnRunChanged(runID, run.PID, ec, nil)
+				run.ChangeHandler.OnRunCompleted(runID, ec, nil)
 			}
 			close(done)
 		}()

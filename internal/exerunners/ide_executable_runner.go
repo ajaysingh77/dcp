@@ -3,9 +3,8 @@ package exerunners
 import (
 	"bytes"
 	"context"
-	"errors"
-
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,14 +16,12 @@ import (
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
-	"github.com/microsoft/usvc-apiserver/pkg/process"
 
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
@@ -39,92 +36,6 @@ func NewStartingState(status apiv1.ExecutableStatus) *startingState {
 		status:  status,
 		updated: false,
 	}
-}
-
-type runState struct {
-	name          types.NamespacedName
-	runID         controllers.RunID
-	sessionURL    string // The URL of the run session resource in the IDE
-	changeHandler controllers.RunChangeHandler
-	handlerWG     *sync.WaitGroup
-	pid           process.Pid_t
-	finished      bool
-	exitCode      *int32
-	stdOut        *usvc_io.BufferedWrappingWriter
-	stdErr        *usvc_io.BufferedWrappingWriter
-}
-
-func NewRunState() *runState {
-	rs := &runState{
-		runID:         "",
-		changeHandler: nil,
-		handlerWG:     &sync.WaitGroup{},
-		finished:      false,
-		exitCode:      apiv1.UnknownExitCode,
-		stdOut:        usvc_io.NewBufferedWrappingWriter(),
-		stdErr:        usvc_io.NewBufferedWrappingWriter(),
-	}
-
-	// Two things need to happen before the completion handler is called:
-	// 1. The StartRun() method of the IDE runner must get a chance to set the completion handler.
-	// 2. The IDE runner consumer must call startWaitForRunCompletion() for the run.
-	rs.handlerWG.Add(2)
-
-	return rs
-}
-
-// Note: the order in which NotifyRunChangedAsync() are executed does not really matter, because that method
-// always uses the latest data stored in the run state, and the consistency of the data is guaranteed by the lock.
-// So we can safely "fire and forget" this method.
-func (rs *runState) NotifyRunChangedAsync(locker sync.Locker) {
-	go func() {
-		rs.handlerWG.Wait()
-
-		// Make sure the run state is not changed while we are gathering data for the change handler.
-		locker.Lock()
-		runID := rs.runID
-		pid := rs.pid
-		exitCode := apiv1.UnknownExitCode
-		if rs.exitCode != apiv1.UnknownExitCode {
-			exitCode = new(int32)
-			*exitCode = *rs.exitCode
-		}
-		locker.Unlock()
-
-		rs.changeHandler.OnRunChanged(runID, pid, exitCode, nil)
-	}()
-}
-
-func (rs *runState) IncreaseCompletionCallReadiness() {
-	rs.handlerWG.Done()
-}
-
-func (rs *runState) SetOutputWriters(stdOut, stdErr io.WriteCloser) error {
-	var err error
-	if stdOut != nil {
-		err = rs.stdOut.SetTarget(usvc_io.NewTimestampWriter(stdOut))
-	} else {
-		err = rs.stdOut.SetTarget(io.Discard)
-	}
-	if err != nil {
-		return err
-	}
-
-	if stdErr != nil {
-		err = rs.stdErr.SetTarget(usvc_io.NewTimestampWriter(stdErr))
-	} else {
-		err = rs.stdErr.SetTarget(io.Discard)
-	}
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (rs *runState) CloseOutputWriters() {
-	rs.stdOut.Close()
-	rs.stdErr.Close()
 }
 
 type IdeExecutableRunner struct {
@@ -430,7 +341,7 @@ func (r *IdeExecutableRunner) HandleSessionTermination(stn ideRunSessionTerminat
 	runState.runID = runID
 	runState.pid = stn.PID
 	runState.exitCode = exitCode
-	runState.NotifyRunChangedAsync(r.lock)
+	runState.NotifyRunCompletedAsync(r.lock)
 }
 
 func (r *IdeExecutableRunner) HandleServiceLogs(nsl ideSessionLogNotification) {

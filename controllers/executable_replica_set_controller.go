@@ -40,9 +40,6 @@ type ExecutableReplicaSetReconciler struct {
 	reconciliationSeqNo uint32
 	runningReplicaSets  syncmap.Map[types.NamespacedName, executableReplicaSetData]
 	replicaCounters     syncmap.Map[types.NamespacedName, *atomic.Int32]
-
-	// Debouncer used to schedule reconciliations.
-	debouncer *reconcilerDebouncer[any]
 }
 
 const (
@@ -68,7 +65,6 @@ var (
 func NewExecutableReplicaSetReconciler(client ctrl_client.Client, log logr.Logger) *ExecutableReplicaSetReconciler {
 	r := ExecutableReplicaSetReconciler{
 		Client:             client,
-		debouncer:          newReconcilerDebouncer[any](reconciliationDebounceDelay),
 		runningReplicaSets: syncmap.Map[types.NamespacedName, executableReplicaSetData]{},
 		replicaCounters:    syncmap.Map[types.NamespacedName, *atomic.Int32]{},
 		Log:                log,
@@ -336,8 +332,6 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 	reconciliationDelay := additionalReconciliationDelay
 
 	log := r.Log.WithValues("ExecutableReplicaSet", req.NamespacedName).WithValues("Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1))
-
-	r.debouncer.OnReconcile(req.NamespacedName)
 
 	if ctx.Err() != nil {
 		log.V(1).Info("Request context expired, nothing to do...")

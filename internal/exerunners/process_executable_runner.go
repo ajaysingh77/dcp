@@ -81,7 +81,7 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 		processExitHandler = process.ProcessExitHandlerFunc(func(pid process.Pid_t, exitCode int32, err error) {
 			ec := new(int32)
 			*ec = exitCode
-			runChangeHandler.OnRunChanged(pidToRunID(pid), pid, ec, err)
+			runChangeHandler.OnRunCompleted(pidToRunID(pid), ec, err)
 		})
 	}
 

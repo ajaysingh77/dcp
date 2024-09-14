@@ -64,6 +64,9 @@ type ExecutableReconciler struct {
 
 	// Debouncer used to schedule reconciliations. Extra data carried is the finished run ID.
 	debouncer *reconcilerDebouncer[RunID]
+
+	// Lifetime context of the controller, used to cancel operations during shutdown.
+	lifetimeCtx context.Context
 }
 
 var (
@@ -76,7 +79,8 @@ func NewExecutableReconciler(lifetimeCtx context.Context, client ctrl_client.Cli
 		ExecutableRunners: executableRunners,
 		runs:              maps.NewSynchronizedDualKeyMap[types.NamespacedName, RunID, *runInfo](),
 		notifyRunChanged:  chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
-		debouncer:         newReconcilerDebouncer[RunID](reconciliationDebounceDelay),
+		debouncer:         newReconcilerDebouncer[RunID](),
+		lifetimeCtx:       lifetimeCtx,
 		Log:               log,
 	}
 
@@ -317,10 +321,28 @@ func (r *ExecutableReconciler) startExecutable(ctx context.Context, exe *apiv1.E
 	return statusChanged
 }
 
+func (r *ExecutableReconciler) OnRunChanged(runID RunID, pid process.Pid_t, exitCode *int32, err error) {
+	r.processRunChangeNotification(runID, pid, exitCode, err, func(ri *runInfo) {
+		ri.exeState = apiv1.ExecutableStateRunning
+	})
+}
+
+func (r *ExecutableReconciler) OnRunCompleted(runID RunID, exitCode *int32, err error) {
+	r.processRunChangeNotification(runID, process.UnknownPID, exitCode, err, func(ri *runInfo) {
+		ri.exeState = apiv1.ExecutableStateFinished
+	})
+}
+
 // Handle notification about changed or completed Executable run. This function runs outside of the reconcilation loop,
 // so we just memorize the PID and process exit code (if available) in the run status map,
 // and not attempt to modify any Kubernetes data.
-func (r *ExecutableReconciler) OnRunChanged(runID RunID, pid process.Pid_t, exitCode *int32, err error) {
+func (r *ExecutableReconciler) processRunChangeNotification(
+	runID RunID,
+	pid process.Pid_t,
+	exitCode *int32,
+	err error,
+	updateExeState func(*runInfo),
+) {
 	name, currentRunInfo, found := r.runs.FindBySecondKey(runID)
 
 	// It's possible we receive a notification about a run we are not tracking, but that means we
@@ -333,12 +355,14 @@ func (r *ExecutableReconciler) OnRunChanged(runID RunID, pid process.Pid_t, exit
 	// so we need to make a copy to avoid data races with other controller methods.
 	newRunInfo := currentRunInfo.DeepCopy()
 
+	updateExeState(newRunInfo)
+
 	var effectiveExitCode *int32
 	if err != nil {
 		r.Log.V(1).Info("Executable run could not be tracked", "Executable", name.String(), "RunID", runID, "LastState", currentRunInfo.exeState, "Error", err.Error())
 		effectiveExitCode = apiv1.UnknownExitCode
 	} else {
-		r.Log.V(1).Info("queue Executable run change", "Executable", name.String(), "RunID", runID, "LastState", currentRunInfo.exeState, "NewPID", pid, "NewExitCode", exitCode)
+		r.Log.V(1).Info("queue Executable run change", "Executable", name.String(), "RunID", runID, "LastState", currentRunInfo.exeState, "PID", pid, "ExitCode", exitCode, "ExecutableState", newRunInfo.exeState)
 		effectiveExitCode = exitCode
 	}
 
@@ -351,22 +375,13 @@ func (r *ExecutableReconciler) OnRunChanged(runID RunID, pid process.Pid_t, exit
 		*newRunInfo.pid = int64(pid)
 	}
 
-	if newRunInfo.exitCode != apiv1.UnknownExitCode {
-		newRunInfo.exeState = apiv1.ExecutableStateFinished
-	} else {
-		newRunInfo.exeState = apiv1.ExecutableStateRunning
-	}
-
 	r.runs.QueueDeferredOp(name, func(runs *maps.DualKeyMap[types.NamespacedName, RunID, *runInfo]) {
 		// The run may have been deleted by the time we get here, so we do not care if Update() returns false.
 		_ = runs.Update(name, runID, newRunInfo)
 	})
 
 	// Schedule reconciliation for corresponding executable
-	scheduleErr := r.debouncer.ReconciliationNeeded(name, runID, r.scheduleExecutableReconciliation)
-	if scheduleErr != nil {
-		r.Log.Error(scheduleErr, "could not schedule reconciliation for Executable object", "Executable", name.String(), "RunID", runID, "ExecutableState", currentRunInfo.exeState)
-	}
+	r.debouncer.ReconciliationNeeded(r.lifetimeCtx, name, runID, r.scheduleExecutableReconciliation)
 }
 
 // Handle setting up process tracking once an Executable has transitioned from newly created or starting to a stabe state such as running or finished.
@@ -403,10 +418,7 @@ func (r *ExecutableReconciler) OnStartingCompleted(name types.NamespacedName, ru
 	})
 
 	// Schedule reconciliation for corresponding Executable
-	scheduleErr := r.debouncer.ReconciliationNeeded(name, runID, r.scheduleExecutableReconciliation)
-	if scheduleErr != nil {
-		r.Log.Error(scheduleErr, "could not schedule reconciliation for Executable object", "Executable", name.String(), "RunID", runID, "LastState", exeStatus.State)
-	}
+	r.debouncer.ReconciliationNeeded(r.lifetimeCtx, name, runID, r.scheduleExecutableReconciliation)
 }
 
 // Stops the underlying Executable run, if any.
@@ -492,7 +504,7 @@ func (r *ExecutableReconciler) deleteOutputFiles(exe *apiv1.Executable, log logr
 	}
 }
 
-func (r *ExecutableReconciler) scheduleExecutableReconciliation(rti reconcileTriggerInput[RunID]) error {
+func (r *ExecutableReconciler) scheduleExecutableReconciliation(rti reconcileTriggerInput[RunID]) {
 	event := ctrl_event.GenericEvent{
 		Object: &apiv1.Executable{
 			ObjectMeta: metav1.ObjectMeta{
@@ -502,7 +514,6 @@ func (r *ExecutableReconciler) scheduleExecutableReconciliation(rti reconcileTri
 		},
 	}
 	r.notifyRunChanged.In <- event
-	return nil
 }
 
 func (r *ExecutableReconciler) createEndpoint(

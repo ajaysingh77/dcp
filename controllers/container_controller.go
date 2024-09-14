@@ -138,7 +138,7 @@ func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Clie
 		containerEvtCh:         nil,
 		networkEvtCh:           nil,
 		containerEvtWorkerStop: nil,
-		debouncer:              newReconcilerDebouncer[string](reconciliationDebounceDelay),
+		debouncer:              newReconcilerDebouncer[string](),
 		watchingResources:      syncmap.Map[types.UID, bool]{},
 		lock:                   &sync.Mutex{},
 		lifetimeCtx:            lifetimeCtx,
@@ -1677,16 +1677,10 @@ func (r *ContainerReconciler) computeEffectiveInvocationArgs(
 }
 
 func (r *ContainerReconciler) scheduleContainerReconciliation(containerName types.NamespacedName, containerID string) {
-	err := r.debouncer.ReconciliationNeeded(containerName, containerID, r.doReconcileContainer)
-	if err != nil {
-		r.Log.Error(err, "could not schedule reconcilation for Container object",
-			"ContainerName", containerName.String(),
-			"ContainerID", containerID,
-		)
-	}
+	r.debouncer.ReconciliationNeeded(r.lifetimeCtx, containerName, containerID, r.doReconcileContainer)
 }
 
-func (r *ContainerReconciler) doReconcileContainer(rti reconcileTriggerInput[string]) error {
+func (r *ContainerReconciler) doReconcileContainer(rti reconcileTriggerInput[string]) {
 	event := ctrl_event.GenericEvent{
 		Object: &apiv1.Container{
 			ObjectMeta: metav1.ObjectMeta{
@@ -1696,7 +1690,6 @@ func (r *ContainerReconciler) doReconcileContainer(rti reconcileTriggerInput[str
 		},
 	}
 	r.notifyContainerChanged.In <- event
-	return nil
 }
 
 func (r *ContainerReconciler) onShutdown() {

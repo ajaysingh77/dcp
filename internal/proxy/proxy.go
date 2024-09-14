@@ -106,7 +106,7 @@ func (s ProxyState) String() string {
 type udpStream struct {
 	clientAddr net.Addr                              // Address of the client that is being served by this stream
 	packets    *queue.ConcurrentBoundedQueue[[]byte] // Queue of packets from the client
-	lastUsed   *AtomicTime                           // Time when this stream was last used
+	lastUsed   *concurrency.AtomicTime               // Time when this stream was last used
 	ctx        context.Context                       // Context that will be cancelled when the stream is to be retired.
 	cancel     context.CancelFunc                    // The function to cancel the stream context.
 }
@@ -592,7 +592,7 @@ func (p *Proxy) getPacketQueue(clientAddr net.Addr, proxyConn net.PacketConn, co
 		return udpStream{
 			clientAddr: clientAddr,
 			packets:    queue.NewConcurrentBoundedQueue[[]byte](MaxCachedUdpPackets),
-			lastUsed:   AtomicTimeNow(),
+			lastUsed:   concurrency.AtomicTimeNow(),
 			ctx:        nil,
 			cancel:     nil,
 		}
