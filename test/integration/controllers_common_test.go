@@ -16,6 +16,7 @@ import (
 	"runtime"
 	std_slices "slices"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -155,11 +156,18 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 		"--test-container-log-source", containerOrchestrator.GetSocketFilePath(),
 		"--monitor", strconv.Itoa(os.Getpid()),
 	)
-	cmd.Env = []string{fmt.Sprintf("%s=%s", kubeconfig.DCP_SECURE_TOKEN, string(bearerToken))}
+	env := append(os.Environ(), fmt.Sprintf("%s=%s", kubeconfig.DCP_SECURE_TOKEN, string(bearerToken)))
+	env = addToEnvIfPresent(env,
+		logger.DCP_DIAGNOSTICS_LOG_FOLDER,
+		logger.DCP_DIAGNOSTICS_LOG_LEVEL,
+		logger.DCP_LOG_SOCKET,
+	)
+	cmd.Env = env
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	pe := process.NewOSExecutor(log)
+
 	apiserverExitHandler := process.ProcessExitHandlerFunc(func(_ process.Pid_t, exitCode int32, err error) {
 		if errors.Is(err, context.Canceled) {
 			// Expected, this is how we cancel the API server process.
@@ -174,6 +182,7 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 		onApiServerExited.Set()
 	})
 
+	pe := process.NewOSExecutor(log)
 	_, startWaitForProcessExit, dcpStartErr := pe.StartProcess(dcpCtx, cmd, apiserverExitHandler)
 	if dcpStartErr != nil {
 		_ = os.Remove(kubeconfigPath)
@@ -335,6 +344,22 @@ func getDcpExecutablePath() (string, error) {
 	}
 
 	return filepath.Join(append([]string{rootFolder}, tail...)...), nil
+}
+
+func addToEnvIfPresent(env []string, vars ...string) []string {
+	retval := env
+
+	for _, varName := range vars {
+		value, found := os.LookupEnv(varName)
+		if found {
+			value = strings.TrimSpace(value)
+			if value != "" {
+				retval = append(retval, fmt.Sprintf("%s=%s", varName, value))
+			}
+		}
+	}
+
+	return retval
 }
 
 // unexpectedObjectStateError can be used to provide additional context when an object is not in the expected state.
