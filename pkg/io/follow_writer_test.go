@@ -3,8 +3,10 @@ package io_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -152,6 +154,23 @@ func TestFollowWriterNoFollowWholeFile(t *testing.T) {
 
 	received := string(buf.Bytes())
 	require.Equal(t, content, received, "follow writer did not emit expected content, buffer content is: %s", received)
+}
+
+// Verifies that assumptions we make about the atomic.Value type are correct.
+func TestFollowWriterAtomicValueOkForErrors(t *testing.T) {
+	t.Parallel()
+
+	var errVal atomic.Value
+	rawErr := errVal.Load()
+	require.Nil(t, rawErr, "expected the Load not to panic and the type assertion to succeed")
+
+	expected := errors.New("test error")
+	errVal.Store(expected)
+	rawErr = errVal.Load()
+	require.NotNil(t, rawErr, "expected the Load to return non-nil value")
+	err, isError := rawErr.(error)
+	require.True(t, isError, "expected the value returned by Load to be an error")
+	require.ErrorIs(t, err, expected, "expected the error to be successfully stored")
 }
 
 type nopWriteCloser struct{}

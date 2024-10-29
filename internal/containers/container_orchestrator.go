@@ -198,6 +198,11 @@ type ContainerLogSource interface {
 	CaptureContainerLogs(ctx context.Context, container string, stdout io.WriteCloser, stderr io.WriteCloser, options StreamContainerLogsOptions) error
 }
 
+type CachedRuntimeStatusUsage string
+
+const CachedRuntimeStatusAllowed CachedRuntimeStatusUsage = "cachedResultAllowed"
+const IgnoreCachedRuntimeStatus CachedRuntimeStatusUsage = "ignoreCachedResult"
+
 // Represents portion of container orchestrator functionality that is related to container management
 type ContainerOrchestrator interface {
 	// Is this the default orchestrator?
@@ -213,7 +218,7 @@ type ContainerOrchestrator interface {
 	EnsureBackgroundStatusUpdates(ctx context.Context)
 
 	// Check the runtime status
-	CheckStatus(ctx context.Context, ignoreCache bool) ContainerRuntimeStatus
+	CheckStatus(ctx context.Context, cacheUsage CachedRuntimeStatusUsage) ContainerRuntimeStatus
 
 	// Build a new container image. If successful, the ID of the image is returned.
 	BuildImage(ctx context.Context, options BuildImageOptions) error

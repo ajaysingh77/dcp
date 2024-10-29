@@ -120,13 +120,11 @@ func (sls *stdIoLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent, l
 
 	if evt.Type == watch.Modified {
 		if !resource.GetDeletionTimestamp().IsZero() {
-			followWriters, found := sls.activeStreams.Load(resource.GetUID())
+			followWriters, found := sls.activeStreams.LoadAndDelete(resource.GetUID())
 			if found {
 				for _, followWriter := range followWriters {
 					followWriter.Cancel()
 				}
-
-				sls.activeStreams.Delete(resource.GetUID())
 			}
 		} else if resource.Done() {
 			// If the resource isn't running, ensure logs stop streaming once they reach EOF

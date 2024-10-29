@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/go-logr/logr"
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
@@ -27,19 +26,15 @@ type TestIdeRun struct {
 	RunInfo              *controllers.ExecutableRunInfo
 	StartWaitingCalled   bool
 	startWaitingChan     chan struct{}
-	StartedAt            time.Time
-	EndedAt              time.Time
 	ChangeHandler        controllers.RunChangeHandler
 	StartWaitingCallback func()
-	PID                  process.Pid_t
-	ExitCode             int32
 }
 
 func (r *TestIdeRun) Running() bool {
-	return r.EndedAt.IsZero()
+	return r.RunInfo.FinishTimestamp.IsZero()
 }
 func (r *TestIdeRun) Finished() bool {
-	return !r.EndedAt.IsZero()
+	return !r.RunInfo.FinishTimestamp.IsZero()
 }
 
 type TestIdeRunner struct {
@@ -57,7 +52,13 @@ func NewTestIdeRunner(lifetimeCtx context.Context) *TestIdeRunner {
 	}
 }
 
-func (r *TestIdeRunner) StartRun(_ context.Context, exe *apiv1.Executable, runInfo *controllers.ExecutableRunInfo, runChangeHandler controllers.RunChangeHandler, log logr.Logger) error {
+func (r *TestIdeRunner) StartRun(
+	_ context.Context,
+	exe *apiv1.Executable,
+	startingRunInfo *controllers.ExecutableRunInfo,
+	runChangeHandler controllers.RunChangeHandler,
+	log logr.Logger,
+) error {
 	r.m.Lock()
 	defer r.m.Unlock()
 
@@ -65,14 +66,13 @@ func (r *TestIdeRunner) StartRun(_ context.Context, exe *apiv1.Executable, runIn
 
 	runID := controllers.RunID("run_" + strconv.Itoa(int(atomic.AddInt32(&r.nextRunID, 1))))
 
-	runInfo.State = apiv1.ExecutableStateStarting
-	runInfo.ExecutionID = string(runID)
+	startingRunInfo.ExeState = apiv1.ExecutableStateStarting
+	startingRunInfo.ExecutionID = string(runID)
 
 	run := &TestIdeRun{
-		ID:        runID,
-		Exe:       exe,
-		RunInfo:   runInfo,
-		StartedAt: time.Now(),
+		ID:      runID,
+		Exe:     exe,
+		RunInfo: startingRunInfo.DeepCopy(),
 		StartWaitingCallback: func() {
 			r.m.Lock()
 			defer r.m.Unlock()
@@ -125,12 +125,10 @@ func (r *TestIdeRunner) SimulateSuccessfulRunStart(runID controllers.RunID, pid 
 	return r.SimulateRunStart(
 		func(_ types.NamespacedName, run *TestIdeRun) bool { return run.ID == runID },
 		func(run *TestIdeRun) {
-			run.RunInfo.Lock()
-			defer run.RunInfo.Unlock()
-
-			run.PID = pid
-			run.RunInfo.SetState(apiv1.ExecutableStateRunning)
-			run.RunInfo.StartupTimestamp = metav1.NewMicroTime(run.StartedAt)
+			run.RunInfo.Pid = new(int64)
+			*run.RunInfo.Pid = int64(pid)
+			run.RunInfo.ExeState = apiv1.ExecutableStateRunning
+			run.RunInfo.StartupTimestamp = metav1.NowMicro()
 		},
 	)
 }
@@ -139,13 +137,11 @@ func (r *TestIdeRunner) SimulateFailedRunStart(exeName types.NamespacedName, sta
 	return r.SimulateRunStart(
 		func(objName types.NamespacedName, run *TestIdeRun) bool { return objName == exeName },
 		func(run *TestIdeRun) {
-			run.RunInfo.Lock()
-			defer run.RunInfo.Unlock()
-
 			run.ID = controllers.UnknownRunID
-			run.PID = process.UnknownPID
-			run.RunInfo.SetState(apiv1.ExecutableStateFailedToStart)
-			run.RunInfo.StartupTimestamp = metav1.NewMicroTime(run.StartedAt)
+			run.RunInfo.Pid = apiv1.UnknownPID
+			run.RunInfo.ExeState = apiv1.ExecutableStateFailedToStart
+			run.RunInfo.StartupTimestamp = metav1.NowMicro()
+			run.RunInfo.FinishTimestamp = metav1.NowMicro()
 		},
 	)
 }
@@ -160,13 +156,10 @@ func (r *TestIdeRunner) SimulateRunStart(
 	}
 
 	if run.ChangeHandler != nil {
-		// Make sure OnStartingCompleted is called before we return and let the test proceed.
+		// Make sure OnStartupCompleted is called before we return and let the test proceed.
 		done := make(chan struct{})
 		go func() {
-			run.RunInfo.Lock()
-			defer run.RunInfo.Unlock()
-
-			run.ChangeHandler.OnStartingCompleted(run.Exe.NamespacedName(), run.ID, run.RunInfo, run.StartWaitingCallback)
+			run.ChangeHandler.OnStartupCompleted(run.Exe.NamespacedName(), run.ID, run.RunInfo.DeepCopy(), run.StartWaitingCallback)
 
 			close(done)
 		}()
@@ -202,8 +195,9 @@ func (r *TestIdeRunner) doStopRun(runID controllers.RunID, exitCode int32) error
 	var run, found = r.findAndChangeRun(
 		func(_ types.NamespacedName, run *TestIdeRun) bool { return run.ID == runID },
 		func(run *TestIdeRun) {
-			run.EndedAt = time.Now()
-			run.ExitCode = exitCode
+			run.RunInfo.FinishTimestamp = metav1.NowMicro()
+			run.RunInfo.ExitCode = new(int32)
+			*run.RunInfo.ExitCode = exitCode
 		},
 	)
 
@@ -212,11 +206,19 @@ func (r *TestIdeRunner) doStopRun(runID controllers.RunID, exitCode int32) error
 	}
 
 	if run.ChangeHandler != nil {
+		done := make(chan struct{}) // Make sure OnRunCompleted is called before we return and let the test proceed.
 		go func() {
 			ec := new(int32)
 			*ec = exitCode
-			run.ChangeHandler.OnRunCompleted(runID, ec, nil)
+			select {
+			case <-r.lifetimeCtx.Done():
+				return
+			case <-run.startWaitingChan:
+				run.ChangeHandler.OnRunCompleted(runID, ec, nil)
+			}
+			close(done)
 		}()
+		<-done
 	}
 
 	return nil

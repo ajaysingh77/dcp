@@ -99,16 +99,16 @@ func (*PodmanCliOrchestrator) ContainerHost() string {
 	return "host.containers.internal"
 }
 
-func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context, ignoreCache bool) containers.ContainerRuntimeStatus {
+func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context, cacheUsage containers.CachedRuntimeStatusUsage) containers.ContainerRuntimeStatus {
 	// A cached status is already available, return it
 	updateStatus.RLock()
-	if cachedStatus != nil && !ignoreCache {
+	if cachedStatus != nil && cacheUsage == containers.CachedRuntimeStatusAllowed {
 		updateStatus.RUnlock()
 		return *cachedStatus
 	}
 	updateStatus.RUnlock()
 
-	if !ignoreCache {
+	if cacheUsage == containers.CachedRuntimeStatusAllowed {
 		// For cached results, only one goroutine should be checking the status at a time
 		if syncErr := checkStatusSyncCh.Lock(ctx); syncErr != nil {
 			// Timed out, assume Podman is not responsive and unavailable
@@ -124,7 +124,7 @@ func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context, ignoreCache b
 
 	updateStatus.RLock()
 	// Check again if the status is available in the cache
-	if cachedStatus != nil && !ignoreCache {
+	if cachedStatus != nil && cacheUsage == containers.CachedRuntimeStatusAllowed {
 		updateStatus.RUnlock()
 		return *cachedStatus
 	}

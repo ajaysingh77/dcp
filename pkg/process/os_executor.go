@@ -229,11 +229,9 @@ func (e *OSExecutor) stopProcessInternal(pid Pid_t, opts processStoppingOpts) er
 	}
 
 	childStoppingErrors := slices.MapConcurrent[Pid_t, error](tree, func(id Pid_t) error {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-
 		// Retry stopping the child process as we occasionally see transient "Access Denied" errors.
-		return resiliency.RetryExponential(ctx, func() error {
+		const childStopTimeout = 2 * time.Second
+		return resiliency.RetryExponentialWithTimeout(context.Background(), childStopTimeout, func() error {
 			_, childStopErr := e.stopSingleProcess(id, opts)
 			return childStopErr
 		})
@@ -259,5 +257,11 @@ const (
 	// The caller is responsible for stopping the process, disregard "shouldStopProcess" value returned by tryStartWaiting().
 	optIsResponsibleForStopping processStoppingOpts = 0x8
 )
+
+func makeClosedChan() chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
+}
 
 var _ Executor = (*OSExecutor)(nil)

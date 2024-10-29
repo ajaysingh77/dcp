@@ -272,7 +272,7 @@ func startContainer(
 			if i.Status == containers.ContainerStatusRunning {
 				return nil
 			} else {
-				return fmt.Errorf("status of container %s is '%s' (was expecting '%s')", containerID, i.Status, containers.ContainerStatusExited)
+				return fmt.Errorf("status of container %s is '%s' (was expecting '%s')", containerID, i.Status, containers.ContainerStatusRunning)
 			}
 		})
 	}

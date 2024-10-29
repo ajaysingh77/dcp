@@ -14,22 +14,22 @@ const (
 )
 
 type FollowWriter struct {
-	err      error
+	err      atomic.Value
 	follow   atomic.Bool
 	cancel   context.CancelFunc
-	done     atomic.Bool
 	doneChan chan struct{}
 }
 
 // Creates a FollowWriter that reads content from the reader source and writes it to the writer destination.
 // Keeps trying to read new content even after EOF until StopFollow() is called, after which the next EOF
 // received will cause the reader and writer to stop.
+// If the source is an io.Closer, it will be closed when the FollowWriter is cancelled.
 func NewFollowWriter(ctx context.Context, source io.Reader, dest io.Writer) *FollowWriter {
 	followCtx, cancel := context.WithCancel(ctx)
 	fw := &FollowWriter{
+		err:      atomic.Value{},
 		follow:   atomic.Bool{},
 		cancel:   cancel,
-		done:     atomic.Bool{},
 		doneChan: make(chan struct{}),
 	}
 
@@ -48,13 +48,10 @@ func NewFollowWriter(ctx context.Context, source io.Reader, dest io.Writer) *Fol
 		reader := bufio.NewReader(source)
 		buf := make([]byte, defaultBufferSize)
 		timer := time.NewTimer(0)
-		timer.Stop()
+		timer.Stop() // Stop the timer initially
+		defer timer.Stop()
 
 		for {
-			if fw.done.Load() {
-				return
-			}
-
 			read := 0
 			var readErr error
 			// Peek to see if there's any data to read as reader.Read can potentially block
@@ -64,25 +61,24 @@ func NewFollowWriter(ctx context.Context, source io.Reader, dest io.Writer) *Fol
 				if read > 0 {
 					out, writeErr := dest.Write(buf[:read])
 					if writeErr != nil {
-						fw.finish(writeErr)
+						fw.err.Store(writeErr)
 						return
 					}
 
 					if out != read {
-						fw.finish(io.ErrShortWrite)
+						fw.err.Store(io.ErrShortWrite)
 						return
 					}
 				}
 
 				if readErr != nil && readErr != io.EOF {
-					fw.finish(readErr)
+					fw.err.Store(readErr)
 					return
 				}
 			}
 
 			if read <= 0 || readErr == io.EOF {
 				if !fw.follow.Load() {
-					fw.finish(nil)
 					return
 				}
 
@@ -93,7 +89,6 @@ func NewFollowWriter(ctx context.Context, source io.Reader, dest io.Writer) *Fol
 				select {
 				case <-followCtx.Done():
 					// Cancellation, so stop what we're doing
-					timer.Stop()
 					return
 				case <-timer.C:
 					if followCtx.Err() != nil {
@@ -113,7 +108,11 @@ func (fw *FollowWriter) StopFollow() {
 }
 
 func (fw *FollowWriter) Err() error {
-	return fw.err
+	rawVal := fw.err.Load()
+	if rawVal == nil {
+		return nil
+	}
+	return rawVal.(error)
 }
 
 func (fw *FollowWriter) Done() <-chan struct{} {
@@ -122,10 +121,4 @@ func (fw *FollowWriter) Done() <-chan struct{} {
 
 func (fw *FollowWriter) Cancel() {
 	fw.cancel()
-}
-
-func (fw *FollowWriter) finish(err error) {
-	if fw.done.CompareAndSwap(false, true) {
-		fw.err = err
-	}
 }

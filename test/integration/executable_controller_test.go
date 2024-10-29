@@ -269,7 +269,9 @@ func TestExecutableStopState(t *testing.T) {
 			verifyRunEnded: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) {
 				runEnded := func(_ context.Context) (bool, error) {
 					endedRuns := ideRunner.FindAll(exe.Spec.ExecutablePath, func(run ctrl_testutil.TestIdeRun) bool {
-						return run.Finished() && run.ExitCode == ctrl_testutil.KilledProcessExitCode
+						return run.Finished() &&
+							run.RunInfo.ExitCode != nil &&
+							*run.RunInfo.ExitCode == ctrl_testutil.KilledProcessExitCode
 					})
 					return len(endedRuns) == 1, nil
 				}
@@ -387,7 +389,9 @@ func TestExecutableDeletion(t *testing.T) {
 			verifyRunEnded: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) {
 				runEnded := func(_ context.Context) (bool, error) {
 					endedRuns := ideRunner.FindAll(exe.Spec.ExecutablePath, func(run ctrl_testutil.TestIdeRun) bool {
-						return run.Finished() && run.ExitCode == ctrl_testutil.KilledProcessExitCode
+						return run.Finished() &&
+							run.RunInfo.ExitCode != nil &&
+							*run.RunInfo.ExitCode == ctrl_testutil.KilledProcessExitCode
 					})
 					return len(endedRuns) == 1, nil
 				}
@@ -1534,13 +1538,15 @@ func TestExecutableStatusUpdatedByIdeRunner(t *testing.T) {
 				},
 			},
 			performStartup: func(r *ctrl_testutil.TestIdeRun) {
-				r.PID = randomPid
+				r.RunInfo.Pid = desiredSuccessfulExeStatus.PID
+				r.RunInfo.ExeState = desiredSuccessfulExeStatus.State
+				r.RunInfo.StdOutFile = desiredSuccessfulExeStatus.StdOutFile
+				r.RunInfo.StdErrFile = desiredSuccessfulExeStatus.StdErrFile
+				r.RunInfo.StartupTimestamp = metav1.NowMicro()
 
-				desiredSuccessfulExeStatus.StartupTimestamp = metav1.NewMicroTime(r.StartedAt)
-
-				r.RunInfo.Lock()
-				defer r.RunInfo.Unlock()
-				desiredSuccessfulExeStatus.DeepCopyInto(r.RunInfo.ExecutableStatus)
+				// Timestamps are only known at test run time, so we need to set them on the desired status,
+				// so that the verification of the Executable object can be done correctly.
+				desiredSuccessfulExeStatus.StartupTimestamp = r.RunInfo.StartupTimestamp
 			},
 			verifyExe: func(currentExe *apiv1.Executable) (bool, error) {
 				return verifyExeStatus(currentExe, &desiredSuccessfulExeStatus)
@@ -1559,15 +1565,16 @@ func TestExecutableStatusUpdatedByIdeRunner(t *testing.T) {
 				},
 			},
 			performStartup: func(r *ctrl_testutil.TestIdeRun) {
-				r.PID = process.UnknownPID
 				r.ID = controllers.UnknownRunID
-				desiredFailedExeStatus.StartupTimestamp = metav1.NewMicroTime(r.StartedAt)
-				r.EndedAt = time.Now()
-				desiredFailedExeStatus.FinishTimestamp = metav1.NewMicroTime(r.EndedAt)
+				r.RunInfo.Pid = desiredFailedExeStatus.PID
+				r.RunInfo.ExeState = desiredFailedExeStatus.State
+				r.RunInfo.StartupTimestamp = metav1.NowMicro()
+				r.RunInfo.FinishTimestamp = metav1.NowMicro()
 
-				r.RunInfo.Lock()
-				defer r.RunInfo.Unlock()
-				desiredFailedExeStatus.DeepCopyInto(r.RunInfo.ExecutableStatus)
+				// Timestamps are only known at test run time, so we need to set them on the desired status,
+				// so that the verification of the Executable object can be done correctly.
+				desiredFailedExeStatus.StartupTimestamp = r.RunInfo.StartupTimestamp
+				desiredFailedExeStatus.FinishTimestamp = r.RunInfo.FinishTimestamp
 			},
 			verifyExe: func(currentExe *apiv1.Executable) (bool, error) {
 				return verifyExeStatus(currentExe, &desiredFailedExeStatus)

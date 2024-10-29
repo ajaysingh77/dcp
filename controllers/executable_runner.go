@@ -21,12 +21,19 @@ const (
 // ExecutableRunner is an entity that knows how to "run" an executable.
 // Examples include ordinary (OS) process runner and IDE runner (which runs the executable inside IDE like VS or VS Code).
 type ExecutableRunner interface {
-	// Runs the Executable. When the passed context is cancelled, the run is automatically terminated.
-	// Returns the run ID, and a function that enables run completion notifications delivered to the exit handler.
+	// Runs the Executable.
+	//
+	// When the passed context is cancelled, the run should be automatically terminated.
+	//
+	// The runner should not try to change the Executable in any way. Instead, the runner supplies
+	// new data about the run by modifying the provided startingRunInfo object.
+	//
+	// The runChangeHandler is used to notify the caller about the run's progress and completion,
+	// see RunChangeHandler for more details.
 	StartRun(
 		ctx context.Context,
 		exe *apiv1.Executable,
-		runInfo *ExecutableRunInfo,
+		startingRunInfo *ExecutableRunInfo,
 		runChangeHandler RunChangeHandler,
 		log logr.Logger,
 	) error
@@ -36,11 +43,11 @@ type ExecutableRunner interface {
 }
 
 type RunChangeHandler interface {
-	// Called when the Executable run changes.
-	// If err is nil, the PID and (optionally) process exit code were properly captured and the exitCode value (if supplied) is valid.
-	// if err is not nil, there was a problem with the run and the PID and exitCode value are not valid
-	// (and should be UnknwonPID and UnknownExitCode respectively).
-	OnRunChanged(runID RunID, pid process.Pid_t, exitCode *int32, err error)
+	// Called when the main process of the run changes (is started or re-started).
+	//
+	// Note: if the startup is synchronous, this method may never be called. Instead, the process ID
+	// for the main process of the run will be reported via the runInfo parameter of the OnStartupCompleted() notification.
+	OnMainProcessChanged(runID RunID, pid process.Pid_t)
 
 	// Called when the run has completed.
 	// If err is nil, the run completed successfully and the exitCode value (if supplied) is valid.
@@ -48,6 +55,13 @@ type RunChangeHandler interface {
 	// (and should be UnknownExitCode).
 	OnRunCompleted(runID RunID, exitCode *int32, err error)
 
-	// Called when a run has started and wants to register its RunID with the handler.
-	OnStartingCompleted(name types.NamespacedName, runID RunID, runInfo *ExecutableRunInfo, startWaitForRunCompletion func())
+	// Called when startup has been completed for a run.
+	// The name parameter contains the name of the Executable that was started (or attempted to start).
+	// If the startup fails, the runID will be UnknownRunID, otherwise the runID will be the ID of the started run.
+	// The supplied runInfo object contains the updated information about the run.
+	// The caller must call the startWaitForRunCompletion function to receive notification about the run's completion
+	// (OnRunCompleted method call will be delayed till startWaitForRunCompletion is called).
+	//
+	// Note: in case of syncrhonous startup, this method will be called before ExecutableRunner.StartRun() returns.
+	OnStartupCompleted(name types.NamespacedName, runID RunID, startedRunInfo *ExecutableRunInfo, startWaitForRunCompletion func())
 }

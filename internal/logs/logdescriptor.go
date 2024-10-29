@@ -174,8 +174,8 @@ func (l *LogDescriptor) doCleanup(deadline context.Context) error {
 
 	stdOutPath := l.stdOut.Id()
 	stdErrPath := l.stdErr.Id()
-	stdOutRemoveErr := os.Remove(stdOutPath)
-	stdErrRemoveErr := os.Remove(stdErrPath)
+	stdOutRemoveErr := RemoveWithRetry(deadline, stdOutPath)
+	stdErrRemoveErr := RemoveWithRetry(deadline, stdErrPath)
 	return errors.Join(stdOutRemoveErr, stdErrRemoveErr)
 }
 

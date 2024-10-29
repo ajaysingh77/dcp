@@ -19,9 +19,7 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, opts processStoppingOpts) (<-c
 		if (opts & optNotFoundIsError) != 0 {
 			return nil, fmt.Errorf("could not find process %d: %w", pid, err)
 		} else {
-			exitChan := make(chan struct{})
-			close(exitChan)
-			return exitChan, nil
+			return makeClosedChan(), nil
 		}
 	}
 
@@ -35,8 +33,7 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, opts processStoppingOpts) (<-c
 	_, waitEndedCh, shouldStopProcess := e.tryStartWaiting(pid, waitFunc, waitReasonStopping)
 
 	if opts&optWaitForStdio == 0 {
-		waitEndedCh = make(chan struct{})
-		close(waitEndedCh)
+		waitEndedCh = makeClosedChan()
 	}
 
 	if shouldStopProcess || (opts&optIsResponsibleForStopping) != 0 {

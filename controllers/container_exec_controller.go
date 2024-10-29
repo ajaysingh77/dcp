@@ -25,6 +25,7 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/internal/logs"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
@@ -122,7 +123,7 @@ func (r *ContainerExecReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	if exec.DeletionTimestamp != nil && !exec.DeletionTimestamp.IsZero() {
 		log.V(1).Info("ContainerExec object is being deleted")
-		r.releaseContainerExecResources(&exec, log)
+		r.releaseContainerExecResources(ctx, &exec, log)
 		change = deleteFinalizer(&exec, containerExecFinalizer, log)
 	} else {
 		change = ensureFinalizer(&exec, containerExecFinalizer, log)
@@ -340,14 +341,14 @@ func (r *ContainerExecReconciler) computeEffectiveInvocationArgs(
 	return effectiveArgs, nil
 }
 
-func (r *ContainerExecReconciler) releaseContainerExecResources(exec *apiv1.ContainerExec, log logr.Logger) {
+func (r *ContainerExecReconciler) releaseContainerExecResources(ctx context.Context, exec *apiv1.ContainerExec, log logr.Logger) {
 	r.stopContainerExec(exec, log)
 
 	// We are about to terminate the run. Since the run is not allowed to complete normally,
 	// we are not interested in its exit code (it will indicate a failure,
 	// but it is a failure induced by the Executable user), so we stop tracking the run now.
 	r.executions.Delete(exec.UID)
-	r.deleteOutputFiles(exec, log)
+	r.deleteOutputFiles(ctx, exec, log)
 }
 
 func (r *ContainerExecReconciler) stopContainerExec(exec *apiv1.ContainerExec, log logr.Logger) {
@@ -364,7 +365,7 @@ func (r *ContainerExecReconciler) stopContainerExec(exec *apiv1.ContainerExec, l
 	execStatus.cancel()
 }
 
-func (r *ContainerExecReconciler) deleteOutputFiles(exec *apiv1.ContainerExec, log logr.Logger) {
+func (r *ContainerExecReconciler) deleteOutputFiles(ctx context.Context, exec *apiv1.ContainerExec, log logr.Logger) {
 	// Do not bother updating the ContainerExec object--this method is called when the object is being deleted.
 
 	if osutil.EnvVarSwitchEnabled(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS) {
@@ -372,13 +373,13 @@ func (r *ContainerExecReconciler) deleteOutputFiles(exec *apiv1.ContainerExec, l
 	}
 
 	if exec.Status.StdOutFile != "" {
-		if err := os.Remove(exec.Status.StdOutFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := logs.RemoveWithRetry(ctx, exec.Status.StdOutFile); err != nil {
 			log.Error(err, "could not remove ContainerExec's standard output file", "path", exec.Status.StdOutFile)
 		}
 	}
 
 	if exec.Status.StdErrFile != "" {
-		if err := os.Remove(exec.Status.StdErrFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := logs.RemoveWithRetry(ctx, exec.Status.StdErrFile); err != nil && !errors.Is(err, os.ErrNotExist) {
 			log.Error(err, "could not remove ContainerExec's standard error file", "path", exec.Status.StdErrFile)
 		}
 	}

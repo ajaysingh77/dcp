@@ -29,6 +29,7 @@ import (
 	ctrl_source "sigs.k8s.io/controller-runtime/pkg/source"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/internal/containers"
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
@@ -157,7 +158,7 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	patch := ctrl_client.MergeFromWithOptions(network.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
 	if !r.orchestratorHealthy {
-		status := r.orchestrator.CheckStatus(ctx, false /* use cached status */)
+		status := r.orchestrator.CheckStatus(ctx, containers.CachedRuntimeStatusAllowed)
 		if status.IsHealthy() {
 			r.orchestratorHealthy = true
 		}

@@ -77,7 +77,7 @@ func getInfo(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 			}
 		} else {
 			orchestratorName = containerOrchestrator.Name()
-			status = containerOrchestrator.CheckStatus(ctx, false /* use cached value */)
+			status = containerOrchestrator.CheckStatus(ctx, containers.CachedRuntimeStatusAllowed)
 			containerHost = containerOrchestrator.ContainerHost()
 		}
 

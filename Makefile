@@ -96,7 +96,7 @@ LFWRITER_TOOL ?= $(TOOL_BIN)/lfwriter$(exe_suffix)
 GO_LICENSES ?= $(TOOL_BIN)/go-licenses$(exe_suffix)
 
 # Tool Versions
-GOLANGCI_LINT_VERSION ?= v1.60.1
+GOLANGCI_LINT_VERSION ?= v1.61.0
 CONTROLLER_TOOLS_VERSION ?= v0.15.0
 CODE_GENERATOR_VERSION ?= v0.30.0
 GOVERSIONINFO_VERSION ?= v1.4.0
@@ -245,7 +245,8 @@ $(LFWRITER_TOOL): $(wildcard ./test/lfwriter/*.go) | $(TOOL_BIN)
 
 ##@ Development
 
-release: BUILD_ARGS := $(BUILD_ARGS) -ldflags "-s -w $(version_values)"
+# Note: Go runtime is incompatible with C/C++ stack protection feature https://github.com/golang/go/blob/master/src/runtime/cgo/cgo.go#L28
+release: BUILD_ARGS := $(BUILD_ARGS) -buildmode=pie -ldflags "-bindnow -s -w $(version_values)"
 release: build-dcpproc build-dcpctrl build-dcp ## Builds all binaries with flags to reduce binary size
 
 compile: BUILD_ARGS := $(BUILD_ARGS) -ldflags "$(version_values)"

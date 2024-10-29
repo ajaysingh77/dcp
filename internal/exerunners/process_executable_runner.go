@@ -51,8 +51,14 @@ func NewProcessExecutableRunner(pe process.Executor) *ProcessExecutableRunner {
 	}
 }
 
-func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executable, runInfo *controllers.ExecutableRunInfo, runChangeHandler controllers.RunChangeHandler, log logr.Logger) error {
-	cmd := makeCommand(exe, runInfo)
+func (r *ProcessExecutableRunner) StartRun(
+	ctx context.Context,
+	exe *apiv1.Executable,
+	runInfo *controllers.ExecutableRunInfo,
+	runChangeHandler controllers.RunChangeHandler,
+	log logr.Logger,
+) error {
+	cmd := makeCommand(exe)
 	log.Info("starting process...", "executable", cmd.Path)
 	log.V(1).Info("process settings",
 		"executable", cmd.Path,
@@ -89,21 +95,22 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 
 	if err != nil {
 		log.Error(err, "failed to start a process")
-		runInfo.SetState(apiv1.ExecutableStateFailedToStart)
+		runInfo.FinishTimestamp = metav1.NowMicro()
+		runInfo.ExeState = apiv1.ExecutableStateFailedToStart
 	} else {
 		r.runningProcesses.Store(pidToRunID(pid), newProcessRunState(stdOutFile, stdErrFile))
 		log.Info("process started", "executable", cmd.Path, "PID", pid)
 		runInfo.ExecutionID = pidToExecutionID(pid)
-		if runInfo.PID == apiv1.UnknownPID {
-			runInfo.PID = new(int64)
+		if runInfo.Pid == apiv1.UnknownPID {
+			runInfo.Pid = new(int64)
 		}
-		*runInfo.PID = int64(pid)
-		runInfo.SetState(apiv1.ExecutableStateRunning)
+		*runInfo.Pid = int64(pid)
+		runInfo.ExeState = apiv1.ExecutableStateRunning
 		runInfo.StartupTimestamp = metav1.NowMicro()
 
 		r.runWatcher(ctx, pid, log)
 
-		runChangeHandler.OnStartingCompleted(exe.NamespacedName(), pidToRunID(pid), runInfo, startWaitForProcessExit)
+		runChangeHandler.OnStartupCompleted(exe.NamespacedName(), pidToRunID(pid), runInfo, startWaitForProcessExit)
 	}
 
 	return err
@@ -157,11 +164,11 @@ func (r *ProcessExecutableRunner) runWatcher(ctx context.Context, pid process.Pi
 	}
 }
 
-func makeCommand(exe *apiv1.Executable, runInfo *controllers.ExecutableRunInfo) *exec.Cmd {
+func makeCommand(exe *apiv1.Executable) *exec.Cmd {
 	cmd := exec.Command(exe.Spec.ExecutablePath)
-	cmd.Args = append([]string{exe.Spec.ExecutablePath}, runInfo.EffectiveArgs...)
+	cmd.Args = append([]string{exe.Spec.ExecutablePath}, exe.Status.EffectiveArgs...)
 
-	cmd.Env = slices.Map[apiv1.EnvVar, string](runInfo.EffectiveEnv, func(e apiv1.EnvVar) string { return fmt.Sprintf("%s=%s", e.Name, e.Value) })
+	cmd.Env = slices.Map[apiv1.EnvVar, string](exe.Status.EffectiveEnv, func(e apiv1.EnvVar) string { return fmt.Sprintf("%s=%s", e.Name, e.Value) })
 
 	cmd.Dir = exe.Spec.WorkingDirectory
 

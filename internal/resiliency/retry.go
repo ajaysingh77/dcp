@@ -9,11 +9,17 @@ import (
 )
 
 // Try calling factory function with exponential back-off until a value is successfully created or timeout is reached.
+// Try calling factory function with exponential back-off until either:
+// - a value is successfully created, or
+// - a permanent error occurs, or
+// - passed context is cancelled.
 func RetryGetExponential[T any](ctx context.Context, factory func() (T, error)) (T, error) {
 	return RetryGet(ctx, backoff.NewExponentialBackOff(), factory)
 }
 
 // Try calling factory function with given backoff policy until a value is successfully created or timeout is reached.
+// Try calling factory function with given backoff policy until a value is successfully created,
+// or a permanent error occurs, or the passed context is cancelled.
 func RetryGet[T any](ctx context.Context, b backoff.BackOff, factory func() (T, error)) (T, error) {
 	var lastAttemptErr error
 
@@ -37,11 +43,28 @@ func RetryGet[T any](ctx context.Context, b backoff.BackOff, factory func() (T, 
 }
 
 // Try calling operation function with exponential back-off until it succeeds or timeout is reached.
+// Try calling operation function with exponential back-off until either:
+// - the operation succeeds, or
+// - a permanent error occurs, or
+// - passed context is cancelled.
 func RetryExponential(ctx context.Context, operation func() error) error {
 	return Retry(ctx, backoff.NewExponentialBackOff(), operation)
 }
 
 // Try calling operation function with exponential back-off until it succeeds or timeout is reached.
+// Try calling operation function with exponential back-off until either:
+// - the operation succeeds, or
+// - a permanent error occurs, or
+// - passed context is cancelled, or
+// - timeout is reached.
+func RetryExponentialWithTimeout(ctx context.Context, timeout time.Duration, operation func() error) error {
+	timeoutCtx, cancelTimeoutCtx := context.WithTimeout(ctx, timeout)
+	defer cancelTimeoutCtx()
+	return Retry(timeoutCtx, backoff.NewExponentialBackOff(), operation)
+}
+
+// Try calling operation function with exponential back-off until it succeeds,
+// or a permanent error occurs, or the passed context is cancelled.
 func Retry(ctx context.Context, b backoff.BackOff, operation func() error) error {
 	var lastAttemptErr error
 

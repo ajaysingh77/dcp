@@ -300,7 +300,7 @@ func handleNewContainer(
 		return setContainerState(container, apiv1.ContainerStateFailedToStart)
 	}
 
-	status := r.orchestrator.CheckStatus(ctx, false /* use cached status */)
+	status := r.orchestrator.CheckStatus(ctx, containers.CachedRuntimeStatusAllowed)
 	if !status.IsHealthy() {
 		// If the runtime isn't healthy, we will attempt to start the container later (in case the runtime recovers).
 		return setContainerState(container, apiv1.ContainerStateRuntimeUnhealthy)

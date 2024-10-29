@@ -39,7 +39,7 @@ func FindAvailableContainerRuntime(ctx context.Context, log logr.Logger, executo
 			// Check each supported runtime to see if it's installed and running
 			go func(factory ContainerOrchestratorFactory) {
 				orchestrator := factory(log, executor)
-				status := orchestrator.CheckStatus(ctx, true)
+				status := orchestrator.CheckStatus(ctx, containers.IgnoreCachedRuntimeStatus)
 				log.Info("runtime status", "runtime", orchestrator.Name(), "status", status)
 				runtimesCh <- &runtimeSupport{orchestrator, status}
 			}(runtimeFactory)
@@ -67,7 +67,7 @@ func FindAvailableContainerRuntime(ctx context.Context, log logr.Logger, executo
 		orchestratorFactory := supportedRuntimes[runtimeFlagValue]
 		if orchestratorFactory != nil {
 			orchestrator := orchestratorFactory(log, executor)
-			status := orchestrator.CheckStatus(ctx, true)
+			status := orchestrator.CheckStatus(ctx, containers.IgnoreCachedRuntimeStatus)
 			availableRuntime = &runtimeSupport{
 				orchestrator,
 				status,

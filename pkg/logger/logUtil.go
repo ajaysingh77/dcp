@@ -17,6 +17,13 @@ func IntPtrValToString[T int32 | int64, PT *T](p PT) string {
 	return fmt.Sprintf("%d", *p)
 }
 
+func BoolPtrValToString(p *bool) string {
+	if p == nil {
+		return "(null)"
+	}
+	return fmt.Sprintf("%t", *p)
+}
+
 func FriendlyTimestamp(ts time.Time) string {
 	if ts.IsZero() {
 		return "(zero)"

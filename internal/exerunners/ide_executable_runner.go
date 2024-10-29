@@ -20,11 +20,16 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
+	"github.com/microsoft/usvc-apiserver/internal/logs"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
+)
+
+const (
+	runSessionCouldNotBeStarted = "run session could not be started: "
 )
 
 type startingState struct {
@@ -69,9 +74,13 @@ func NewIdeExecutableRunner(lifetimeCtx context.Context, log logr.Logger) (*IdeE
 	return r, nil
 }
 
-func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executable, runInfo *controllers.ExecutableRunInfo, runChangeHandler controllers.RunChangeHandler, log logr.Logger) error {
-	const runSessionCouldNotBeStarted = "run session could not be started: "
-
+func (r *IdeExecutableRunner) StartRun(
+	ctx context.Context,
+	exe *apiv1.Executable,
+	runInfo *controllers.ExecutableRunInfo,
+	runChangeHandler controllers.RunChangeHandler,
+	log logr.Logger,
+) error {
 	if runChangeHandler == nil {
 		return fmt.Errorf(runSessionCouldNotBeStarted + "missing required runChangeHandler")
 	}
@@ -84,149 +93,156 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
-	namespacedName := runInfo.NamespacedName()
-
 	workEnqueueErr := r.startupQueue.Enqueue(func(_ context.Context) {
-		var stdOutFile, stdErrFile *os.File
-
-		// Lock the run info to prevent changes while we are starting the run session.
-		runInfo.Lock()
-		defer runInfo.Unlock()
-
-		reportStartupFailure := func() {
-			r.lock.Lock()
-			defer r.lock.Unlock()
-
-			if stdOutFile != nil {
-				_ = stdOutFile.Close()
-				_ = os.Remove(runInfo.StdOutFile)
-				runInfo.StdOutFile = ""
-			}
-			if stdErrFile != nil {
-				_ = stdErrFile.Close()
-				_ = os.Remove(runInfo.StdErrFile)
-				runInfo.StdErrFile = ""
-			}
-
-			// Using UnknownRunID will cause the controller to assume that the Executable startup failed.
-			runChangeHandler.OnStartingCompleted(namespacedName, controllers.UnknownRunID, runInfo, func() {})
-		}
-
-		req, reqCancel, err := r.prepareRunRequest(exe, runInfo)
-		if err != nil {
-			log.Error(err, runSessionCouldNotBeStarted+"failed to prepare run session request")
-			reportStartupFailure()
-			return
-		}
-		defer reqCancel()
-
-		// Set up temp files for capturing stdout and stderr. These files (if successfully created)
-		// will be cleaned up by the Executable controller when the Executable is deleted.
-
-		stdOutFile, err = usvc_io.OpenTempFile(fmt.Sprintf("%s_out_%s", exe.Name, exe.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
-		if err != nil {
-			log.Error(err, "failed to create temporary file for capturing standard output data")
-			stdOutFile = nil
-		} else {
-			runInfo.StdOutFile = stdOutFile.Name()
-		}
-
-		stdErrFile, err = usvc_io.OpenTempFile(fmt.Sprintf("%s_err_%s", exe.Name, exe.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
-		if err != nil {
-			log.Error(err, "failed to create temporary file for capturing standard error data")
-			stdErrFile = nil
-		} else {
-			runInfo.StdErrFile = stdErrFile.Name()
-		}
-
-		if rawRequest, dumpRequestErr := httputil.DumpRequest(req, true); dumpRequestErr == nil {
-			log.V(1).Info("Sending IDE run session request", "Request", string(rawRequest))
-		} else {
-			log.V(1).Info("Sending IDE run session request", "URL", req.URL)
-		}
-
-		var resp *http.Response
-		resp, err = r.connectionInfo.GetClient().Do(req)
-		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) {
-				log.Error(err, fmt.Sprintf("timeout of %.0f seconds exceeded waiting for the IDE to start a run session; you can set the DCP_IDE_REQUEST_TIMEOUT_SECONDS environment variable to override this timeout (in seconds)", defaultIdeEndpointRequestTimeout.Seconds()))
-			} else {
-				log.Error(err, runSessionCouldNotBeStarted+"request round-trip failed")
-			}
-
-			reportStartupFailure()
-			return
-		}
-		defer resp.Body.Close()
-
-		if rawResponse, dumpResponseErr := httputil.DumpResponse(resp, true); dumpResponseErr == nil {
-			log.V(1).Info("Completed IDE run session request", "Response", string(rawResponse))
-		} else {
-			log.V(1).Info("Completed IDE run session request", "URL", req.URL)
-		}
-
-		if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-			respBody, _ := io.ReadAll(resp.Body) // Best effort to get as much data about the error as possible
-			log.Error(err, runSessionCouldNotBeStarted+"IDE returned a response indicating failure",
-				"Status", resp.Status,
-				"Body", parseResponseBody(respBody),
-			)
-			reportStartupFailure() // The IDE refused to run this Executable
-			return
-		}
-
-		sessionURL := resp.Header.Get("Location")
-		if sessionURL == "" {
-			reportStartupFailure()
-			return
-		}
-		var rid string
-		rid, err = getLastUrlPathSegment(sessionURL)
-		if err != nil {
-			reportStartupFailure()
-		}
-
-		runID := controllers.RunID(rid)
-		log.V(1).Info("IDE run session started", "RunID", runID)
-		runInfo.ExecutionID = string(runID)
-		runInfo.StartupTimestamp = metav1.NowMicro()
-
-		r.lock.Lock()
-		defer r.lock.Unlock()
-
-		rs := r.ensureRunState(runID)
-		rs.name = namespacedName
-		rs.sessionURL = sessionURL
-		defer rs.IncreaseCompletionCallReadiness()
-		err = rs.SetOutputWriters(stdOutFile, stdErrFile)
-		if err != nil {
-			log.Error(err, "failed to set output writers to capture stdout/stderr") // Should never happen
-		}
-
-		rs.changeHandler = runChangeHandler
-		startWaitForRunCompletion := func() {
-			rs.IncreaseCompletionCallReadiness()
-		}
-
-		if rs.finished {
-			r.activeRuns.Delete(runID)
-			runInfo.SetState(apiv1.ExecutableStateFinished)
-		} else {
-			runInfo.SetState(apiv1.ExecutableStateRunning)
-		}
-
-		runChangeHandler.OnStartingCompleted(namespacedName, runID, runInfo, startWaitForRunCompletion)
+		r.doStartRun(ctx, exe, runInfo.DeepCopy(), runChangeHandler, log)
 	})
 
 	if workEnqueueErr != nil {
 		log.Error(workEnqueueErr, "could not enqueue ide executable start operation; workload is shutting down")
-		runInfo.SetState(apiv1.ExecutableStateFailedToStart)
+		runInfo.ExeState = apiv1.ExecutableStateFailedToStart
+		runInfo.FinishTimestamp = metav1.NowMicro()
 	} else {
-		log.V(1).Info("Executable is starting, waiting for OnStarted callback...")
-		runInfo.SetState(apiv1.ExecutableStateStarting)
+		log.V(1).Info("Executable is starting...")
+		runInfo.ExeState = apiv1.ExecutableStateStarting
 	}
 
 	return nil
+}
+
+func (r *IdeExecutableRunner) doStartRun(
+	ctx context.Context,
+	exe *apiv1.Executable,
+	runInfo *controllers.ExecutableRunInfo,
+	runChangeHandler controllers.RunChangeHandler,
+	log logr.Logger,
+) {
+	var stdOutFile, stdErrFile *os.File
+	namespacedName := exe.NamespacedName()
+
+	reportStartupFailure := func() {
+		r.lock.Lock()
+		defer r.lock.Unlock()
+
+		if stdOutFile != nil {
+			_ = stdOutFile.Close()
+			_ = logs.RemoveWithRetry(ctx, runInfo.StdOutFile)
+			runInfo.StdOutFile = ""
+		}
+		if stdErrFile != nil {
+			_ = stdErrFile.Close()
+			_ = logs.RemoveWithRetry(ctx, runInfo.StdErrFile)
+			runInfo.StdErrFile = ""
+		}
+
+		// Using UnknownRunID will cause the controller to assume that the Executable startup failed.
+		runChangeHandler.OnStartupCompleted(namespacedName, controllers.UnknownRunID, runInfo, func() {})
+	}
+
+	req, reqCancel, err := r.prepareRunRequest(exe)
+	if err != nil {
+		log.Error(err, runSessionCouldNotBeStarted+"failed to prepare run session request")
+		reportStartupFailure()
+		return
+	}
+	defer reqCancel()
+
+	// Set up temp files for capturing stdout and stderr. These files (if successfully created)
+	// will be cleaned up by the Executable controller when the Executable is deleted.
+
+	stdOutFile, err = usvc_io.OpenTempFile(fmt.Sprintf("%s_out_%s", exe.Name, exe.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	if err != nil {
+		log.Error(err, "failed to create temporary file for capturing standard output data")
+		stdOutFile = nil
+	} else {
+		runInfo.StdOutFile = stdOutFile.Name()
+	}
+
+	stdErrFile, err = usvc_io.OpenTempFile(fmt.Sprintf("%s_err_%s", exe.Name, exe.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	if err != nil {
+		log.Error(err, "failed to create temporary file for capturing standard error data")
+		stdErrFile = nil
+	} else {
+		runInfo.StdErrFile = stdErrFile.Name()
+	}
+
+	if rawRequest, dumpRequestErr := httputil.DumpRequest(req, true); dumpRequestErr == nil {
+		log.V(1).Info("Sending IDE run session request", "Request", string(rawRequest))
+	} else {
+		log.V(1).Info("Sending IDE run session request", "URL", req.URL)
+	}
+
+	var resp *http.Response
+	resp, err = r.connectionInfo.GetClient().Do(req)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			log.Error(err, fmt.Sprintf("timeout of %.0f seconds exceeded waiting for the IDE to start a run session; you can set the DCP_IDE_REQUEST_TIMEOUT_SECONDS environment variable to override this timeout (in seconds)", defaultIdeEndpointRequestTimeout.Seconds()))
+		} else {
+			log.Error(err, runSessionCouldNotBeStarted+"request round-trip failed")
+		}
+
+		reportStartupFailure()
+		return
+	}
+	defer resp.Body.Close()
+
+	if rawResponse, dumpResponseErr := httputil.DumpResponse(resp, true); dumpResponseErr == nil {
+		log.V(1).Info("Completed IDE run session request", "Response", string(rawResponse))
+	} else {
+		log.V(1).Info("Completed IDE run session request", "URL", req.URL)
+	}
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body) // Best effort to get as much data about the error as possible
+		log.Error(err, runSessionCouldNotBeStarted+"IDE returned a response indicating failure",
+			"Status", resp.Status,
+			"Body", parseResponseBody(respBody),
+		)
+		reportStartupFailure() // The IDE refused to run this Executable
+		return
+	}
+
+	sessionURL := resp.Header.Get("Location")
+	if sessionURL == "" {
+		reportStartupFailure()
+		return
+	}
+	var rid string
+	rid, err = getLastUrlPathSegment(sessionURL)
+	if err != nil {
+		reportStartupFailure()
+	}
+
+	runID := controllers.RunID(rid)
+	log.V(1).Info("IDE run session started", "RunID", runID)
+	runInfo.ExecutionID = string(runID)
+	runInfo.StartupTimestamp = metav1.NowMicro()
+
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
+	rs := r.ensureRunState(runID)
+	rs.name = namespacedName
+	rs.sessionURL = sessionURL
+	defer rs.IncreaseCompletionCallReadiness()
+	err = rs.SetOutputWriters(stdOutFile, stdErrFile)
+	if err != nil {
+		log.Error(err, "failed to set output writers to capture stdout/stderr") // Should never happen
+	}
+
+	rs.changeHandler = runChangeHandler
+	startWaitForRunCompletion := func() {
+		rs.IncreaseCompletionCallReadiness()
+	}
+
+	if rs.finished {
+		r.activeRuns.Delete(runID)
+		runInfo.FinishTimestamp = metav1.NowMicro()
+		runInfo.ExeState = apiv1.ExecutableStateFinished
+	} else {
+		runInfo.ExeState = apiv1.ExecutableStateRunning
+	}
+
+	runChangeHandler.OnStartupCompleted(namespacedName, runID, runInfo, startWaitForRunCompletion)
 }
 
 func (r *IdeExecutableRunner) StopRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
@@ -275,12 +291,12 @@ func (r *IdeExecutableRunner) StopRun(ctx context.Context, runID controllers.Run
 	return fmt.Errorf(runSessionCouldNotBeStopped+"%s %s", resp.Status, parseResponseBody(respBody))
 }
 
-func (r *IdeExecutableRunner) prepareRunRequest(exe *apiv1.Executable, runInfo *controllers.ExecutableRunInfo) (*http.Request, context.CancelFunc, error) {
+func (r *IdeExecutableRunner) prepareRunRequest(exe *apiv1.Executable) (*http.Request, context.CancelFunc, error) {
 	var isrBody []byte
 	var bodyErr error
 
 	if equalOrNewer(r.connectionInfo.apiVersion, version20240303) {
-		isrBody, bodyErr = r.prepareRunRequestV1(exe, runInfo)
+		isrBody, bodyErr = r.prepareRunRequestV1(exe)
 		if bodyErr != nil {
 			return nil, nil, fmt.Errorf("failed to prepare IDE run request: %w", bodyErr)
 		}
@@ -295,7 +311,7 @@ func (r *IdeExecutableRunner) prepareRunRequest(exe *apiv1.Executable, runInfo *
 	return req, reqCancel, nil
 }
 
-func (r *IdeExecutableRunner) prepareRunRequestV1(exe *apiv1.Executable, runInfo *controllers.ExecutableRunInfo) ([]byte, error) {
+func (r *IdeExecutableRunner) prepareRunRequestV1(exe *apiv1.Executable) ([]byte, error) {
 	if exe.Annotations[launchConfigurationsAnnotation] != "" {
 		launchConfigsRaw := exe.Annotations[launchConfigurationsAnnotation]
 		var launchConfigs json.RawMessage
@@ -306,8 +322,8 @@ func (r *IdeExecutableRunner) prepareRunRequestV1(exe *apiv1.Executable, runInfo
 
 		isr := ideRunSessionRequestV1{
 			LaunchConfigurations: json.RawMessage(launchConfigs),
-			Env:                  runInfo.EffectiveEnv,
-			Args:                 runInfo.EffectiveArgs,
+			Env:                  exe.Status.EffectiveEnv,
+			Args:                 exe.Status.EffectiveArgs,
 		}
 
 		isrBody, marshalErr := json.Marshal(isr)
@@ -380,7 +396,7 @@ func (r *IdeExecutableRunner) ensureRunState(runID controllers.RunID) *runState 
 	// Notifications for a particular run may arrive befeore the call to create a run session returns.
 	// That is why we use LoadOrStoreNew in places where we want to ensure that we have a runState for a given run ID.
 	rs, _ := r.activeRuns.LoadOrStoreNew(runID, func() *runState {
-		return NewRunState()
+		return NewRunState(r.lifetimeCtx)
 	})
 	return rs
 }
@@ -393,7 +409,7 @@ func (r *IdeExecutableRunner) fetchRunStateForDeletion(runID controllers.RunID) 
 		// If that is the case we need to create a run state for the run session so that we can store the exit code and run status.
 		// This means this run state will never be removed from activeRuns, but this should happen rarely and it does consume very little memory.
 		// If this proves to be an issue, consider adding a TTL to the run state and scavenge on a timer.
-		runState = NewRunState()
+		runState = NewRunState(r.lifetimeCtx)
 		r.activeRuns.Store(runID, runState)
 	}
 	return runState

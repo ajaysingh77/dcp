@@ -5,77 +5,170 @@ package controllers
 import (
 	"fmt"
 	stdlib_maps "maps"
-	"slices"
 	"strings"
-	"sync"
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/microsoft/usvc-apiserver/internal/health"
-
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/pointers"
-	usvc_slices "github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
 // Stores information about Executable run
 type ExecutableRunInfo struct {
-	// Namespaced name of the Executable
-	namespacedName types.NamespacedName
+	// State of the run (starting, running, finished, etc.)
+	ExeState apiv1.ExecutableState
 
-	*apiv1.ExecutableStatus
+	// Process ID of the process that runs the Executable
+	Pid *int64
+
+	// Execution ID for the Executable (see ExecutableStatus for details)
+	ExecutionID string
+
+	// Exit code of the Executable process
+	ExitCode *int32
+
+	// Timestamp when the run was started
+	StartupTimestamp metav1.MicroTime
+
+	// Timestamp when the run was finished
+	FinishTimestamp metav1.MicroTime
+
+	// Paths to captured standard output and standard error files
+	StdOutFile string
+	StdErrFile string
 
 	// The map of ports reserved for services that the Executable implements
-	reservedPorts map[types.NamespacedName]int32
+	ReservedPorts map[types.NamespacedName]int32
+
+	// The most recent health probe results (indexed by probe name)
+	healthProbeResults map[string]apiv1.HealthProbeResult
 
 	// Whether health probes are enabled for the Executable
-	healthProbesEnabled bool
-
-	mutex *sync.Mutex
+	healthProbesEnabled *bool
 }
 
-func NewRunInfo(exe *apiv1.Executable) *ExecutableRunInfo {
+func NewRunInfo() *ExecutableRunInfo {
 	return &ExecutableRunInfo{
-		namespacedName:   exe.NamespacedName(),
-		ExecutableStatus: exe.Status.DeepCopy(),
-		mutex:            &sync.Mutex{},
+		ExeState:           "",
+		Pid:                apiv1.UnknownPID,
+		ExitCode:           apiv1.UnknownExitCode,
+		StartupTimestamp:   metav1.MicroTime{},
+		FinishTimestamp:    metav1.MicroTime{},
+		healthProbeResults: make(map[string]apiv1.HealthProbeResult),
 	}
 }
 
-func (ri *ExecutableRunInfo) NamespacedName() types.NamespacedName {
-	return ri.namespacedName
+// Updates the runInfo object from another instance that supplies new data about the run.
+// The object that is updated represents the "last known good" state of the run.
+// Since change notifications about real-world counterparts of the Executable object
+// come asynchronously and may come out of order, we do not take all updates blindly.
+// For example, we restrict the state transitions to only the valid ones.
+func (ri *ExecutableRunInfo) UpdateFrom(updated *ExecutableRunInfo, log logr.Logger) {
+	if updated == nil {
+		return
+	}
+
+	if ri.ExeState != updated.ExeState {
+		if ri.ExeState.CanUpdateTo(updated.ExeState) {
+			ri.ExeState = updated.ExeState
+		} else {
+			log.V(1).Info("ignoring invalid Executable state transition", "CurrentRunInfo", ri.String(), "UpdatedRunInfo", updated.String())
+			return // Do not update other fields if the state transition is invalid
+		}
+	}
+
+	if updated.Pid != apiv1.UnknownPID {
+		ri.Pid = new(int64)
+		*ri.Pid = *updated.Pid
+	} else if updated.ExeState.IsTerminal() {
+		ri.Pid = apiv1.UnknownPID
+	}
+
+	if updated.ExecutionID != "" {
+		ri.ExecutionID = updated.ExecutionID
+	} else if updated.ExeState.IsTerminal() {
+		ri.ExecutionID = ""
+	}
+
+	if updated.ExitCode != apiv1.UnknownExitCode {
+		ri.ExitCode = new(int32)
+		*ri.ExitCode = *updated.ExitCode
+	}
+
+	if !updated.StartupTimestamp.IsZero() && (ri.StartupTimestamp.IsZero() || updated.StartupTimestamp.Before(&ri.StartupTimestamp)) {
+		ri.StartupTimestamp = updated.StartupTimestamp
+	}
+
+	if !updated.FinishTimestamp.IsZero() && (ri.FinishTimestamp.IsZero() || updated.FinishTimestamp.Before(&ri.FinishTimestamp)) {
+		ri.FinishTimestamp = updated.FinishTimestamp
+	}
+
+	if updated.StdOutFile != "" {
+		ri.StdOutFile = updated.StdOutFile
+	}
+
+	if updated.StdErrFile != "" {
+		ri.StdErrFile = updated.StdErrFile
+	}
+
+	if len(updated.ReservedPorts) > 0 {
+		stdlib_maps.Insert(ri.ReservedPorts, stdlib_maps.All(updated.ReservedPorts))
+	}
+
+	if len(updated.healthProbeResults) > 0 {
+		stdlib_maps.Insert(ri.healthProbeResults, stdlib_maps.All(updated.healthProbeResults))
+	}
+
+	if updated.healthProbesEnabled != nil {
+		ri.healthProbesEnabled = new(bool)
+		*ri.healthProbesEnabled = *updated.healthProbesEnabled
+	}
 }
 
 func (ri *ExecutableRunInfo) DeepCopy() *ExecutableRunInfo {
-	retval := &ExecutableRunInfo{
-		namespacedName:      ri.namespacedName,
-		ExecutableStatus:    ri.ExecutableStatus.DeepCopy(),
-		healthProbesEnabled: ri.healthProbesEnabled,
-		mutex:               &sync.Mutex{},
+	retval := ExecutableRunInfo{
+		ExeState: ri.ExeState,
 	}
-	if len(ri.reservedPorts) > 0 {
-		retval.reservedPorts = stdlib_maps.Clone(ri.reservedPorts)
+	if ri.Pid != apiv1.UnknownPID {
+		retval.Pid = new(int64)
+		*retval.Pid = *ri.Pid
 	}
-	return retval
+	retval.ExecutionID = ri.ExecutionID
+	if ri.ExitCode != apiv1.UnknownExitCode {
+		retval.ExitCode = new(int32)
+		*retval.ExitCode = *ri.ExitCode
+	}
+	if len(ri.ReservedPorts) > 0 {
+		retval.ReservedPorts = stdlib_maps.Clone(ri.ReservedPorts)
+	}
+	retval.StartupTimestamp = ri.StartupTimestamp
+	retval.FinishTimestamp = ri.FinishTimestamp
+	retval.StdOutFile = ri.StdOutFile
+	retval.StdErrFile = ri.StdErrFile
+	retval.healthProbeResults = stdlib_maps.Clone(ri.healthProbeResults)
+	if ri.healthProbesEnabled != nil {
+		retval.healthProbesEnabled = new(bool)
+		*retval.healthProbesEnabled = *ri.healthProbesEnabled
+	}
+	return &retval
 }
 
 func (ri *ExecutableRunInfo) ApplyTo(exe *apiv1.Executable, log logr.Logger) objectChange {
+	status := &exe.Status
 	changed := noChange
 
-	status := &exe.Status
-
-	if status.State != ri.State {
-		status.State = ri.State
+	if ri.ExeState != "" && status.State != ri.ExeState {
+		status.State = ri.ExeState
 		changed = statusChanged
 	}
 
-	if ri.PID != apiv1.UnknownPID && (status.PID == apiv1.UnknownPID || *status.PID != *ri.PID) {
+	if ri.Pid != apiv1.UnknownPID && (status.PID == apiv1.UnknownPID || *status.PID != *ri.Pid) {
 		status.PID = new(int64)
-		*status.PID = *ri.PID
+		*status.PID = *ri.Pid
 		changed = statusChanged
 	}
 
@@ -84,11 +177,16 @@ func (ri *ExecutableRunInfo) ApplyTo(exe *apiv1.Executable, log logr.Logger) obj
 		changed = statusChanged
 	}
 
-	if ri.ExitCode != apiv1.UnknownExitCode && (status.ExitCode == apiv1.UnknownExitCode || *status.ExitCode != *ri.ExitCode) {
+	if ri.ExitCode != apiv1.UnknownExitCode && (status.ExitCode == nil || *status.ExitCode != *ri.ExitCode) {
 		status.ExitCode = new(int32)
 		*status.ExitCode = *ri.ExitCode
 		changed = statusChanged
 	}
+
+	// We only overwrite timestamps if the Executable status has them as zero values
+	// or if the run info indicates that the startup/finish happened earlier.
+	// The controller provides a default value for timestamps based on Executable state transitions,
+	// but a more accurate timestamp may come (asynchronously) from Executable runner via run info.
 
 	if !ri.StartupTimestamp.IsZero() && (status.StartupTimestamp.IsZero() || ri.StartupTimestamp.Before(&status.StartupTimestamp)) {
 		status.StartupTimestamp = ri.StartupTimestamp
@@ -110,41 +208,24 @@ func (ri *ExecutableRunInfo) ApplyTo(exe *apiv1.Executable, log logr.Logger) obj
 		changed = statusChanged
 	}
 
-	if len(ri.EffectiveEnv) != 0 && (len(status.EffectiveEnv) == 0 || !slices.Equal(ri.EffectiveEnv, status.EffectiveEnv)) {
-		status.EffectiveEnv = make([]apiv1.EnvVar, len(ri.EffectiveEnv))
-		copy(status.EffectiveEnv, ri.EffectiveEnv)
-		changed = statusChanged
-	} else if len(ri.EffectiveEnv) == 0 && len(status.EffectiveEnv) != 0 {
-		status.EffectiveEnv = make([]apiv1.EnvVar, 0)
-		changed = statusChanged
-	}
-
-	if len(ri.EffectiveArgs) != 0 && (len(status.EffectiveArgs) == 0 || !slices.Equal(ri.EffectiveArgs, status.EffectiveArgs)) {
-		status.EffectiveArgs = make([]string, len(ri.EffectiveArgs))
-		copy(status.EffectiveArgs, ri.EffectiveArgs)
-		changed = statusChanged
-	} else if len(ri.EffectiveArgs) == 0 && len(status.EffectiveArgs) != 0 {
-		status.EffectiveArgs = make([]string, 0)
-		changed = statusChanged
-	}
-
 	healthResultsChanged := false
 	statusResults := maps.SliceToMap(status.HealthProbeResults, func(hpr apiv1.HealthProbeResult) (string, apiv1.HealthProbeResult) {
 		return hpr.ProbeName, hpr
 	})
-	if statusResults == nil {
+	if len(statusResults) == 0 && len(ri.healthProbeResults) > 0 {
 		statusResults = make(map[string]apiv1.HealthProbeResult)
 	}
-	for _, hpr := range ri.HealthProbeResults {
-		statusHpr, found := statusResults[hpr.ProbeName]
+	for probeName, hpr := range ri.healthProbeResults {
+		statusHpr, found := statusResults[probeName]
 		if !found {
-			statusResults[hpr.ProbeName] = hpr
+			statusResults[probeName] = hpr
 			healthResultsChanged = true
 		} else {
 			res, timestampDiff := hpr.Diff(&statusHpr)
 			timestampDiff = timestampDiff.Abs()
-			if res == apiv1.Different || (res == apiv1.DiffTimestampOnly && timestampDiff >= maxStaleHealthProbeResultAge) {
-				statusResults[hpr.ProbeName] = hpr
+			needsUpdate := res == apiv1.Different || (res == apiv1.DiffTimestampOnly && timestampDiff >= maxStaleHealthProbeResultAge)
+			if needsUpdate {
+				statusResults[probeName] = hpr
 				healthResultsChanged = true
 			}
 		}
@@ -154,64 +235,20 @@ func (ri *ExecutableRunInfo) ApplyTo(exe *apiv1.Executable, log logr.Logger) obj
 		changed = statusChanged
 	}
 
-	oldHealthStatus := status.HealthStatus
-	newHealthStatus := apiv1.HealthStatusUnhealthy
-	switch ri.State {
-	case apiv1.ExecutableStateEmpty, apiv1.ExecutableStateStarting, apiv1.ExecutableStateTerminated, apiv1.ExecutableStateUnknown:
-		newHealthStatus = apiv1.HealthStatusCaution
+	changed |= updateExecutableHealthStatus(exe, ri.ExeState, log)
 
-	case apiv1.ExecutableStateRunning:
-		if len(exe.Spec.HealthProbes) == 0 {
-			newHealthStatus = apiv1.HealthStatusHealthy
-		} else {
-			newHealthStatus = health.HealthStatusFromProbeResults(exe.Status.HealthProbeResults)
-		}
-
-	case apiv1.ExecutableStateFailedToStart:
-		newHealthStatus = apiv1.HealthStatusUnhealthy
-
-	case apiv1.ExecutableStateFinished:
-		if exe.Status.ExitCode == apiv1.UnknownExitCode || *exe.Status.ExitCode == 0 {
-			newHealthStatus = apiv1.HealthStatusCaution
-		} else {
-			newHealthStatus = apiv1.HealthStatusUnhealthy
-		}
-	}
-
-	if oldHealthStatus != newHealthStatus {
-		status.HealthStatus = newHealthStatus
-		log.V(1).Info("Health status changed", "OldHealthStatus", oldHealthStatus, "NewHealthStatus", status.HealthStatus)
+	if changed != noChange && log.V(1).Enabled() {
+		log.V(1).Info("Executable run changed", "CurrentRunInfo", ri.String(), "Executable", exe.NamespacedName().String())
 	}
 
 	return changed
 }
 
-func (ri *ExecutableRunInfo) Lock() {
-	ri.mutex.Lock()
-}
-
-func (ri *ExecutableRunInfo) Unlock() {
-	ri.mutex.Unlock()
-}
-
-func (ri *ExecutableRunInfo) SetState(state apiv1.ExecutableState) bool {
-	if ri.State.CanUpdateTo(state) {
-		ri.State = state
-		if state.IsTerminal() && ri.FinishTimestamp.IsZero() {
-			ri.FinishTimestamp = metav1.NowMicro()
-		}
-
-		return true
-	}
-
-	return false
-}
-
 func (ri *ExecutableRunInfo) String() string {
 	return fmt.Sprintf(
-		"{state=%s, pid=%s, executionID=%s, exitCode=%s, startupTimestamp=%s, finishTimestamp=%s, stdOutFile=%s, stdErrFile=%s, healthProbeResults=%s, healthProbesEnabled=%t}",
-		ri.State,
-		logger.IntPtrValToString(ri.PID),
+		"{exeState=%s, pid=%s, executionID=%s, exitCode=%s, startupTimestamp=%s, finishTimestamp=%s, stdOutFile=%s, stdErrFile=%s, healthProbeResults=%s, healthProbesEnabled=%s}",
+		ri.ExeState,
+		logger.IntPtrValToString(ri.Pid),
 		logger.FriendlyString(ri.ExecutionID),
 		logger.IntPtrValToString(ri.ExitCode),
 		logger.FriendlyMetav1Timestamp(ri.StartupTimestamp),
@@ -219,21 +256,20 @@ func (ri *ExecutableRunInfo) String() string {
 		logger.FriendlyString(ri.StdOutFile),
 		logger.FriendlyString(ri.StdErrFile),
 		ri.healthProbesFriendlyString(),
-		ri.healthProbesEnabled,
+		logger.BoolPtrValToString(ri.healthProbesEnabled),
 	)
 }
 
 func DiffString(r1, r2 *ExecutableRunInfo) string {
 	sb := strings.Builder{}
-
 	sb.WriteString("{")
 
-	if r1.State != r2.State {
-		sb.WriteString(fmt.Sprintf("state=%s->%s, ", r1.State, r2.State))
+	if r1.ExeState != r2.ExeState {
+		sb.WriteString(fmt.Sprintf("exeState=%s->%s, ", r1.ExeState, r2.ExeState))
 	}
 
-	if !pointers.EqualValue(r1.PID, r2.PID) {
-		sb.WriteString(fmt.Sprintf("pid=%s->%s, ", logger.IntPtrValToString(r1.PID), logger.IntPtrValToString(r2.PID)))
+	if !pointers.EqualValue(r1.Pid, r2.Pid) {
+		sb.WriteString(fmt.Sprintf("pid=%s->%s, ", logger.IntPtrValToString(r1.Pid), logger.IntPtrValToString(r2.Pid)))
 	}
 
 	if r1.ExecutionID != r2.ExecutionID {
@@ -260,12 +296,12 @@ func DiffString(r1, r2 *ExecutableRunInfo) string {
 		sb.WriteString(fmt.Sprintf("stdErrFile=%s->%s, ", logger.FriendlyString(r1.StdErrFile), logger.FriendlyString(r2.StdErrFile)))
 	}
 
-	if !slices.Equal(r1.HealthProbeResults, r2.HealthProbeResults) {
+	if !stdlib_maps.Equal(r1.healthProbeResults, r2.healthProbeResults) {
 		sb.WriteString(fmt.Sprintf("healthProbeResults=%s->%s, ", r1.healthProbesFriendlyString(), r2.healthProbesFriendlyString()))
 	}
 
-	if r1.healthProbesEnabled != r2.healthProbesEnabled {
-		sb.WriteString(fmt.Sprintf("healthProbesEnabled=%t->%t, ", r1.healthProbesEnabled, r2.healthProbesEnabled))
+	if !pointers.EqualValue(r1.healthProbesEnabled, r2.healthProbesEnabled) {
+		sb.WriteString(fmt.Sprintf("healthProbesEnabled=%s->%s, ", logger.BoolPtrValToString(r1.healthProbesEnabled), logger.BoolPtrValToString(r2.healthProbesEnabled)))
 	}
 
 	sb.WriteString("}")
@@ -273,7 +309,7 @@ func DiffString(r1, r2 *ExecutableRunInfo) string {
 }
 
 func (ri *ExecutableRunInfo) healthProbesFriendlyString() string {
-	return logger.FriendlyStringSlice(usvc_slices.Map[apiv1.HealthProbeResult, string](ri.HealthProbeResults, func(v apiv1.HealthProbeResult) string { return v.String() }))
+	return logger.FriendlyStringSlice(maps.MapToSlice[string](ri.healthProbeResults, func(v apiv1.HealthProbeResult) string { return v.String() }))
 }
 
 var _ fmt.Stringer = (*ExecutableRunInfo)(nil)

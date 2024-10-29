@@ -1,6 +1,7 @@
 package exerunners
 
 import (
+	"context"
 	"io"
 	"sync"
 
@@ -8,40 +9,37 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
+	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
 
-type runChangedNotifyArg struct {
-	rs         *runState
-	locker     sync.Locker
-	notifyType notificationType
-}
-
 type runState struct {
-	name          types.NamespacedName
-	runID         controllers.RunID
-	sessionURL    string // The URL of the run session resource in the IDE
-	changeHandler controllers.RunChangeHandler
-	handlerWG     *sync.WaitGroup
-	pid           process.Pid_t
-	finished      bool
-	exitCode      *int32
-	exitCh        chan struct{}
-	stdOut        *usvc_io.BufferedWrappingWriter
-	stdErr        *usvc_io.BufferedWrappingWriter
+	name              types.NamespacedName
+	runID             controllers.RunID
+	sessionURL        string // The URL of the run session resource in the IDE
+	changeHandler     controllers.RunChangeHandler
+	handlerWG         *sync.WaitGroup
+	pid               process.Pid_t
+	finished          bool
+	exitCode          *int32
+	exitCh            chan struct{}
+	stdOut            *usvc_io.BufferedWrappingWriter
+	stdErr            *usvc_io.BufferedWrappingWriter
+	changeNotifyQueue *resiliency.WorkQueue
 }
 
-func NewRunState() *runState {
+func NewRunState(lifetimeCtx context.Context) *runState {
 	rs := &runState{
-		runID:         "",
-		changeHandler: nil,
-		handlerWG:     &sync.WaitGroup{},
-		finished:      false,
-		exitCode:      apiv1.UnknownExitCode,
-		exitCh:        make(chan struct{}),
-		stdOut:        usvc_io.NewBufferedWrappingWriter(),
-		stdErr:        usvc_io.NewBufferedWrappingWriter(),
+		runID:             "",
+		changeHandler:     nil,
+		handlerWG:         &sync.WaitGroup{},
+		finished:          false,
+		exitCode:          apiv1.UnknownExitCode,
+		exitCh:            make(chan struct{}),
+		stdOut:            usvc_io.NewBufferedWrappingWriter(),
+		stdErr:            usvc_io.NewBufferedWrappingWriter(),
+		changeNotifyQueue: resiliency.NewWorkQueue(lifetimeCtx, 1), // For a particular run, change notifications are serialized
 	}
 
 	// Two things need to happen before the completion handler is called:
@@ -52,15 +50,13 @@ func NewRunState() *runState {
 	return rs
 }
 
-func notifyRunChanged(arg runChangedNotifyArg) {
-	rs := arg.rs
+func (rs *runState) notifyRunChanged(locker sync.Locker, notifyType notificationType) {
 	rs.handlerWG.Wait()
 
 	// Make sure the run state is not changed while we are gathering data for the change handler by locking the run state.
-	// The notification always uses latest data stored in the run state, so we can safely "fire and forget" this method
-	// via the debounce mechanism.
+	// The notification always uses latest data stored in the run state.
 
-	arg.locker.Lock()
+	locker.Lock()
 	runID := rs.runID
 	pid := rs.pid
 	exitCode := apiv1.UnknownExitCode
@@ -68,34 +64,30 @@ func notifyRunChanged(arg runChangedNotifyArg) {
 		exitCode = new(int32)
 		*exitCode = *rs.exitCode
 	}
-	arg.locker.Unlock()
+	locker.Unlock()
 
-	switch arg.notifyType {
+	switch notifyType {
 	case notificationTypeProcessRestarted:
-		rs.changeHandler.OnRunChanged(runID, pid, exitCode, nil)
+		rs.changeHandler.OnMainProcessChanged(runID, pid)
 	case notificationTypeSessionTerminated:
 		rs.changeHandler.OnRunCompleted(runID, exitCode, nil)
 	}
 }
 
 func (rs *runState) NotifyRunChangedAsync(locker sync.Locker) {
-	go func() {
-		notifyRunChanged(runChangedNotifyArg{
-			rs:         rs,
-			locker:     locker,
-			notifyType: notificationTypeProcessRestarted,
+	if !rs.finished {
+		// Errors only if lifetime context is cancelled
+		_ = rs.changeNotifyQueue.Enqueue(func(_ context.Context) {
+			rs.notifyRunChanged(locker, notificationTypeProcessRestarted)
 		})
-	}()
+	}
 }
 
 func (rs *runState) NotifyRunCompletedAsync(locker sync.Locker) {
-	go func() {
-		notifyRunChanged(runChangedNotifyArg{
-			rs:         rs,
-			locker:     locker,
-			notifyType: notificationTypeSessionTerminated,
-		})
-	}()
+	// Errors only if lifetime context is cancelled
+	_ = rs.changeNotifyQueue.Enqueue(func(_ context.Context) {
+		rs.notifyRunChanged(locker, notificationTypeSessionTerminated)
+	})
 }
 
 func (rs *runState) IncreaseCompletionCallReadiness() {

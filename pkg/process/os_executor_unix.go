@@ -24,9 +24,7 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, opts processStoppingOpts) (<-c
 		if (opts & optNotFoundIsError) != 0 {
 			return nil, fmt.Errorf("could not find process %d: %w", pid, err)
 		} else {
-			exitChan := make(chan struct{})
-			close(exitChan)
-			return exitChan, nil
+			return makeClosedChan(), nil
 		}
 	}
 
@@ -38,35 +36,33 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, opts processStoppingOpts) (<-c
 	waitResultCh, waitEndedCh, shouldStopProcess := e.tryStartWaiting(pid, waitFunc, waitReasonStopping)
 
 	if opts&optWaitForStdio == 0 {
-		waitEndedCh = make(chan struct{})
-		close(waitEndedCh)
+		waitEndedCh = makeClosedChan()
 	}
 
-	if shouldStopProcess || (opts&optIsResponsibleForStopping) != 0 {
-		if (opts & optTrySignal) == optTrySignal {
-			// Give the process a chance to gracefully exit.
-			// There is no established standard for what signals are used for graceful shutdown,
-			// but SIGTERM and SIGQUIT are commonly used.
-			err = e.signalAndWaitForExit(proc, syscall.SIGTERM, opts, waitResultCh)
-			switch {
-			case err == nil:
-				e.log.V(1).Info("process stopped by SIGTERM", "pid", pid)
-				return waitEndedCh, nil
-			case !errors.Is(err, context.DeadlineExceeded):
-				return nil, err
-			}
-		}
+	if !shouldStopProcess && (opts&optIsResponsibleForStopping) == 0 {
+		return waitEndedCh, nil
+	}
 
-		err = e.signalAndWaitForExit(proc, syscall.SIGKILL, opts, waitResultCh)
+	if (opts & optTrySignal) == optTrySignal {
+		// Give the process a chance to gracefully exit.
+		// There is no established standard for what signals are used for graceful shutdown,
+		// but SIGTERM and SIGQUIT are commonly used.
+		err = e.signalAndWaitForExit(proc, syscall.SIGTERM, waitResultCh)
 		switch {
 		case err == nil:
-			e.log.V(1).Info("process stopped by SIGKILL", "pid", pid)
+			e.log.V(1).Info("process stopped by SIGTERM", "pid", pid)
 			return waitEndedCh, nil
-		default:
+		case !errors.Is(err, context.DeadlineExceeded):
 			return nil, err
 		}
 	}
 
+	err = e.signalAndWaitForExit(proc, syscall.SIGKILL, waitResultCh)
+	if err != nil {
+		return nil, err
+	}
+
+	e.log.V(1).Info("process stopped by SIGKILL", "pid", pid)
 	return waitEndedCh, nil
 }
 
@@ -74,7 +70,7 @@ const signalAndWaitTimeout = 10 * time.Second
 
 // Sends a given signal to a process and waits for it to exit.
 // If the process does not exit within 10 seconds, the function returns context.DeadlineExceeded.
-func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig syscall.Signal, opts processStoppingOpts, waitResultCh <-chan waitResult) error {
+func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig syscall.Signal, waitResultCh <-chan waitResult) error {
 	err := proc.Signal(sig)
 	switch {
 	case errors.Is(err, os.ErrProcessDone):

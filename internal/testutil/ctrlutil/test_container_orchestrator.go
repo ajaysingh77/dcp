@@ -379,7 +379,7 @@ func (*TestContainerOrchestrator) ContainerHost() string {
 func (to *TestContainerOrchestrator) EnsureBackgroundStatusUpdates(ctx context.Context) {
 }
 
-func (to *TestContainerOrchestrator) CheckStatus(ctx context.Context, ignoreCache bool) containers.ContainerRuntimeStatus {
+func (to *TestContainerOrchestrator) CheckStatus(_ context.Context, _ containers.CachedRuntimeStatusUsage) containers.ContainerRuntimeStatus {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
