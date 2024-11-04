@@ -236,49 +236,43 @@ func (c *containerLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent,
 	if evt.Type == watch.Modified {
 		if ctr.Status.State != apiv1.ContainerStateStarting && ctr.Status.State != apiv1.ContainerStateBuilding {
 			// If done starting the container, ensure startup logs stop streaming once they reach EOF
-			if logs, found := c.startupLogStreams.Load(ctr.UID); found {
-				log.V(1).Info("stopping startup follow logs for container", "Container", ctr.Status.ContainerID, "StreamCount", len(logs))
-				for i := range logs {
-					logs[i].StopFollow()
-				}
-
-				c.startupLogStreams.Delete(ctr.UID)
-			}
+			stopLogStreamsForContainer(c.startupLogStreams, ctr, "startup", log)
 		}
 
 		if ctr.Status.State == apiv1.ContainerStateFailedToStart || ctr.Status.State == apiv1.ContainerStateExited || ctr.Status.State == apiv1.ContainerStateUnknown {
-			// If the container isn't running, ensure standard logs stop streaming once they reach EOF
-			if logs, found := c.stdioLogStreams.Load(ctr.UID); found {
-				log.V(1).Info("stopping stdio follow logs for container", "Container", ctr.Status.ContainerID, "StreamCount", len(logs))
-				for i := range logs {
-					logs[i].StopFollow()
-				}
-
-				c.stdioLogStreams.Delete(ctr.UID)
-			}
+			// If the container is done, ensure standard logs stop streaming once they reach EOF
+			stopLogStreamsForContainer(c.stdioLogStreams, ctr, "stdio", log)
 		}
 	} else if evt.Type == watch.Deleted {
+		// The resource was deleted, ensure any following log streams stop and cleanup their resources
+		stopLogStreamsForContainer(c.startupLogStreams, ctr, "startup", log)
+		stopLogStreamsForContainer(c.stdioLogStreams, ctr, "stdio", log)
+
 		if c.containerLogs != nil {
 			// Need to stop the log streamer and any log watchers for this container (if any) as it is being deleted.
-			// It is OK to call RealaeseForResource() if the resource is not in the set, it is a no-op in that case.
+			// It is OK to call ReleaseForResource() if the resource is not in the set, it is a no-op in that case.
 			c.containerLogs.ReleaseForResource(ctr.UID)
 		}
+	}
+}
 
-		// The resource was deleted, ensure any following log streams stop and cleanup their resources
-		if logs, found := c.startupLogStreams.Load(ctr.UID); found {
-			for i := range logs {
-				logs[i].StopFollow()
-			}
-
-			c.startupLogStreams.Delete(ctr.UID)
+func stopLogStreamsForContainer(
+	streams *syncmap.Map[types.UID, []*usvc_io.FollowWriter],
+	ctr *apiv1.Container,
+	streamKind string,
+	log logr.Logger,
+) {
+	logs, found := streams.LoadAndDelete(ctr.UID)
+	if found {
+		if log.V(1).Enabled() {
+			log.V(1).Info(fmt.Sprintf("stopping %s follow logs for container", streamKind),
+				"Container", ctr.Status.ContainerID,
+				"StreamCount", len(logs),
+			)
 		}
 
-		if logs, found := c.stdioLogStreams.Load(ctr.UID); found {
-			for i := range logs {
-				logs[i].StopFollow()
-			}
-
-			c.stdioLogStreams.Delete(ctr.UID)
+		for i := range logs {
+			logs[i].StopFollow()
 		}
 	}
 }

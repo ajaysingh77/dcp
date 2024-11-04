@@ -229,6 +229,8 @@ func (ls *LogStorage) watchResourceEvents(log logr.Logger) error {
 		// we are periodically restarting the watcher to ensure we don't miss any events (the watcher always
 		// emits the current state of resources when it starts).
 		timer := time.NewTimer(watcherRestartInterval)
+		watcherResultChan := watcher.ResultChan()
+
 		for {
 			select {
 			case <-timer.C:
@@ -250,6 +252,7 @@ func (ls *LogStorage) watchResourceEvents(log logr.Logger) error {
 					needsStopping = watcher
 					watcher = newWatcher
 					ls.watcher = newWatcher
+					watcherResultChan = newWatcher.ResultChan()
 				}()
 
 				timer.Reset(watcherRestartInterval)
@@ -263,8 +266,12 @@ func (ls *LogStorage) watchResourceEvents(log logr.Logger) error {
 				timer.Stop()
 				return
 
-			case evt := <-watcher.ResultChan():
-				ls.resourceEventHandler(evt, log)
+			case evt, isOpen := <-watcherResultChan:
+				if !isOpen {
+					watcherResultChan = nil // Do not read zero-values from a stopped watcher
+				} else {
+					ls.resourceEventHandler(evt, log)
+				}
 			}
 		}
 	}()

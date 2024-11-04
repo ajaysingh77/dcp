@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"time"
 
 	"github.com/go-logr/logr"
 
@@ -118,7 +119,25 @@ func (r *ProcessExecutableRunner) StartRun(
 
 func (r *ProcessExecutableRunner) StopRun(_ context.Context, runID controllers.RunID, log logr.Logger) error {
 	log.V(1).Info("stopping process...", "runID", runID)
-	err := r.pe.StopProcess(runIdToPID(runID))
+
+	// We want to make progress eventually, so we don't want to wait indefinitely for the process to stop.
+	const ProcessStopTimeout = 15 * time.Second
+
+	timer := time.NewTimer(ProcessStopTimeout)
+	defer timer.Stop()
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- r.pe.StopProcess(runIdToPID(runID))
+	}()
+
+	var stopErr error = nil
+	select {
+	case stopErr = <-errCh:
+		// (no falltrough in Go)
+	case <-timer.C:
+		stopErr = fmt.Errorf("timed out waiting for process associated with run %s to stop", runID)
+	}
 
 	if runState, found := r.runningProcesses.LoadAndDelete(runID); found {
 		var stdOutErr error
@@ -131,10 +150,10 @@ func (r *ProcessExecutableRunner) StopRun(_ context.Context, runID controllers.R
 			stdErrErr = runState.stdErrFile.Close()
 		}
 
-		err = errors.Join(err, stdOutErr, stdErrErr)
+		stopErr = errors.Join(stopErr, stdOutErr, stdErrErr)
 	}
 
-	return err
+	return stopErr
 }
 
 func (r *ProcessExecutableRunner) runWatcher(ctx context.Context, pid process.Pid_t, log logr.Logger) {

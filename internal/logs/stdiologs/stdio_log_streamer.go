@@ -136,13 +136,11 @@ func (sls *stdIoLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent, l
 			}
 		}
 	} else if evt.Type == watch.Deleted {
-		followWriters, found := sls.activeStreams.Load(resource.GetUID())
+		followWriters, found := sls.activeStreams.LoadAndDelete(resource.GetUID())
 		if found {
 			for _, followWriter := range followWriters {
 				followWriter.Cancel()
 			}
-
-			sls.activeStreams.Delete(resource.GetUID())
 		}
 	}
 }
