@@ -10,6 +10,7 @@ import (
 	"os"
 	stdslices "slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/go-logr/logr"
@@ -98,7 +99,7 @@ type runningContainerData struct {
 	// To obtain the container name, a container must be inspected.
 	containerName string
 
-	// True if the contaienr stop attempt has been initiated/queued.
+	// True if the container stop attempt has been initiated/queued.
 	stopAttemptInitiated bool
 
 	// The exit code (if available) from the container.
@@ -111,17 +112,14 @@ type runningContainerData struct {
 	startupAttempted bool
 
 	// Standard output content from startup commands will be saved to this log and read back when DCP clients request them.
-	// Atomic pointer is used because the underlying file/writer combo is manipulated by the controller
-	// and the shutdown handler, which may act on it concurrently. Same applies to the startup stderr log below.
-	//
 	// Typically the file is filled during Container startup and then cleaned up when DCP is shut down,
 	// or when the Container is deleted. There is a small chance
 	// that the file might not be deleted if Container startup is in progress when DCP is asked to shut down,
 	// but we do not consider this a problem worth slowing down the shutdown process.
-	startupStdoutLog atomic.Pointer[startupLog]
+	startupStdoutLog *startupLog
 
 	// Standard error content from startup commands will be saved to this log.
-	startupStderrLog atomic.Pointer[startupLog]
+	startupStderrLog *startupLog
 
 	// The time the start attempt finished (successfully or not).
 	startAttemptFinishedAt metav1.MicroTime
@@ -135,6 +133,9 @@ type runningContainerData struct {
 	// This is initialized with a copy of the Container.Spec, but then updated (the Env and Args part, specifically)
 	// to include all value substitutions for environment variables and startup command arguments.
 	runSpec *apiv1.ContainerSpec
+
+	// A lock for the instance data
+	lock *sync.Mutex
 }
 
 const placeholderContainerIdPrefix = "__placeholder-"
@@ -161,6 +162,7 @@ func newRunningContainerData(ctr *apiv1.Container) *runningContainerData {
 		networkConnections: make(map[containerNetworkConnectionKey]bool),
 		runSpec:            runSpec,
 		exitCode:           apiv1.UnknownExitCode,
+		lock:               &sync.Mutex{},
 	}
 }
 
@@ -179,20 +181,43 @@ func (rcd *runningContainerData) clone() *runningContainerData {
 		networkConnections:     stdmaps.Clone(rcd.networkConnections),
 		runSpec:                rcd.runSpec.DeepCopy(),
 		startupAttempted:       rcd.startupAttempted,
+		lock:                   &sync.Mutex{},
 	}
 
 	if rcd.exitCode != nil {
 		clone.exitCode = new(int32)
 		*clone.exitCode = *rcd.exitCode
 	}
-	clone.startupStderrLog.Store(rcd.startupStderrLog.Load())
-	clone.startupStdoutLog.Store(rcd.startupStdoutLog.Load())
+	clone.startupStderrLog = rcd.startupStderrLog
+	clone.startupStdoutLog = rcd.startupStdoutLog
 
 	return &clone
 }
 
+// runningContainerData is a structure that is accessed by controller methods and various event handlers.
+// These might be running in different goroutines, so we need to ensure that the data is accessed in a thread-safe manner.
+// The rules of the road are:
+//  1. Data in the runningContainerData structure can only be read or written between calls to acquire() and release().
+//     This also applies to calling any methods on the runningContainerData structure--acquire() the instance first.
+//  2. Do NOT exit any method before calling release() on the runningContainerData instance you have acquired.
+//  3. When calling other methods, if the method does not accept runningContainerData as a parameter, ALWAYS release() first.
+//  4. When calling other methods that do take runningContainerData as a parameter, choose one of the following options:
+//     a. give the method a copy of the runningContainerData to operate on via clone() and have the method apply the changes
+//     to the original instance via deferred operations,
+//     b. pass the original instance and MAKE SURE that the method does not try to acquire()
+//     the same runningContainerData instance again (for simple methods that complete quickly),
+//     c. release() and have the method acquire() the runningContainerData instance itself
+//     (for complex methods that call into container orchestrator etc).
+func (rcd *runningContainerData) acquire() {
+	rcd.lock.Lock()
+}
+
+func (rcd *runningContainerData) release() {
+	rcd.lock.Unlock()
+}
+
 func (rcd *runningContainerData) ensureStartupLogFiles(ctr *apiv1.Container, log logr.Logger) {
-	if rcd.startupStdoutLog.Load() != nil || rcd.startupStderrLog.Load() != nil {
+	if rcd.startupStdoutLog != nil || rcd.startupStderrLog != nil {
 		log.V(1).Info("startup output files already created")
 		return
 	}
@@ -201,26 +226,19 @@ func (rcd *runningContainerData) ensureStartupLogFiles(ctr *apiv1.Container, log
 	if stdoutLogErr != nil {
 		log.Error(stdoutLogErr, "failed to create temporary file for capturing container startup standard output data", "Container", ctr.NamespacedName().String())
 	} else {
-		swapped := rcd.startupStdoutLog.CompareAndSwap(nil, stdoutLog)
-		if !swapped {
-			// This can happen if shutdown coincides with creation of a Container.
-			_ = stdoutLog.Dispose()
-		}
+		rcd.startupStdoutLog = stdoutLog
 	}
 
 	stderrLog, stderrLogErr := newStartupLog(ctr, apiv1.LogStreamSourceStartupStderr)
 	if stderrLogErr != nil {
 		log.Error(stderrLogErr, "failed to create temporary file for capturing container startup standard error data", "Container", ctr.NamespacedName().String())
 	} else {
-		swapped := rcd.startupStderrLog.CompareAndSwap(nil, stderrLog)
-		if !swapped {
-			_ = stderrLog.Dispose()
-		}
+		rcd.startupStderrLog = stderrLog
 	}
 }
 
 func (rcd *runningContainerData) closeStartupLogFiles(log logr.Logger) {
-	stdoutLog := rcd.startupStdoutLog.Load()
+	stdoutLog := rcd.startupStdoutLog
 	if stdoutLog != nil {
 		closeErr := stdoutLog.Close()
 		if closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
@@ -228,7 +246,7 @@ func (rcd *runningContainerData) closeStartupLogFiles(log logr.Logger) {
 		}
 	}
 
-	stderrLog := rcd.startupStderrLog.Load()
+	stderrLog := rcd.startupStderrLog
 	if stderrLog != nil {
 		closeErr := stderrLog.Close()
 		if closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
@@ -238,14 +256,16 @@ func (rcd *runningContainerData) closeStartupLogFiles(log logr.Logger) {
 }
 
 func (rcd *runningContainerData) deleteStartupLogFiles(_ logr.Logger) {
-	stdoutLog := rcd.startupStdoutLog.Swap(nil)
+	stdoutLog := rcd.startupStdoutLog
+	rcd.startupStdoutLog = nil
 	if stdoutLog != nil {
 		// Best effort. In particular, if multiple clones of runningContainerData share a file,
 		// only first deletion attempt will succeed.
 		_ = stdoutLog.Dispose()
 	}
 
-	stderrLog := rcd.startupStderrLog.Swap(nil)
+	stderrLog := rcd.startupStderrLog
+	rcd.startupStderrLog = nil
 	if stderrLog != nil {
 		// Best effort, see comment above.
 		_ = stderrLog.Dispose()
@@ -255,12 +275,12 @@ func (rcd *runningContainerData) deleteStartupLogFiles(_ logr.Logger) {
 func (rcd *runningContainerData) getStartupLogWriters() (usvc_io.ParagraphWriter, usvc_io.ParagraphWriter) {
 	var stdoutWriter, stderrWriter usvc_io.ParagraphWriter
 
-	stdoutLog := rcd.startupStdoutLog.Load()
+	stdoutLog := rcd.startupStdoutLog
 	if stdoutLog != nil {
 		stdoutWriter = stdoutLog.writer
 	}
 
-	stderrLog := rcd.startupStderrLog.Load()
+	stderrLog := rcd.startupStderrLog
 	if stderrLog != nil {
 		stderrWriter = stderrLog.writer
 	}
@@ -333,13 +353,13 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container) objectChange {
 		}
 	}
 
-	startupStoutLog := rcd.startupStdoutLog.Load()
+	startupStoutLog := rcd.startupStdoutLog
 	if startupStoutLog != nil && ctr.Status.StartupStdOutFile == "" {
 		ctr.Status.StartupStdOutFile = startupStoutLog.file.Name()
 		change |= statusChanged
 	}
 
-	startupStderrLog := rcd.startupStderrLog.Load()
+	startupStderrLog := rcd.startupStderrLog
 	if startupStderrLog != nil && ctr.Status.StartupStdErrFile == "" {
 		ctr.Status.StartupStdErrFile = startupStderrLog.file.Name()
 		change |= statusChanged

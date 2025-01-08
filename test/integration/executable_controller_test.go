@@ -292,9 +292,8 @@ func TestExecutableStopState(t *testing.T) {
 			defer cancel()
 
 			t.Logf("Creating Executable '%s'", tc.exe.ObjectMeta.Name)
-			if err := client.Create(ctx, tc.exe); err != nil {
-				t.Fatalf("Could not create Executable: %v", err)
-			}
+			err := client.Create(ctx, tc.exe)
+			require.NoError(t, err, "Could not create Executable '%s'", tc.exe.ObjectMeta.Name)
 
 			t.Logf("Waiting for Executable '%s' run to start...", tc.exe.ObjectMeta.Name)
 			tc.verifyExeRunning(ctx, t, tc.exe)
@@ -303,15 +302,13 @@ func TestExecutableStopState(t *testing.T) {
 				return currentExe.Status.State != "", nil
 			})
 
-			t.Logf("Setting Executable '%s' stop to 'true'...", tc.exe.ObjectMeta.Name)
-			err := retryOnConflict(ctx, updatedExe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+			t.Logf("Setting Executable '%s' Spec.Stop to 'true'...", tc.exe.ObjectMeta.Name)
+			err = retryOnConflict(ctx, updatedExe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
 				exePatch := currentExe.DeepCopy()
 				exePatch.Spec.Stop = true
 				return client.Patch(ctx, exePatch, ctrl_client.MergeFromWithOptions(currentExe, ctrl_client.MergeFromWithOptimisticLock{}))
 			})
-			if err != nil {
-				t.Fatalf("Unable to update Executable: %v", err)
-			}
+			require.NoError(t, err, "Could not set Executable '%s' Spec.Stop to 'true'", tc.exe.ObjectMeta.Name)
 
 			t.Logf("Waiting for process associated with Executable '%s' to be killed...", tc.exe.ObjectMeta.Name)
 			tc.verifyRunEnded(ctx, t, tc.exe)
@@ -324,9 +321,7 @@ func TestExecutableStopState(t *testing.T) {
 			err = retryOnConflict(ctx, updatedExe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
 				return client.Delete(ctx, currentExe)
 			})
-			if err != nil {
-				t.Fatalf("Unable to delete Executable: %v", err)
-			}
+			require.NoError(t, err, "Unable to delete Executable '%s'", tc.exe.ObjectMeta.Name)
 		})
 	}
 }
@@ -1073,8 +1068,8 @@ func TestClientExecutablePortForInjected(t *testing.T) {
 	require.NoError(t, err, "Could not create an Executable")
 
 	t.Logf("Ensure Executable '%s' is running...", exe.ObjectMeta.Name)
-	pid, err := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
-	require.NoError(t, err, "Process could not be started", pid)
+	_, err = ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
+	require.NoError(t, err, "Process could not be started")
 
 	t.Logf("Ensure the Executable.Status.EffectiveEnv contains the injected port...")
 	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
@@ -2438,6 +2433,137 @@ func TestExecutableHealthScheduleUntilSuccess(t *testing.T) {
 		return client.Delete(ctx, currentExe)
 	})
 	require.NoError(t, err, "Could not delete Executable '%s'", exe.ObjectMeta.Name)
+}
+
+// Ensures that multiple Executables can be deleted in parallel.
+func TestExecutableDeleteParallel(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const exeCount = 10
+	const exeNamePrefix = "test-executable-delete-parallel-"
+	exes := make([]*apiv1.Executable, exeCount)
+
+	for i := 0; i < exeCount; i++ {
+		exeName := exeNamePrefix + strconv.Itoa(i)
+		exe := apiv1.Executable{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      exeName,
+				Namespace: metav1.NamespaceNone,
+			},
+			Spec: apiv1.ExecutableSpec{
+				ExecutablePath: "path/to/" + exeName,
+			},
+		}
+		exes[i] = &exe
+	}
+
+	endExecution := concurrency.NewAutoResetEvent(false)
+	defer endExecution.SetAndFreeze()
+
+	psc := ctrl_testutil.ProcessSearchCriteria{
+		// With  Executables using relative path, the match will happen if the command contains the prefix
+		Command: []string{exeNamePrefix},
+	}
+	testProcessExecutor.InstallAutoExecution(ctrl_testutil.AutoExecution{
+		Condition: psc,
+		RunCommand: func(pe *ctrl_testutil.ProcessExecution) int32 {
+			<-endExecution.Wait()
+			return 0
+		},
+	})
+	defer testProcessExecutor.RemoveAutoExecution(psc)
+
+	t.Logf("Creating %d Executables...", exeCount)
+	for _, exe := range exes {
+		err := client.Create(ctx, exe)
+		require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+	}
+
+	t.Logf("Ensure all Executables are running...")
+	for _, exe := range exes {
+		_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(exe), func(currentExe *apiv1.Executable) (bool, error) {
+			return currentExe.Status.State == apiv1.ExecutableStateRunning, nil
+		})
+	}
+
+	t.Logf("Deleting all Executables in parallel...")
+	for _, exe := range exes {
+		err := retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+			return client.Delete(ctx, currentExe)
+		})
+		require.NoError(t, err, "Could not delete Executable '%s'", exe.ObjectMeta.Name)
+	}
+
+	t.Logf("Ensure all Executables are stopping...")
+	for _, exe := range exes {
+		_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(exe), func(currentExe *apiv1.Executable) (bool, error) {
+			return currentExe.Status.State == apiv1.ExecutableStateStopping, nil
+		})
+	}
+
+	t.Logf("Finishing execution of all Executables...")
+	endExecution.SetAndFreeze()
+
+	t.Logf("Ensure all Executables are deleted...")
+	for _, exe := range exes {
+		waitObjectDeleted[apiv1.Executable](t, ctx, ctrl_client.ObjectKeyFromObject(exe))
+	}
+}
+
+// Ensures that if stopping of an Executable fails, the Executable ends up in Unknown state.
+func TestExecutableStopFailureCausesUnknownState(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const exeName = "test-executable-stop-failure-causes-unknown-state"
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      exeName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/" + exeName,
+		},
+	}
+
+	psc := ctrl_testutil.ProcessSearchCriteria{
+		Command: []string{exe.Spec.ExecutablePath},
+	}
+	testProcessExecutor.InstallAutoExecution(ctrl_testutil.AutoExecution{
+		Condition: psc,
+		RunCommand: func(pe *ctrl_testutil.ProcessExecution) int32 {
+			return 0 // Is not going to be used really, because of StopError
+		},
+		StopError: fmt.Errorf("simulated stop failure for Executable '%s'", exe.ObjectMeta.Name),
+	})
+	defer testProcessExecutor.RemoveAutoExecution(psc)
+
+	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
+	err := client.Create(ctx, &exe)
+	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+
+	t.Logf("Ensure Executable '%s' is running...", exe.ObjectMeta.Name)
+	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateRunning, nil
+	})
+
+	t.Logf("Stopping Executable '%s'...", exe.ObjectMeta.Name)
+	err = retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		exePatch := currentExe.DeepCopy()
+		exePatch.Spec.Stop = true
+		return client.Patch(ctx, exePatch, ctrl_client.MergeFromWithOptions(currentExe, ctrl_client.MergeFromWithOptimisticLock{}))
+	})
+	require.NoError(t, err, "Could not stop Executable '%s'", exe.ObjectMeta.Name)
+
+	t.Logf("Ensure Executable '%s' is in Unknown state (becasue of simulated stop error)...", exe.ObjectMeta.Name)
+	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateUnknown, nil
+	})
 }
 
 func ensureProcessRunning(ctx context.Context, cmdPath string) (process.Pid_t, error) {

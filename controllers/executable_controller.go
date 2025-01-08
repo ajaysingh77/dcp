@@ -5,6 +5,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"reflect"
 	"strings"
@@ -23,12 +24,12 @@ import (
 	ctrl_source "sigs.k8s.io/controller-runtime/pkg/source"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
-	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
-
 	"github.com/microsoft/usvc-apiserver/internal/health"
 	"github.com/microsoft/usvc-apiserver/internal/logs"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
+	"github.com/microsoft/usvc-apiserver/internal/resiliency"
+	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
@@ -44,6 +45,7 @@ var executableStateInitializers = map[apiv1.ExecutableState]executableStateIniti
 	apiv1.ExecutableStateEmpty:         handleNewExecutable,
 	apiv1.ExecutableStateStarting:      handleNewExecutable,
 	apiv1.ExecutableStateRunning:       ensureExecutableRunningState,
+	apiv1.ExecutableStateStopping:      ensureExecutableStoppingState,
 	apiv1.ExecutableStateTerminated:    ensureExecutableFinalState,
 	apiv1.ExecutableStateFailedToStart: ensureExecutableFinalState,
 	apiv1.ExecutableStateFinished:      ensureExecutableFinalState,
@@ -76,11 +78,21 @@ type ExecutableReconciler struct {
 
 	// Reconciler lifetime context, used to cancel operations during reconciler shutdown
 	lifetimeCtx context.Context
+
+	// A WorkQueue for stopping Executables (which might take a while).
+	stopQueue *resiliency.WorkQueue
 }
 
 var (
 	executableFinalizer string = fmt.Sprintf("%s/executable-reconciler", apiv1.GroupVersion.Group)
 	executableKind             = apiv1.GroupVersion.WithKind(reflect.TypeOf(apiv1.Executable{}).Name())
+)
+
+const (
+	// The maximum number of Executable stop operations that can be executed in parallel.
+	// Since it mostly involves sending signals and waiting for the process to exit,
+	// we take the maximum level of concurrency allowed by WorkQueue.
+	maxParallelExecutableStops = math.MaxUint8
 )
 
 func NewExecutableReconciler(
@@ -99,6 +111,7 @@ func NewExecutableReconciler(
 		notifyRunChanged:  concurrency.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx),
 		debouncer:         newReconcilerDebouncer[struct{}](),
 		lifetimeCtx:       lifetimeCtx,
+		stopQueue:         resiliency.NewWorkQueue(lifetimeCtx, maxParallelExecutableStops),
 		Log:               log,
 	}
 
@@ -163,12 +176,8 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	r.runs.RunDeferredOps(req.NamespacedName)
 
-	if exe.DeletionTimestamp != nil && !exe.DeletionTimestamp.IsZero() && !exe.Starting() {
-		// Remove the finalizer if deletion has been requested and the Executable has completed initial startup
-		log.V(1).Info("Executable is being deleted...")
-		r.releaseExecutableResources(ctx, &exe, log)
-		change = deleteFinalizer(&exe, executableFinalizer, log)
-
+	if exe.DeletionTimestamp != nil && !exe.DeletionTimestamp.IsZero() {
+		change = r.handleDeletionRequest(ctx, &exe, log)
 	} else if change = ensureFinalizer(&exe, executableFinalizer, log); change != noChange {
 		// If we added a finalizer, we'll do the additional reconciliation next call
 	} else {
@@ -182,13 +191,49 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	return result, err
 }
 
+func (r *ExecutableReconciler) handleDeletionRequest(ctx context.Context, exe *apiv1.Executable, log logr.Logger) objectChange {
+	_, runInfo, found := r.runs.FindByFirstKey(exe.NamespacedName())
+	if found {
+		runInfo.Acquire()
+	}
+
+	var change objectChange
+
+	switch {
+	case !found:
+		change = deleteFinalizer(exe, executableFinalizer, log)
+
+	case runInfo.ExeState == apiv1.ExecutableStateStopping || runInfo.ExeState == apiv1.ExecutableStateStarting:
+		// We just need to wait for the Executable to exit the transient state
+		runInfo.Release()
+		change = r.manageExecutable(ctx, exe, log)
+
+	case runInfo.ExeState == apiv1.ExecutableStateRunning:
+		// Transition to stopping state
+		runInfo.ExeState = apiv1.ExecutableStateStopping
+		runInfo.Release()
+		stoppingInitializer := getStateInitializer(executableStateInitializers, apiv1.ExecutableStateStopping, log)
+		change = stoppingInitializer(ctx, r, exe, apiv1.ExecutableStateStopping, log)
+
+	default: // In initial or final state
+		runInfo.Release()
+		log.V(1).Info("Executable is being deleted...")
+		r.releaseExecutableResources(ctx, exe, log)
+		change = deleteFinalizer(exe, executableFinalizer, log)
+	}
+
+	return change
+}
+
 func (r *ExecutableReconciler) manageExecutable(ctx context.Context, exe *apiv1.Executable, log logr.Logger) objectChange {
 	targetExecutableState := exe.Status.State
 	_, runInfo, found := r.runs.FindByFirstKey(exe.NamespacedName())
 	if found {
 		// In-memory run info is not subject to issues related to caching
 		// and failure to update Executable Status due to conflict, so it takes precedence.
+		runInfo.Acquire()
 		targetExecutableState = runInfo.ExeState
+		runInfo.Release()
 	}
 
 	// Even if Executable.State == targetExecutableState, we still want to run the initializer
@@ -219,6 +264,8 @@ func handleNewExecutable(
 		return r.startExecutable(ctx, exe, log)
 	} else {
 		// Ensure the status matches the current state.
+		runInfo.Acquire()
+		defer runInfo.Release()
 		return runInfo.ApplyTo(exe, log)
 	}
 }
@@ -232,16 +279,19 @@ func ensureExecutableRunningState(
 ) objectChange {
 	change := r.setExecutableState(exe, apiv1.ExecutableStateRunning)
 
-	runID, runInfo, found := r.runs.FindByFirstKey(exe.NamespacedName())
+	_, runInfo, found := r.runs.FindByFirstKey(exe.NamespacedName())
 	if !found {
-		// Might happen if the Executable is being deleted and the run was already terminated.
+		// Might happen if the Executable is being deleted and the run was already terminated
+		// (we are seeing stale Executable data due to Kubernetes container-runtime caching).
 		return change
 	}
+	runInfo.Acquire()
+	defer runInfo.Release()
 
 	if exe.Spec.Stop {
-		log.V(1).Info("attempting to stop the Executable...", "RunID", runID)
-		r.stopExecutable(ctx, exe, log)
-		// Don't set the Executable state to Finished yet; we do this on run change notification.
+		runInfo.ExeState = apiv1.ExecutableStateStopping
+		change |= r.setExecutableState(exe, apiv1.ExecutableStateStopping)
+		return change
 	}
 
 	// Ensure the status matches the current state.
@@ -267,6 +317,51 @@ func ensureExecutableRunningState(
 	return change
 }
 
+func ensureExecutableStoppingState(
+	ctx context.Context,
+	r *ExecutableReconciler,
+	exe *apiv1.Executable,
+	_ apiv1.ExecutableState,
+	log logr.Logger,
+) objectChange {
+	change := r.setExecutableState(exe, apiv1.ExecutableStateStopping)
+
+	runID, runInfo, found := r.runs.FindByFirstKey(exe.NamespacedName())
+	if !found {
+		return change // See ensureExecutableRunningState() for explanation
+	}
+
+	runInfo.Acquire()
+
+	if !runInfo.stopAttemptInitiated {
+		log.V(1).Info("attempting to stop the Executable...", "RunID", runID)
+		runInfo.stopAttemptInitiated = true
+		runInfo.ExeState = apiv1.ExecutableStateStopping
+		runInfoCopy := runInfo.DeepCopy()
+		runInfo.Release()
+		err := r.stopQueue.Enqueue(r.stopExecutableFunc(exe, runInfoCopy, log))
+		if err != nil {
+			log.Error(err, "could not enqueue Executable stop operation")
+			change |= ensureExecutableFinalState(ctx, r, exe, apiv1.ExecutableStateUnknown, log)
+			return change
+		}
+		runInfo.Acquire()
+	}
+
+	change |= runInfo.ApplyTo(exe, log)
+
+	if len(exe.Spec.HealthProbes) > 0 && runInfo.healthProbesEnabled != nil && *runInfo.healthProbesEnabled {
+		log.V(1).Info("disabling health probes for Executable...")
+		*runInfo.healthProbesEnabled = false
+		r.hpSet.DisableProbes(apiv1.GetNamespacedNameWithKind(exe))
+	}
+
+	runInfo.Release()
+	removeEndpointsForWorkload(r, ctx, exe, log)
+
+	return change
+}
+
 func ensureExecutableFinalState(
 	ctx context.Context,
 	r *ExecutableReconciler,
@@ -281,16 +376,19 @@ func ensureExecutableFinalState(
 		return change // See ensureExecutableRunningState() for explanation
 	}
 
+	runInfo.Acquire()
+
 	// Ensure the status matches the current state.
 	change |= runInfo.ApplyTo(exe, log)
-
-	removeEndpointsForWorkload(r, ctx, exe, log)
 
 	if len(exe.Spec.HealthProbes) > 0 && runInfo.healthProbesEnabled != nil && *runInfo.healthProbesEnabled {
 		log.V(1).Info("disabling health probes for Executable...")
 		*runInfo.healthProbesEnabled = false
 		r.hpSet.DisableProbes(apiv1.GetNamespacedNameWithKind(exe))
 	}
+
+	runInfo.Release()
+	removeEndpointsForWorkload(r, ctx, exe, log)
 
 	if change == noChange {
 		// We are in the final state and all the changes have been successfully saved
@@ -342,9 +440,9 @@ func (r *ExecutableReconciler) startExecutable(ctx context.Context, exe *apiv1.E
 	log.V(1).Info("starting Executable...")
 	run := NewRunInfo()
 	run.ReservedPorts = reservedServicePorts
+	startingRunInfo := run.DeepCopy()
 	r.runs.Store(exe.NamespacedName(), getStartingRunID(exe.NamespacedName()), run)
 
-	startingRunInfo := run.DeepCopy()
 	err = runner.StartRun(ctx, exe, startingRunInfo, r, log)
 
 	if err != nil {
@@ -417,16 +515,18 @@ func (r *ExecutableReconciler) processRunChangeNotification(
 
 	// The status object contains pointers and we are going to be modifying values pointed by them,
 	// so we need to make a copy to avoid data races with other controller methods.
+	currentRunInfo.Acquire()
 	newRunInfo := currentRunInfo.DeepCopy()
+	currentRunInfo.Release()
 
 	updateExeState(newRunInfo)
 
 	var effectiveExitCode *int32
 	if err != nil {
-		r.Log.V(1).Info("Executable run could not be tracked", "Executable", name.String(), "RunID", runID, "LastState", currentRunInfo.ExeState, "Error", err.Error())
+		r.Log.V(1).Info("Executable run could not be tracked", "Executable", name.String(), "RunID", runID, "LastState", newRunInfo.ExeState, "Error", err.Error())
 		effectiveExitCode = apiv1.UnknownExitCode
 	} else {
-		r.Log.V(1).Info("queue Executable run change", "Executable", name.String(), "RunID", runID, "LastState", currentRunInfo.ExeState, "PID", pid, "ExitCode", exitCode, "ExecutableState", newRunInfo.ExeState)
+		r.Log.V(1).Info("queue Executable run change", "Executable", name.String(), "RunID", runID, "LastState", newRunInfo.ExeState, "PID", pid, "ExitCode", exitCode, "ExecutableState", newRunInfo.ExeState)
 		effectiveExitCode = exitCode
 	}
 
@@ -475,6 +575,8 @@ func (r *ExecutableReconciler) OnStartupCompleted(
 			return
 		}
 
+		ri.Acquire()
+		defer ri.Release()
 		ri.UpdateFrom(startedRunInfo, r.Log)
 
 		// Both keys in the runs map must be unique; if the startup failed and the run ID is not available,
@@ -494,34 +596,35 @@ func (r *ExecutableReconciler) OnStartupCompleted(
 
 // Stops the underlying Executable run, if any.
 // The Executable data update related to stopped run is handled by the caller.
-func (r *ExecutableReconciler) stopExecutable(ctx context.Context, exe *apiv1.Executable, log logr.Logger) {
-	var runID RunID = RunID(exe.Status.ExecutionID)
-	if runID == "" || exe.Done() {
-		log.V(1).Info("Executable is not running, nothing to stop...")
-		return
-	}
+// The passed runInfo is a copy that the method can modify
+func (r *ExecutableReconciler) stopExecutableFunc(exe *apiv1.Executable, runInfo *ExecutableRunInfo, log logr.Logger) func(context.Context) {
+	return func(stopCtx context.Context) {
+		runner, runnerNotFoundErr := r.getExecutableRunner(exe)
+		if runnerNotFoundErr != nil {
+			// Should never happen
+			log.Error(runnerNotFoundErr, "the Executable cannot be stopped")
+			return
+		}
 
-	_, _, found := r.runs.FindBySecondKey(runID)
-	if !found {
-		// Either we never attempted to start the Executable, or we already attempted to stop the process,
-		// and the current reconciliation loop is just catching up to some other changes.
-		// Either way there is nothing to do.
-		log.V(1).Info("run data is not available, nothing to stop...")
-		return
-	}
+		stopErr := runner.StopRun(stopCtx, runInfo.RunID, log)
 
-	runner, runnerNotFoundErr := r.getExecutableRunner(exe)
-	if runnerNotFoundErr != nil {
-		// Should never happen
-		log.Error(runnerNotFoundErr, "the Executable cannot be stopped")
-		return
-	}
+		// If the stop fails, we are not sure if the Executable is still running or not,
+		// so we queue the transition to the unknown state. But if the stop succeeds,
+		// OnRunCompleted() will be called and the transition to the final state will be handled there.
 
-	err := runner.StopRun(ctx, runID, log)
-	if err != nil {
-		log.Error(err, "could not stop the Executable", "RunID", runID)
-	} else {
-		log.V(1).Info("Executable stopped", "RunID", runID)
+		if stopErr != nil {
+			log.Error(stopErr, "could not stop the Executable", "RunID", runInfo.RunID)
+			runInfo.ExeState = apiv1.ExecutableStateUnknown
+			exeName := exe.NamespacedName()
+
+			runID := runInfo.RunID
+			r.runs.QueueDeferredOp(exeName, func(runs *maps.DualKeyMap[types.NamespacedName, RunID, *ExecutableRunInfo]) {
+				// The run may have been deleted by the time we get here, so we do not care if Update() returns false.
+				_ = runs.Update(exeName, runID, runInfo)
+			})
+
+			r.debouncer.ReconciliationNeeded(r.lifetimeCtx, exe.NamespacedName(), struct{}{}, r.scheduleExecutableReconciliation)
+		}
 	}
 }
 
@@ -545,17 +648,13 @@ func (r *ExecutableReconciler) releaseExecutableResources(ctx context.Context, e
 		r.hpSet.DisableProbes(apiv1.GetNamespacedNameWithKind(exe))
 	}
 
-	var runID RunID = RunID(exe.Status.ExecutionID)
-	if runID == "" || exe.Done() {
-		return // Nothing else to do--the Executable is not running
-	}
-
-	r.stopExecutable(ctx, exe, log)
-
 	// We are about to terminate the run. Since the run is not allowed to complete normally,
 	// we are not interested in its exit code (it will indicate a failure,
 	// but it is a failure induced by the Executable user), so we stop tracking the run now.
-	r.runs.DeleteBySecondKey(runID)
+	runID := RunID(exe.Status.ExecutionID)
+	if runID != "" {
+		r.runs.DeleteBySecondKey(runID)
+	}
 	removeEndpointsForWorkload(r, ctx, exe, log)
 	r.deleteOutputFiles(ctx, exe, log)
 }
@@ -770,7 +869,9 @@ func (r *ExecutableReconciler) handleHealthProbeResults(lifetimeCtx context.Cont
 
 			// The status object contains pointers and we are going to be modifying values pointed by them,
 			// so we need to make a copy to avoid data races with other controller methods.
+			currentRunInfo.Acquire()
 			newRunInfo := currentRunInfo.DeepCopy()
+			currentRunInfo.Release()
 			newRunInfo.healthProbeResults[report.Probe.Name] = report.Result
 
 			r.runs.QueueDeferredOp(exeName, func(runs *maps.DualKeyMap[types.NamespacedName, RunID, *ExecutableRunInfo]) {
@@ -809,7 +910,7 @@ func updateExecutableHealthStatus(exe *apiv1.Executable, state apiv1.ExecutableS
 	var newHealthStatus apiv1.HealthStatus
 
 	switch state {
-	case apiv1.ExecutableStateEmpty, apiv1.ExecutableStateStarting, apiv1.ExecutableStateTerminated, apiv1.ExecutableStateUnknown:
+	case apiv1.ExecutableStateEmpty, apiv1.ExecutableStateStarting, apiv1.ExecutableStateStopping, apiv1.ExecutableStateTerminated, apiv1.ExecutableStateUnknown:
 		newHealthStatus = apiv1.HealthStatusCaution
 
 	case apiv1.ExecutableStateRunning:
@@ -831,7 +932,7 @@ func updateExecutableHealthStatus(exe *apiv1.Executable, state apiv1.ExecutableS
 
 	default:
 		// This should never happen and would indicate we failed to account for some Executable state.
-		// Report the status as unhalthy, but do not panic. This should be pretty visible for clients and cause a bug report.
+		// Report the status as unhealthy, but do not panic. This should be pretty visible for clients and cause a bug report.
 		newHealthStatus = apiv1.HealthStatusUnhealthy
 	}
 

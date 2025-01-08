@@ -54,5 +54,9 @@ func FormatDuration(duration time.Duration) string {
 		parts = append(parts, fmt.Sprintf("%d.%03d seconds", seconds, milliseconds))
 	}
 
+	if len(parts) == 0 {
+		return "< 1ms"
+	}
+
 	return strings.Join(parts, " ")
 }

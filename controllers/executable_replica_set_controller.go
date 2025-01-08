@@ -304,22 +304,53 @@ func (r *ExecutableReplicaSetReconciler) deleteReplicas(ctx context.Context, rep
 	// Delete any inactive child Executable objects
 	// List the active child Executable replicas
 	var childExecutables apiv1.ExecutableList
-	if err := r.List(
-		ctx,
-		&childExecutables,
-		ctrl_client.InNamespace(replicaSet.Namespace),
-		ctrl_client.MatchingFields{
-			exeOwnerKey: replicaSet.Name,
-		},
-	); err != nil {
-		log.Error(err, "failed to list inactive child Executable objects, continuing with deletion")
-	} else {
-		log.V(1).Info("deleting ExecutableReplicaSet children", "Count", childExecutables.ItemCount())
-		for _, exe := range childExecutables.Items {
-			if err = r.Delete(ctx, &exe, ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !errors.IsNotFound(err) {
-				log.Error(err, "failed to delete inactive child Executable object", "exe", exe.NamespacedName())
-			}
+	const maxAttempts = 3
+	attempt := 0
+
+	for {
+		attempt++
+		if attempt > maxAttempts {
+			log.V(1).Info("max attempts reached, stopping deletion of inactive child Executable objects")
+			return
 		}
+
+		err := r.List(
+			ctx,
+			&childExecutables,
+			ctrl_client.InNamespace(replicaSet.Namespace),
+			ctrl_client.MatchingFields{
+				exeOwnerKey: replicaSet.Name,
+			},
+		)
+
+		if err != nil {
+			log.Error(err, "failed to list inactive child Executable objects, continuing with deletion")
+			return
+		}
+
+		log.V(1).Info("deleting ExecutableReplicaSet children...", "Count", childExecutables.ItemCount())
+		conflictEncountered := false
+
+		for _, exe := range childExecutables.Items {
+			err = r.Delete(ctx, &exe, ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground))
+			if err == nil || errors.IsNotFound(err) {
+				continue
+			}
+
+			if errors.IsConflict(err) {
+				conflictEncountered = true
+				break
+			}
+
+			log.Error(err, "failed to delete inactive child Executable object", "exe", exe.NamespacedName())
+			// Failure to delete a child is not a reason to stop the deletion of the replica set
+		}
+
+		if !conflictEncountered || ctx.Err() != nil {
+			return
+		}
+
+		time.Sleep(1 * time.Second)
 	}
 }
 

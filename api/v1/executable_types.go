@@ -39,6 +39,9 @@ const (
 	// The Executable was successfully started and was running last time we checked.
 	ExecutableStateRunning ExecutableState = "Running"
 
+	// Executable is stopping (DCP is trying to stop the process)
+	ExecutableStateStopping ExecutableState = "Stopping"
+
 	// Terminated means the Executable was terminated by its owner. Common reasons are scale-down, or debug session end (for execution via IDE).
 	ExecutableStateTerminated ExecutableState = "Terminated"
 
@@ -66,6 +69,8 @@ func (es ExecutableState) CanUpdateTo(newState ExecutableState) bool {
 	case ExecutableStateStarting:
 		return newState == ExecutableStateRunning || newState == ExecutableStateFailedToStart || newState == ExecutableStateFinished
 	case ExecutableStateRunning:
+		return newState == ExecutableStateStopping || newState == ExecutableStateTerminated || newState == ExecutableStateFinished
+	case ExecutableStateStopping:
 		return newState == ExecutableStateTerminated || newState == ExecutableStateFinished
 	case ExecutableStateTerminated:
 		return false
@@ -407,10 +412,6 @@ func (e *Executable) ValidateUpdate(ctx context.Context, obj runtime.Object) fie
 	}
 
 	return errorList
-}
-
-func (e *Executable) Starting() bool {
-	return e.Status.StartupTimestamp.IsZero() && e.Status.FinishTimestamp.IsZero()
 }
 
 func (e *Executable) Done() bool {

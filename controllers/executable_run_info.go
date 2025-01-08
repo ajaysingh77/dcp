@@ -6,6 +6,7 @@ import (
 	"fmt"
 	stdlib_maps "maps"
 	"strings"
+	"sync"
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -49,6 +50,12 @@ type ExecutableRunInfo struct {
 
 	// Whether health probes are enabled for the Executable
 	healthProbesEnabled *bool
+
+	// True if Executable stop was initiated/queued.
+	stopAttemptInitiated bool
+
+	// Lock for the object
+	lock *sync.Mutex
 }
 
 func NewRunInfo() *ExecutableRunInfo {
@@ -59,7 +66,30 @@ func NewRunInfo() *ExecutableRunInfo {
 		StartupTimestamp:   metav1.MicroTime{},
 		FinishTimestamp:    metav1.MicroTime{},
 		healthProbeResults: make(map[string]apiv1.HealthProbeResult),
+		lock:               &sync.Mutex{},
 	}
+}
+
+// ExecutableRunInfo is a structure that is accessed by controller methods and various event handlers.
+// These might be running in different goroutines, so we need to ensure that the data is accessed in a thread-safe manner.
+// The rules of the road are:
+//  1. Data in the ExecutableRunInfo structure can only be read or written between calls to Acquire() and Release().
+//     This also applies to calling any methods on the ExecutableRunInfo structure--acquire() the instance first.
+//  2. Do NOT exit any method before calling Release() on the ExecutableRunInfo instance you have acquired.
+//  3. When calling other methods, if the method does not accept ExecutableRunInfo as a parameter, ALWAYS Release() first.
+//  4. When calling other methods that do take ExecutableRunInfo as a parameter, choose one of the following options:
+//     a. give the method a copy of the ExecutableRunInfo to operate on via DeepCopy() and have the method apply the changes
+//     to the original instance via deferred operations,
+//     b. pass the original instance and MAKE SURE that the method does not try to Acquire()
+//     the same ExecutableRunInfo instance again (for simple methods that complete quickly),
+//     c. Release() and have the method Acquire() the ExecutableRunInfo instance itself
+//     (for complex methods that call into container orchestrator etc).
+func (ri *ExecutableRunInfo) Acquire() {
+	ri.lock.Lock()
+}
+
+func (ri *ExecutableRunInfo) Release() {
+	ri.lock.Unlock()
 }
 
 // Updates the runInfo object from another instance that supplies new data about the run.
@@ -127,6 +157,7 @@ func (ri *ExecutableRunInfo) UpdateFrom(updated *ExecutableRunInfo, log logr.Log
 func (ri *ExecutableRunInfo) DeepCopy() *ExecutableRunInfo {
 	retval := ExecutableRunInfo{
 		ExeState: ri.ExeState,
+		lock:     &sync.Mutex{},
 	}
 	if ri.Pid != apiv1.UnknownPID {
 		retval.Pid = new(int64)
@@ -149,6 +180,7 @@ func (ri *ExecutableRunInfo) DeepCopy() *ExecutableRunInfo {
 		retval.healthProbesEnabled = new(bool)
 		*retval.healthProbesEnabled = *ri.healthProbesEnabled
 	}
+	retval.stopAttemptInitiated = ri.stopAttemptInitiated
 	return &retval
 }
 
@@ -239,7 +271,7 @@ func (ri *ExecutableRunInfo) ApplyTo(exe *apiv1.Executable, log logr.Logger) obj
 
 func (ri *ExecutableRunInfo) String() string {
 	return fmt.Sprintf(
-		"{exeState=%s, pid=%s, executionID=%s, exitCode=%s, startupTimestamp=%s, finishTimestamp=%s, stdOutFile=%s, stdErrFile=%s, healthProbeResults=%s, healthProbesEnabled=%s}",
+		"{exeState=%s, pid=%s, executionID=%s, exitCode=%s, startupTimestamp=%s, finishTimestamp=%s, stdOutFile=%s, stdErrFile=%s, healthProbeResults=%s, healthProbesEnabled=%s, stopAttemptInitiated=%t}",
 		ri.ExeState,
 		logger.IntPtrValToString(ri.Pid),
 		logger.FriendlyString(string(ri.RunID)),
@@ -250,6 +282,7 @@ func (ri *ExecutableRunInfo) String() string {
 		logger.FriendlyString(ri.StdErrFile),
 		ri.healthProbesFriendlyString(),
 		logger.BoolPtrValToString(ri.healthProbesEnabled),
+		ri.stopAttemptInitiated,
 	)
 }
 
@@ -295,6 +328,10 @@ func DiffString(r1, r2 *ExecutableRunInfo) string {
 
 	if !pointers.EqualValue(r1.healthProbesEnabled, r2.healthProbesEnabled) {
 		sb.WriteString(fmt.Sprintf("healthProbesEnabled=%s->%s, ", logger.BoolPtrValToString(r1.healthProbesEnabled), logger.BoolPtrValToString(r2.healthProbesEnabled)))
+	}
+
+	if r1.stopAttemptInitiated != r2.stopAttemptInitiated {
+		sb.WriteString(fmt.Sprintf("stopAttemptInitiated=%t->%t, ", r1.stopAttemptInitiated, r2.stopAttemptInitiated))
 	}
 
 	sb.WriteString("}")

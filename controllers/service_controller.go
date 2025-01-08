@@ -77,10 +77,10 @@ type ServiceReconciler struct {
 }
 
 const (
-	// With the default additional reconciliation delay of 2 seconds, this results in 30 seconds
+	// With the default additional reconciliation delay of 2 seconds, this results in approximately 60 seconds
 	// of the ServiceReconciler attempting to start the service (proxies) before giving up.
 	// A typical failure is associated with port conflict, which may be transient.
-	MaxServiceStartAttempts = 15
+	MaxServiceStartAttempts = 30
 )
 
 var (

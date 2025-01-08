@@ -392,6 +392,10 @@ func waitObjectAssumesState[T controllers.ObjectStruct, PT controllers.PObjectSt
 	var unexpectedStateErr *unexpectedObjectStateError
 
 	hasExpectedState := func(ctx context.Context) (bool, error) {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+
 		err := client.Get(ctx, name, PT(updatedObject))
 		if ctrl_client.IgnoreNotFound(err) != nil {
 			t.Fatalf("unable to fetch the object '%s' from API server: %v", name.String(), err)
@@ -425,6 +429,10 @@ func waitObjectAssumesState[T controllers.ObjectStruct, PT controllers.PObjectSt
 
 func waitObjectDeleted[T controllers.ObjectStruct, PT controllers.PObjectStruct[T]](t *testing.T, ctx context.Context, name types.NamespacedName) {
 	objectNotFound := func(ctx context.Context) (bool, error) {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+
 		var obj T = *new(T)
 		err := client.Get(ctx, name, PT(&obj))
 		if err != nil {

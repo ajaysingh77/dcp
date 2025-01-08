@@ -27,6 +27,7 @@ type ProcessExecution struct {
 	EndedAt            time.Time
 	ExitHandler        process.ProcessExitHandler
 	ExitCode           int32
+	ExecutionEnded     chan struct{}
 }
 
 func (pe *ProcessExecution) Running() bool {
@@ -119,6 +120,9 @@ type AutoExecution struct {
 	// If not nil, this is the error that will be returned by the Executor from StartProcess() call.
 	// RunCommand will not be called in this case.
 	StartupError error
+
+	// If not nil, the process will fail to stop with the specified error.
+	StopError error
 }
 
 type TestProcessExecutor struct {
@@ -193,13 +197,17 @@ func (e *TestProcessExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, h
 				if ae.StartupError != nil {
 					return process.UnknownPID, time.Time{}, func() {}, ae.StartupError
 				} else {
-					go func(ae AutoExecution) {
+					eeChan := make(chan struct{})
+					e.Executions[len(e.Executions)-1].ExecutionEnded = eeChan
+
+					go func() {
 						exitCode := ae.RunCommand(&pe)
+						close(eeChan)
 						stopProcessErr := e.stopProcessImpl(pid, startTimestamp, exitCode)
-						if stopProcessErr != nil {
+						if stopProcessErr != nil && ae.StopError == nil {
 							panic(fmt.Errorf("we should have an execution with PID=%d: %w", pid, stopProcessErr))
 						}
-					}(ae)
+					}()
 					break
 				}
 			}
@@ -307,15 +315,16 @@ func (e *TestProcessExecutor) findByPid(pid process.Pid_t) int {
 
 func (e *TestProcessExecutor) stopProcessImpl(pid process.Pid_t, processStartTime time.Time, exitCode int32) error {
 	e.m.Lock()
-	defer e.m.Unlock()
 
 	i := e.findByPid(pid)
 	if i == NotFound {
+		e.m.Unlock()
 		return fmt.Errorf("no process with PID %d found", pid)
 	}
 
 	if !processStartTime.IsZero() {
 		if !osutil.Within(processStartTime, e.Executions[i].StartedAt, process.ProcessStartTimestampMaximumDifference) {
+			e.m.Unlock()
 			return fmt.Errorf("process start time mismatch for PID %d: expected %s, actual %s",
 				pid,
 				processStartTime.Format(osutil.RFC3339MiliTimestampFormat),
@@ -325,6 +334,22 @@ func (e *TestProcessExecutor) stopProcessImpl(pid process.Pid_t, processStartTim
 	}
 
 	pe := e.Executions[i]
+
+	if len(e.AutoExecutions) > 0 {
+		for _, ae := range e.AutoExecutions {
+			if ae.Condition.Matches(&pe) && ae.StopError != nil {
+				e.m.Unlock()
+				return ae.StopError
+			}
+		}
+	}
+
+	if pe.ExecutionEnded != nil {
+		e.m.Unlock()
+		<-pe.ExecutionEnded
+		e.m.Lock()
+	}
+
 	pe.ExitCode = exitCode
 	pe.EndedAt = time.Now()
 	e.Executions[i] = pe
@@ -338,6 +363,8 @@ func (e *TestProcessExecutor) stopProcessImpl(pid process.Pid_t, processStartTim
 			}
 		}()
 	}
+
+	e.m.Unlock()
 	return nil
 }
 
