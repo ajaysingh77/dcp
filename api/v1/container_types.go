@@ -159,6 +159,19 @@ type ContainerLabel struct {
 	Value string `json:"value"`
 }
 
+type PullPolicy string
+
+const (
+	// Always pull the container image
+	PullPolicyAlways PullPolicy = "always"
+
+	// Pull the container image only if it is not present
+	PullPolicyMissing PullPolicy = "missing"
+
+	// Never pull the container image
+	PullPolicyNever PullPolicy = "never"
+)
+
 // ContainerSpec defines the desired state of a Container
 // +k8s:openapi-gen=true
 type ContainerSpec struct {
@@ -228,6 +241,9 @@ type ContainerSpec struct {
 	// Optional key used to identify if an existing persistent container needs to be restarted.
 	// If not set, the controller will calculate a key based on a hash of specific fields in the ContainerSpec.
 	LifecycleKey string `json:"lifecycleKey,omitempty"`
+
+	// Pull policy for container base images, if not set uses the default configuration for the container runtime.
+	PullPolicy PullPolicy `json:"pullPolicy,omitempty"`
 }
 
 func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
@@ -312,6 +328,10 @@ func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
 	}
 
 	if cs.LifecycleKey != other.LifecycleKey {
+		return false
+	}
+
+	if cs.PullPolicy != other.PullPolicy {
 		return false
 	}
 
@@ -624,6 +644,10 @@ func (e *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 				errorList = append(errorList, field.Forbidden(field.NewPath("spec", "healthProbes").Index(i), "Health probes cannot be changed once a Container is created."))
 			}
 		}
+	}
+
+	if oldContainer.Spec.PullPolicy != e.Spec.PullPolicy {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "pullPolicy"), "pullPolicy cannot be changed"))
 	}
 
 	return errorList

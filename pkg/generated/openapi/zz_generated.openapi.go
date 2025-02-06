@@ -1429,6 +1429,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 							Format:      "",
 						},
 					},
+					"pullPolicy": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Pull policy for container base images, if not set uses the default configuration for the container runtime.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 				},
 			},
 		},

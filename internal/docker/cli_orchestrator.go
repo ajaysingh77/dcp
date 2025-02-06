@@ -480,6 +480,10 @@ func applyCreateContainerOptions(args []string, options apiv1.ContainerSpec) []s
 		args = append(args, fmt.Sprintf("--restart=%s", options.RestartPolicy))
 	}
 
+	if options.PullPolicy != "" {
+		args = append(args, "--pull", string(options.PullPolicy))
+	}
+
 	if options.Command != "" {
 		args = append(args, "--entrypoint", options.Command)
 	}
