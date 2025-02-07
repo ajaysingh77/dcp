@@ -268,6 +268,11 @@ func (pco *PodmanCliOrchestrator) BuildImage(ctx context.Context, options contai
 		args = append(args, "-f", options.Dockerfile)
 	}
 
+	// Should base images be updated even if they are already present locally?
+	if options.Pull {
+		args = append(args, "--pull")
+	}
+
 	// If specified, the ID of the image will be written to this file
 	if options.IidFile != "" {
 		args = append(args, "--iidfile", options.IidFile)

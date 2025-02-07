@@ -55,6 +55,7 @@ type TimeoutOption struct {
 
 type BuildImageOptions struct {
 	IidFile string
+	Pull    bool
 
 	*apiv1.ContainerBuildContext
 

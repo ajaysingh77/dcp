@@ -793,8 +793,10 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 
 			buildOptions := containers.BuildImageOptions{
 				IidFile:               filepath.Join(usvc_io.DcpTempDir(), fmt.Sprintf("%s_iid_%s", container.Name, container.UID)),
+				Pull:                  container.Spec.PullPolicy == apiv1.PullPolicyAlways,
 				ContainerBuildContext: rcd.runSpec.Build,
 			}
+
 			startupStdoutWriter, startupStderrWriter := rcd.getStartupLogWriters()
 			buildOptions.StreamCommandOptions = containers.StreamCommandOptions{
 				StdOutStream: startupStdoutWriter,
