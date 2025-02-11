@@ -355,9 +355,7 @@ func runServerFromCompletedConfig(
 
 	server.GenericAPIServer.AddPostStartHookOrDie("start-tilt-server-informers", func(context kubeapiserver.PostStartHookContext) error {
 		if config.GenericConfig.SharedInformerFactory != nil {
-			// (must use deprecated StopCh because the SharedInformerFactory API requires a stop channel, and not a Context)
-			// nolint:staticcheck
-			config.GenericConfig.SharedInformerFactory.Start(context.StopCh)
+			config.GenericConfig.SharedInformerFactory.Start(context.Done())
 		}
 		return nil
 	})

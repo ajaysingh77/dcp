@@ -51,7 +51,7 @@ func GetProcessTree(rootP ProcessTreeItem) ([]ProcessTreeItem, error) {
 			if ppidErr != nil {
 				panic(ppidErr)
 			}
-			return ppid == current.Pid
+			return ppid == current.Pid && !p.CreationTime().Before(current.CreationTime)
 		})
 
 		next = append(next, slices.Map[ps.Process, ProcessTreeItem](children, func(p ps.Process) ProcessTreeItem {
