@@ -1,4 +1,26 @@
-# DCP monorepo
+# DCP monorepo <!-- omit from toc -->
+
+- [Development environment setup](#development-environment-setup)
+  - [Go module system setup](#go-module-system-setup)
+  - [GitHub authentication setup](#github-authentication-setup)
+- [Making DCP available from $PATH](#making-dcp-available-from-path)
+  - [macOS, Linux, WSL](#macos-linux-wsl)
+  - [Windows](#windows)
+- [Running tests](#running-tests)
+  - [Run all tests](#run-all-tests)
+  - [Running subsets of tests from command line](#running-subsets-of-tests-from-command-line)
+  - [Debugging tests](#debugging-tests)
+- [Troubleshooting and debugging tips](#troubleshooting-and-debugging-tips)
+  - [`make lint` times out (or ends with an error that says "Killed")](#make-lint-times-out-or-ends-with-an-error-that-says-killed)
+  - [Make it easier to use `kubectl` with DCP](#make-it-easier-to-use-kubectl-with-dcp)
+  - [After `make generate-openapi` the generated file is empty (almost all contents has been removed).](#after-make-generate-openapi-the-generated-file-is-empty-almost-all-contents-has-been-removed)
+  - [I need to test a local build of `dcp` with Aspire tooling](#i-need-to-test-a-local-build-of-dcp-with-aspire-tooling)
+  - [Need to get detailed logs from DCP run](#need-to-get-detailed-logs-from-dcp-run)
+  - [I need to debug DCP](#i-need-to-debug-dcp)
+  - [I need to debug DCP controllers in the context of an Aspire (Visual Studio-based) application run](#i-need-to-debug-dcp-controllers-in-the-context-of-an-aspire-visual-studio-based-application-run)
+  - [Taking performance traces](#taking-performance-traces)
+  - [Environment variables affecting DCP behavior](#environment-variables-affecting-dcp-behavior)
+
 This repository contains the core components of the Developer Control Plane tool:
 -  `dcp` CLI that users invoke to run applications and for other, related tasks. If invoked with `start-apiserver` it will act as the API server that holds the workload model used by controllers, workload renderers, and API providers to create a workload definition, run it, and expose information about it. The API server is Kubernetes-compatible. It is implemented using [Tilt API server library](https://github.com/tilt-dev/tilt-apiserver), which is built on top of standard Kubernetes libraries.
 -  `dcpctrl` is the core DCP controllers that implement the standard behavior for DCP workload models.
@@ -6,14 +28,31 @@ This repository contains the core components of the Developer Control Plane tool
 
 ## Development environment setup
 You will need:
-- Go 1.20 or newer
-- `make` tool (`make` version 3.81 or newer; `make` 4.4.0 or newer is recommended)
+- [Go](https://go.dev/dl/)
+- `make` tool
 
 Supported operating systems for development are Linux, MacOS, and Windows. On Windows, in addition to the `make` tool, you will need the following command-line tools to be installed and on `PATH`:
-- awk (tested with GNU awk 5.2.2)
-- curl (tested with curl 8.0.1)
-- golangci-lint (tested with golangci-lint 1.53.3)
+- awk
+- curl
+- golangci-lint
 
+On Windows you can install all the tools with [Chocolatey](https://chocolatey.org/) (from an elevated prompt):
+
+```powershell
+choco install make /y
+choco install awk /y
+choco install curl /y
+choco install golangci-lint /y
+```
+
+...or [scoop](scoop.sh) (this doesn't need elevation):
+
+```powershell
+scoop install make
+scoop install gawk
+scoop install curl
+scoop install golangci-lint
+```
 
 ### Go module system setup
 Until DCP project becomes public (no plans for that currently), the Go module system needs to be told that repositories under this project are private and global proxies/checksums should not be used for them:
@@ -96,7 +135,7 @@ Add the following snippet to your AppHost project:
 
 ```xml
     <PropertyGroup>
-      <DcpDir>[folder where dcp.exe lives]</DcpDir>
+      <DcpDir>[folder where dcp.exe lives, e.g. <repo root>\bin\]</DcpDir>
     </PropertyGroup>
 ```
 
