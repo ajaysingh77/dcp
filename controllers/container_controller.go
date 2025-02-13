@@ -37,6 +37,7 @@ import (
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
@@ -57,7 +58,6 @@ const (
 	groupVersionLabel = "com.microsoft.developer.usvc-dev.group-version"
 	nameLabel         = "com.microsoft.developer.usvc-dev.name"
 	uidLabel          = "com.microsoft.developer.usvc-dev.uid"
-	persistentLabel   = "com.microsoft.developer.usvc-dev.persistent"
 	lifecycleKeyLabel = "com.microsoft.developer.usvc-dev.lifecycle-key"
 	envLabel          = "com.microsoft.developer.usvc-dev.env"
 	mountsLabel       = "com.microsoft.developer.usvc-dev.mountsLabel"
@@ -1097,10 +1097,24 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 					Value: lifecycleKey,
 				},
 				{
-					Key:   persistentLabel,
+					Key:   PersistentLabel,
 					Value: fmt.Sprintf("%t", rcd.runSpec.Persistent),
 				},
 			}...)
+
+			thisProcess, thisProcessErr := process.This()
+			if thisProcessErr != nil {
+				log.Error(thisProcessErr, "could not get the current process information; container will not have creator process information")
+			} else {
+				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+					Key:   CreatorProcessIdLabel,
+					Value: fmt.Sprintf("%d", thisProcess.Pid),
+				})
+				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+					Key:   CreatorProcessStartTimeLabel,
+					Value: thisProcess.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+				})
+			}
 
 			if len(rcd.runSpec.Env) > 0 {
 				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{

@@ -100,6 +100,17 @@ func inspectContainerIfExists(findContext context.Context, o containers.Containe
 	})
 }
 
+func inspectManyContainers(ctx context.Context, o containers.ContainerOrchestrator, containerIDs []string) ([]containers.InspectedContainer, error) {
+	if len(containerIDs) == 0 {
+		return nil, nil
+	}
+
+	b := exponentialBackoff(containerInspectionTimeout)
+	return resiliency.RetryGet(ctx, b, func() ([]containers.InspectedContainer, error) {
+		return o.InspectContainers(ctx, containerIDs)
+	})
+}
+
 func verifyContainerState(
 	ctx context.Context,
 	o containers.ContainerOrchestrator,
@@ -185,6 +196,34 @@ func removeContainer(removeContext context.Context, o containers.ContainerOrches
 
 	_, removeErr := callWithRetryAndVerification(removeContext, defaultContainerOrchestratorBackoff(), action, verify)
 	return removeErr
+}
+
+func removeManyContainers(removeContext context.Context, o containers.ContainerOrchestrator, containerIDs []string) error {
+	if len(containerIDs) == 0 {
+		return nil
+	}
+
+	action := func(ctx context.Context) error {
+		_, err := o.RemoveContainers(ctx, containerIDs, true /* force */)
+		return err
+	}
+
+	verify := func(ctx context.Context) (any, error) {
+		_, inspectErr := o.InspectContainers(ctx, containerIDs)
+
+		if errors.Is(inspectErr, containers.ErrNotFound) {
+			return nil, nil // This is what we wanted, all containers are gone
+		}
+
+		if inspectErr != nil {
+			return nil, inspectErr
+		} else {
+			return nil, fmt.Errorf("some containers still exist after remove")
+		}
+	}
+
+	_, err := callWithRetryAndVerification(removeContext, defaultContainerOrchestratorBackoff(), action, verify)
+	return err
 }
 
 func buildImage(buildCtx context.Context, o containers.ContainerOrchestrator, buildOptions containers.BuildImageOptions) (string, error) {

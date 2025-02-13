@@ -1216,6 +1216,12 @@ func (to *TestContainerOrchestrator) doRemoveContainer(ctx context.Context, cont
 		delete(to.execs, execToRemove)
 	}
 
+	// Detach the container being deleted from all networks
+	for _, network := range to.networks {
+		remaining, _ := slices.Diff(network.containers, []string{container.id})
+		network.containers = remaining
+	}
+
 	// Notify listeners that we've removed the container
 	to.containerEventsWatcher.Notify(containers.EventMessage{
 		Source: containers.EventSourceContainer,

@@ -204,7 +204,7 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	_, netCreateErr = co.CreateNetwork(ctx, containers.CreateNetworkOptions{
 		Name: netPersistent,
 		Labels: map[string]string{
-			controllers.PersistentNetworkLabel:       "true",
+			controllers.PersistentLabel:              "true",
 			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
 			controllers.CreatorProcessStartTimeLabel: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
 		},
@@ -215,45 +215,170 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	require.NoError(t, procThisErr)
 
 	// Network that is used by existing process (should be preserved)
-	const netUsedByExisting = prefix + "used-by-existing"
+	const netUsedByExistingProcess = prefix + "used-by-existing-process"
 	_, netCreateErr = co.CreateNetwork(ctx, containers.CreateNetworkOptions{
-		Name: netUsedByExisting,
+		Name: netUsedByExistingProcess,
 		Labels: map[string]string{
-			controllers.PersistentNetworkLabel:       "false",
+			controllers.PersistentLabel:              "false",
 			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procThis.Pid),
 			controllers.CreatorProcessStartTimeLabel: procThis.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
 		},
 	})
 	require.NoError(t, netCreateErr)
 
-	// Network that has containers attached to it (should be preserved)
-	const netWithContainers = prefix + "with-containers"
+	// Network that has non-DCP containers attached to it (should be preserved)
+	const netWithNonDcpContainers = prefix + "with-non-dcp-containers"
 	_, netCreateErr = co.CreateNetwork(ctx, containers.CreateNetworkOptions{
-		Name: netWithContainers,
+		Name: netWithNonDcpContainers,
 		Labels: map[string]string{
-			controllers.PersistentNetworkLabel:       "false",
+			controllers.PersistentLabel:              "false",
 			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
 			controllers.CreatorProcessStartTimeLabel: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
 		},
 	})
 	require.NoError(t, netCreateErr)
 	_, containerCreateErr := co.RunContainer(ctx, containers.RunContainerOptions{
-		Name:    prefix + "container-1",
-		Network: netWithContainers,
+		Name:    prefix + "non-dcp-container-1",
+		Network: netWithNonDcpContainers,
 	})
 	require.NoError(t, containerCreateErr)
 	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
-		Name:    prefix + "container-2",
-		Network: netWithContainers,
+		Name:    prefix + "non-dcp-container-2",
+		Network: netWithNonDcpContainers,
 	})
 	require.NoError(t, containerCreateErr)
 
-	// Network that should be removed
-	const netToRemove = prefix + "to-remove"
+	// Network that has some non-DCP and some DCP abandoned containers attached to it (should be preserved)
+	const netWithMixedContainers = prefix + "with-mixed-containers"
 	_, netCreateErr = co.CreateNetwork(ctx, containers.CreateNetworkOptions{
-		Name: netToRemove,
+		Name: netWithMixedContainers,
 		Labels: map[string]string{
-			controllers.PersistentNetworkLabel:       "false",
+			controllers.PersistentLabel:              "false",
+			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
+			controllers.CreatorProcessStartTimeLabel: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+		},
+	})
+	require.NoError(t, netCreateErr)
+	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
+		Name:    prefix + "dcp-container-1",
+		Network: netWithMixedContainers,
+		ContainerSpec: apiv1.ContainerSpec{
+			Labels: []apiv1.ContainerLabel{
+				{
+					Key:   controllers.PersistentLabel,
+					Value: "false",
+				},
+				{
+					Key:   controllers.CreatorProcessIdLabel,
+					Value: fmt.Sprintf("%d", procNonExistent.Pid),
+				},
+				{
+					Key:   controllers.CreatorProcessStartTimeLabel,
+					Value: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+				},
+			},
+		},
+	})
+	require.NoError(t, containerCreateErr)
+	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
+		Name:    prefix + "non-dcp-container-3",
+		Network: netWithMixedContainers,
+	})
+	require.NoError(t, containerCreateErr)
+
+	// Abandoned network with abandoned, but persistent container (should be preserved)
+	const netWithAbandonedPersistentContainer = prefix + "with-abandoned-persistent-container"
+	_, netCreateErr = co.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: netWithAbandonedPersistentContainer,
+		Labels: map[string]string{
+			controllers.PersistentLabel:              "false",
+			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
+			controllers.CreatorProcessStartTimeLabel: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+		},
+	})
+	require.NoError(t, netCreateErr)
+	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
+		Name:    prefix + "abandoned-persistent-container",
+		Network: netWithAbandonedPersistentContainer,
+		ContainerSpec: apiv1.ContainerSpec{
+			Labels: []apiv1.ContainerLabel{
+				{
+					Key:   controllers.PersistentLabel,
+					Value: "true",
+				},
+				{
+					Key:   controllers.CreatorProcessIdLabel,
+					Value: fmt.Sprintf("%d", procNonExistent.Pid),
+				},
+				{
+					Key:   controllers.CreatorProcessStartTimeLabel,
+					Value: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+				},
+			},
+		},
+	})
+	require.NoError(t, containerCreateErr)
+
+	// Network that has only DCP abandoned, non-persistent containers attached to it (should be removed)
+	const netWithDcpContainers = prefix + "with-dcp-containers"
+	_, netCreateErr = co.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: netWithDcpContainers,
+		Labels: map[string]string{
+			controllers.PersistentLabel:              "false",
+			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
+			controllers.CreatorProcessStartTimeLabel: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+		},
+	})
+	require.NoError(t, netCreateErr)
+	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
+		Name:    prefix + "dcp-container-2",
+		Network: netWithDcpContainers,
+		ContainerSpec: apiv1.ContainerSpec{
+			Labels: []apiv1.ContainerLabel{
+				{
+					Key:   controllers.PersistentLabel,
+					Value: "false",
+				},
+				{
+					Key:   controllers.CreatorProcessIdLabel,
+					Value: fmt.Sprintf("%d", procNonExistent.Pid),
+				},
+				{
+					Key:   controllers.CreatorProcessStartTimeLabel,
+					Value: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+				},
+			},
+		},
+	})
+	require.NoError(t, containerCreateErr)
+	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
+		Name:    prefix + "dcp-container-3",
+		Network: netWithDcpContainers,
+		ContainerSpec: apiv1.ContainerSpec{
+			Labels: []apiv1.ContainerLabel{
+				{
+					Key:   controllers.PersistentLabel,
+					Value: "false",
+				},
+				{
+					Key:   controllers.CreatorProcessIdLabel,
+					Value: fmt.Sprintf("%d", procNonExistent.Pid),
+				},
+				{
+					Key:   controllers.CreatorProcessStartTimeLabel,
+					Value: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+				},
+			},
+		},
+	})
+	require.NoError(t, containerCreateErr)
+
+	// Network that has no containers attached to it (should be removed)
+	const abandonedNetworkNoContainers = prefix + "abandoned-no-containers"
+	_, netCreateErr = co.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: abandonedNetworkNoContainers,
+		Labels: map[string]string{
+			controllers.PersistentLabel:              "false",
 			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
 			controllers.CreatorProcessStartTimeLabel: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
 		},
@@ -268,7 +393,17 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	remainingNames := slices.Map[containers.ListedNetwork, string](remaining, func(n containers.ListedNetwork) string {
 		return n.Name
 	})
-	require.ElementsMatch(t, []string{netNoLabels, netPersistent, netUsedByExisting, netWithContainers, co.DefaultNetworkName(), "host", "none"}, remainingNames, "unexpected networks remaining")
+	require.ElementsMatch(t, []string{
+		netNoLabels,
+		netPersistent,
+		netUsedByExistingProcess,
+		netWithNonDcpContainers,
+		netWithMixedContainers,
+		netWithAbandonedPersistentContainer,
+		co.DefaultNetworkName(),
+		"host",
+		"none",
+	}, remainingNames, "unexpected networks remaining")
 }
 
 func ensureNetworkCreated(t *testing.T, ctx context.Context, network *apiv1.ContainerNetwork) *apiv1.ContainerNetwork {

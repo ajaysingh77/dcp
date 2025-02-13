@@ -95,10 +95,6 @@ const (
 	networkHarvesterNotStarted networkHarvesterStatus = 0
 	networkHarversterRunning   networkHarvesterStatus = 1
 	networkHarvesterDone       networkHarvesterStatus = 2
-
-	PersistentNetworkLabel       = "com.microsoft.developer.usvc-dev.persistent"
-	CreatorProcessIdLabel        = "com.microsoft.developer.usvc-dev.creatorProcessId"
-	CreatorProcessStartTimeLabel = "com.microsoft.developer.usvc-dev.creatorProcessStartTime"
 )
 
 type networkStateMap = ObjectStateMap[string, runningNetworkState, *runningNetworkState]
@@ -346,7 +342,7 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 		Name: networkName,
 		IPv6: network.Spec.IPv6,
 		Labels: map[string]string{
-			PersistentNetworkLabel: fmt.Sprintf("%t", network.Spec.Persistent),
+			PersistentLabel: fmt.Sprintf("%t", network.Spec.Persistent),
 		},
 	}
 
@@ -683,16 +679,7 @@ func DoHarvestUnusedNetworks(
 
 	// Only consider networks that are not persistent and have the creator process ID/start time label set.
 	networks = usvc_slices.Select(networks, func(n ct.ListedNetwork) bool {
-		nonPersistent := maps.HasExactValue(n.Labels, PersistentNetworkLabel, "false")
-		_, hasValidPid := maps.TryGetValidValue(n.Labels, CreatorProcessIdLabel, func(v string) bool {
-			_, err := process.StringToPidT(v)
-			return err == nil
-		})
-		_, hasValidStartTime := maps.TryGetValidValue(n.Labels, CreatorProcessStartTimeLabel, func(v string) bool {
-			_, err := time.Parse(osutil.RFC3339MiliTimestampFormat, v)
-			return err == nil
-		})
-		return nonPersistent && hasValidPid && hasValidStartTime
+		return nonPersistentWithCreator(n.Labels)
 	})
 
 	if len(networks) == 0 {
@@ -707,52 +694,34 @@ func DoHarvestUnusedNetworks(
 	}
 
 	// Filter out networks that were created by processes that are still running.
-	networks = usvc_slices.Select(networks, func(n ct.ListedNetwork) bool {
-		creatorPID, _ := process.StringToPidT(n.Labels[CreatorProcessIdLabel])
-		creatorStartTime, _ := time.Parse(osutil.RFC3339MiliTimestampFormat, n.Labels[CreatorProcessStartTimeLabel])
-
-		return !usvc_slices.Any(procs, func(p ps.Process) bool {
-			pPid, pPidErr := process.IntToPidT(p.PID())
-			if pPidErr != nil {
-				return true // Can't convert the PID, so assume it's a running process and the network is off limits.
-			}
-			return pPid == creatorPID && process.HasExpectedStartTime(p, creatorStartTime)
-		})
+	abandonedNetworks := usvc_slices.Select(networks, func(n ct.ListedNetwork) bool {
+		return !creatorStillRunning(n.Labels, procs)
 	})
 
-	if len(networks) == 0 {
+	if len(abandonedNetworks) == 0 {
 		log.V(1).Info("No container networks to harvest left after eliminating networks that belong to running processes")
 		return nil
 	}
 
-	inspectedNetworks, inspectErr := inspectManyNetworks(
-		ctx,
-		co,
-		usvc_slices.Map[ct.ListedNetwork, string](networks, func(n ct.ListedNetwork) string { return n.ID }),
-	)
+	abandonedNetworkIDs := usvc_slices.Map[ct.ListedNetwork, string](abandonedNetworks, func(n ct.ListedNetwork) string { return n.ID })
+	inspectedNetworks, inspectErr := inspectManyNetworks(ctx, co, abandonedNetworkIDs)
 	if inspectErr != nil {
 		log.Info("Could not inspect container networks"+networksWillNotBeHarvested, "Error", inspectErr)
 		return inspectErr
 	}
 
-	// Filter out networks that have any containers attached to them.
-	inspectedNetworks = usvc_slices.Select(inspectedNetworks, func(n ct.InspectedNetwork) bool {
-		return len(n.Containers) == 0
-	})
-
-	if len(inspectedNetworks) == 0 {
+	// Filter out networks that have any non-DCP, or persistent containers attached to them.
+	unusedNetworks := harvestContainersFromNetworks(ctx, co, log, inspectedNetworks, procs)
+	if len(unusedNetworks) == 0 {
 		log.V(1).Info("No container networks to harvest left after eliminating networks with attached containers")
 		return nil
 	}
 
-	unusedNetworkNames := usvc_slices.Map[ct.InspectedNetwork, string](inspectedNetworks, func(n ct.InspectedNetwork) string { return n.Name })
+	unusedNetworkNames := usvc_slices.Map[ct.InspectedNetwork, string](unusedNetworks, func(n ct.InspectedNetwork) string { return n.Name })
 	log.V(1).Info("Removing unused container networks...", "Networks", unusedNetworkNames)
+	ususedNetworkIDs := usvc_slices.Map[ct.InspectedNetwork, string](unusedNetworks, func(n ct.InspectedNetwork) string { return n.Id })
 
-	removeErr := removeManyNetworks(
-		ctx,
-		co,
-		usvc_slices.Map[ct.InspectedNetwork, string](inspectedNetworks, func(n ct.InspectedNetwork) string { return n.Id }),
-	)
+	removeErr := removeManyNetworks(ctx, co, ususedNetworkIDs)
 	if removeErr != nil {
 		log.Info("Could not remove unused container networks"+networksWillNotBeHarvested, "Error", removeErr)
 		return removeErr
@@ -760,4 +729,127 @@ func DoHarvestUnusedNetworks(
 		log.V(1).Info("Unused container networks have been removed")
 		return nil
 	}
+}
+
+// Returns true if the set of given labels belongs to an object (network or container) that is non-persistent
+// and has a creator process ID/start time label set (and thus was created by DCP).
+func nonPersistentWithCreator(labels map[string]string) bool {
+	nonPersistent := maps.HasExactValue(labels, PersistentLabel, "false")
+	_, hasValidPid := maps.TryGetValidValue(labels, CreatorProcessIdLabel, func(v string) bool {
+		_, err := process.StringToPidT(v)
+		return err == nil
+	})
+	_, hasValidStartTime := maps.TryGetValidValue(labels, CreatorProcessStartTimeLabel, func(v string) bool {
+		_, err := time.Parse(osutil.RFC3339MiliTimestampFormat, v)
+		return err == nil
+	})
+	return nonPersistent && hasValidPid && hasValidStartTime
+}
+
+// Returns true if the set of given labels belongs to an object (network or container) that was created
+// by a DCP process that is still running.
+func creatorStillRunning(labels map[string]string, procs []ps.Process) bool {
+	creatorPID, _ := process.StringToPidT(labels[CreatorProcessIdLabel])
+	creatorStartTime, _ := time.Parse(osutil.RFC3339MiliTimestampFormat, labels[CreatorProcessStartTimeLabel])
+
+	return usvc_slices.Any(procs, func(p ps.Process) bool {
+		pPid, pPidErr := process.IntToPidT(p.PID())
+		if pPidErr != nil {
+			return true // Can't convert the PID, so assume it's a running process and the network is off limits.
+		}
+		return pPid == creatorPID && process.HasExpectedStartTime(p, creatorStartTime)
+	})
+}
+
+// Takes a list of container networks that have been "abandoned" (i.e. they are non-persistent and
+// have been created by a DCP process that is no longer running) and tries to figure out which ones
+// can be deleted if the non-persistent containers attached to them (if any) are also deleted.
+// Returns the list of networks that can be deleted ("unused" networks).
+func harvestContainersFromNetworks(
+	ctx context.Context,
+	co containers.ContainerOrchestrator,
+	log logr.Logger,
+	abandonedNetworks []ct.InspectedNetwork,
+	procs []ps.Process,
+) []ct.InspectedNetwork {
+	networksWithNoContainers := usvc_slices.Select(abandonedNetworks, func(n ct.InspectedNetwork) bool {
+		return len(n.Containers) == 0
+	})
+
+	if len(networksWithNoContainers) == len(abandonedNetworks) {
+		log.V(1).Info("There are no containers connected to abandoned networks, so all abandoned networks can be removed.")
+		return abandonedNetworks
+	}
+
+	type containerNetwork = struct {
+		networkID   string
+		containerID string
+	}
+
+	// Compute all (containerID, networkID) pairs that correspond to containers connected to abandoned networks.
+	containerNetworkPairs := usvc_slices.Flatten(
+		usvc_slices.Map[ct.InspectedNetwork, []containerNetwork](abandonedNetworks, func(n ct.InspectedNetwork) []containerNetwork {
+			return usvc_slices.Map[ct.InspectedNetworkContainer, containerNetwork](n.Containers, func(c ct.InspectedNetworkContainer) containerNetwork {
+				return containerNetwork{
+					networkID:   n.Id,
+					containerID: c.Id,
+				}
+			})
+		}),
+	)
+
+	// Compute set of unique container IDs connected to abandoned networks
+	containerIDs := usvc_slices.Unique(
+		usvc_slices.Map[containerNetwork, string](containerNetworkPairs, func(nc containerNetwork) string {
+			return nc.containerID
+		}),
+	)
+
+	inspectedContainers, inspectErr := inspectManyContainers(ctx, co, containerIDs)
+	if inspectErr != nil {
+		log.Info("Could not inspect some containers that are connected to abandoned Docker networks. Some container networks may not be harvested.", "Error", inspectErr)
+
+		// Assume all containers connected to networks should not be removed.
+		// The only networks that can be removed are those that have no containers connected to them.
+		return networksWithNoContainers
+	}
+
+	// Figure out which containers are non-persistent and abandoned by DCP.
+	abandonedContainers := usvc_slices.Select(inspectedContainers, func(c ct.InspectedContainer) bool {
+		return nonPersistentWithCreator(c.Labels) && !creatorStillRunning(c.Labels, procs)
+	})
+
+	if len(abandonedContainers) == 0 {
+		log.V(1).Info("There are no abandoned containers connected to abandoned networks. Only abandoned networks with no containers can be removed.")
+		return networksWithNoContainers
+	}
+
+	// Try to remove all abandoned containers
+	abandonedContainerIDs := usvc_slices.Map[ct.InspectedContainer, string](abandonedContainers, func(c ct.InspectedContainer) string { return c.Id })
+	removeContainersErr := removeManyContainers(ctx, co, abandonedContainerIDs)
+	if removeContainersErr != nil {
+		log.Info("Could not remove some containers that are connected to abandoned Docker networks. Some container networks may not be harvested.", "Error", removeContainersErr)
+		return networksWithNoContainers
+	}
+
+	if len(abandonedContainers) != len(inspectedContainers) {
+		log.V(1).Info("There are some containers connected to abandoned networks that are not abandoned themselves. Only abandoned networks with no containers can be removed.")
+	}
+
+	// Compute remaining networks with containers
+	networkIDsWithContainers := usvc_slices.Unique(
+		usvc_slices.Map[containerNetwork, string](
+			usvc_slices.Select(containerNetworkPairs, func(nc containerNetwork) bool {
+				return !usvc_slices.Contains(abandonedContainerIDs, nc.containerID)
+			}),
+			func(nc containerNetwork) string { return nc.networkID },
+		),
+	)
+
+	// After abandoned containers have been removed, re-compute all abandoned networks eligible for removal
+	networksWithNoContainers = usvc_slices.Select(abandonedNetworks, func(n ct.InspectedNetwork) bool {
+		return !usvc_slices.Contains(networkIDsWithContainers, n.Id)
+	})
+
+	return networksWithNoContainers
 }

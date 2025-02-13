@@ -42,6 +42,10 @@ const (
 	// unless the existing result is older than this value.
 	// This helps avoid updating the status very frequently if an object has health probes with tight intervals.
 	maxStaleHealthProbeResultAge = 15 * time.Second
+
+	PersistentLabel              = "com.microsoft.developer.usvc-dev.persistent"
+	CreatorProcessIdLabel        = "com.microsoft.developer.usvc-dev.creatorProcessId"
+	CreatorProcessStartTimeLabel = "com.microsoft.developer.usvc-dev.creatorProcessStartTime"
 )
 
 func ensureFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objectChange {

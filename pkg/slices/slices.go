@@ -298,6 +298,7 @@ type EqualFunc[T any] interface {
 	~func(T, T) bool | ~func(*T, *T) bool
 }
 
+// Returns a set difference between two slices, using custom equality function.
 func DiffFunc[T any, EF EqualFunc[T], S ~[]T](a, b S, equalFunc EF) S {
 	if len(a) == 0 {
 		return nil
@@ -339,6 +340,7 @@ type KeyFunc[T any, K comparable] interface {
 	~func(T) K | ~func(*T) K
 }
 
+// Groups elements of a slice by a key, using a custom function to compute the key for each slice element.
 func GroupBy[S ~[]T, K comparable, KF KeyFunc[T, K], T any](ss S, keyFunc KF) map[K]S {
 	if len(ss) == 0 {
 		return nil
@@ -362,4 +364,34 @@ func GroupBy[S ~[]T, K comparable, KF KeyFunc[T, K], T any](ss S, keyFunc KF) ma
 	}
 
 	return groups
+}
+
+// Flatten takes a list of lists and puts all elements into a single list.
+func Flatten[T any, S ~[]T, SS ~[]S](ss SS) S {
+	if len(ss) == 0 {
+		return nil
+	}
+
+	var res S
+	for _, s := range ss {
+		res = append(res, s...)
+	}
+	return res
+}
+
+// Unique returns a slice with unique elements from the input slice.
+func Unique[T comparable, S ~[]T](s S) S {
+	if len(s) == 0 {
+		return nil
+	}
+
+	seen := make(map[T]struct{})
+	var res S
+	for _, i := range s {
+		if _, found := seen[i]; !found {
+			seen[i] = struct{}{}
+			res = append(res, i)
+		}
+	}
+	return res
 }
