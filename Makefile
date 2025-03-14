@@ -19,6 +19,7 @@ ifeq ($(OS),Windows_NT)
 	install := Copy-Item
 	exe_suffix := .exe
 	BUILD_TIMESTAMP ?= $(shell Get-Date -UFormat %FT%TZ -AsUTC)
+	CLEAR_GOARGS := $$env:GOOS=""; $$env:GOARCH="";
 else
 	# -o pipefail will treat a pipeline as failed if one of the elements fail.
 	SHELL := /usr/bin/env bash -o pipefail
@@ -34,6 +35,7 @@ else
 	install := install -p
 	exe_suffix :=
 	BUILD_TIMESTAMP ?= $(shell date -u +%FT%TZ)
+	CLEAR_GOARGS := GOOS="" GOARCH=""
 endif
 
 # Honor GOOS settings from the environment to determine appropriate suffix.
@@ -88,19 +90,16 @@ DCPPROC_BINARY ?= $(OUTPUT_BIN)/ext/bin/dcpproc$(bin_exe_suffix)
 GO_BIN ?= go
 TOOL_BIN ?= $(repo_dir)/.toolbin
 GOLANGCI_LINT ?= $(TOOL_BIN)/golangci-lint$(exe_suffix)
-CONTROLLER_GEN ?= $(TOOL_BIN)/controller-gen$(exe_suffix)
-OPENAPI_GEN ?= $(TOOL_BIN)/openapi-gen$(exe_suffix)
-GOVERSIONINFO_GEN ?= $(TOOL_BIN)/goversioninfo$(exe_suffix)
+GOTOOL_BIN ?= $(GO_BIN) tool
+CONTROLLER_GEN ?= $(GOTOOL_BIN) sigs.k8s.io/controller-tools/cmd/controller-gen
+OPENAPI_GEN ?= $(GOTOOL_BIN) k8s.io/kube-openapi/cmd/openapi-gen
+GOVERSIONINFO_GEN ?= $(GOTOOL_BIN) github.com/josephspurrier/goversioninfo/cmd/goversioninfo
 DELAY_TOOL ?= $(TOOL_BIN)/delay$(exe_suffix)
 LFWRITER_TOOL ?= $(TOOL_BIN)/lfwriter$(exe_suffix)
-GO_LICENSES ?= $(TOOL_BIN)/go-licenses$(exe_suffix)
+GO_LICENSES ?= $(GOTOOL_BIN) github.com/google/go-licenses
 
 # Tool Versions
 GOLANGCI_LINT_VERSION ?= v1.64.7
-CONTROLLER_TOOLS_VERSION ?= v0.17.2
-GOVERSIONINFO_VERSION ?= v1.4.1
-GO_LICENSES_VERSION = v1.6.0
-OPENAPI_GENERATOR_VERSION = v0.0.0-20241212222426-2c72e554b1e7
 
 # DCP Version information
 VERSION ?= dev
@@ -150,11 +149,11 @@ generate-ci: generate generate-licenses ## Generate all codegen artifacts and li
 
 .PHONY: generate-object-methods
 generate-object-methods: $(repo_dir)/api/v1/zz_generated.deepcopy.go ## Generates object copy methods for resourced defined in this repo
-$(repo_dir)/api/v1/zz_generated.deepcopy.go : $(TYPE_SOURCES) controller-gen
-	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/v1/..."
+$(repo_dir)/api/v1/zz_generated.deepcopy.go : $(TYPE_SOURCES)
+	$(CLEAR_GOARGS) $(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/v1/..."
 
 define run-openapi-gen
-$(OPENAPI_GEN) \
+$(CLEAR_GOARGS) $(OPENAPI_GEN) \
 	--output-pkg pkg/generated/openapi \
 	--output-file pkg/generated/openapi/zz_generated.openapi.go \
 	--go-header-file $(repo_dir)/hack/boilerplate.go.txt \
@@ -172,13 +171,13 @@ generate-openapi: $(repo_dir)/pkg/generated/openapi/zz_generated.openapi.go ## G
 generate-openapi-debug: OPENAPI_GEN_OPTS = -v 6
 generate-openapi-debug: $(repo_dir)/pkg/generated/openapi/zz_generated.openapi.go ## Runs OpenAPI generator with additional options for debugging
 
-$(repo_dir)/pkg/generated/openapi/zz_generated.openapi.go: $(TYPE_SOURCES) openapi-gen
+$(repo_dir)/pkg/generated/openapi/zz_generated.openapi.go: $(TYPE_SOURCES)
 	$(run-openapi-gen)
 
 .PHONY: generate-goversioninfo
-generate-goversioninfo: goversioninfo-gen
+generate-goversioninfo:
 ifeq ($(build_os),windows)
-	$(GOVERSIONINFO_GEN) $(GOVERSIONINFO_ARCH_FLAGS) -o $(repo_dir)/cmd/dcp/resource.syso -product-version "$(VERSION) $(COMMIT)" -ver-major=$(VERSION_MAJOR) -ver-minor=$(VERSION_MINOR) -ver-patch=$(VERSION_PATCH) -ver-build=0 $(repo_dir)/cmd/dcp/versioninfo.json ## Generates version information for Windows binaries
+	$(CLEAR_GOARGS) $(GOVERSIONINFO_GEN) $(GOVERSIONINFO_ARCH_FLAGS) -o $(repo_dir)/cmd/dcp/resource.syso -product-version "$(VERSION) $(COMMIT)" -ver-major=$(VERSION_MAJOR) -ver-minor=$(VERSION_MINOR) -ver-patch=$(VERSION_PATCH) -ver-build=0 $(repo_dir)/cmd/dcp/versioninfo.json ## Generates version information for Windows binaries
 	$(copy) $(repo_dir)/cmd/dcp/resource.syso $(repo_dir)/cmd/dcpctrl/resource.syso
 	$(copy) $(repo_dir)/cmd/dcp/resource.syso $(repo_dir)/cmd/dcpproc/resource.syso
 else
@@ -193,44 +192,8 @@ generate-licenses: generate-dependency-notices ## Generates license/notice files
 # # We ignore the standard library (go list std) as a workaround for https://github.com/google/go-licenses/issues/244.
 # The awk script converts the output of `go list std` (line separated modules) to the input that `--ignore` expects
 .PHONY: generate-dependency-notices
-generate-dependency-notices: go-licenses
-	$(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE
-
-.PHONY: controller-gen
-controller-gen: $(CONTROLLER_GEN)
-$(CONTROLLER_GEN): | $(TOOL_BIN)
-ifeq ($(detected_OS),windows)
-	if (-not (Test-Path "$(CONTROLLER_GEN)")) { $$env:GOBIN = "$(TOOL_BIN)"; $$env:GOOS = ""; $$env:GOARCH = ""; $(GO_BIN) install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION); $$env:GOBIN = $$null; }
-else
-	[[ -s $(CONTROLLER_GEN) ]] || GOBIN=$(TOOL_BIN) GOOS="" GOARCH="" $(GO_BIN) install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
-endif
-
-.PHONY: openapi-gen
-openapi-gen: $(OPENAPI_GEN)
-$(OPENAPI_GEN): | $(TOOL_BIN)
-ifeq ($(detected_OS),windows)
-	if (-not (Test-Path "$(OPENAPI_GEN)")) { $$env:GOBIN = "$(TOOL_BIN)"; $$env:GOOS = ""; $$env:GOARCH = ""; $(GO_BIN) install k8s.io/kube-openapi/cmd/openapi-gen@$(OPENAPI_GENERATOR_VERSION); $$env:GOBIN = $$null; }
-else
-	[[ -s $(OPENAPI_GEN) ]] || GOBIN=$(TOOL_BIN) GOOS="" GOARCH="" $(GO_BIN) install k8s.io/kube-openapi/cmd/openapi-gen@$(OPENAPI_GENERATOR_VERSION)
-endif
-
-.PHONY: goversioninfo-gen
-goversioninfo-gen: $(GOVERSIONINFO_GEN)
-$(GOVERSIONINFO_GEN): | $(TOOL_BIN)
-ifeq ($(detected_OS),windows)
-	if (-not (Test-Path "$(GOVERSIONINFO_GEN)")) { $$env:GOBIN = "$(TOOL_BIN)"; $$env:GOOS = ""; $$env:GOARCH = ""; $(GO_BIN) install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@$(GOVERSIONINFO_VERSION); $$env:GOBIN = $$null; }
-else
-	[[ -s $(GOVERSIONINFO_GEN) ]] || GOBIN=$(TOOL_BIN) GOOS="" GOARCH="" $(GO_BIN) install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@$(GOVERSIONINFO_VERSION)
-endif
-
-.PHONY: go-licenses
-go-licenses: $(GO_LICENSES)
-$(GO_LICENSES): | $(TOOL_BIN)
-ifeq ($(detected_OS),windows)
-	if (-not (Test-Path "$(GO_LICENSES)")) { $$env:GOBIN = "$(TOOL_BIN)"; $$env:GOOS = ""; $$env:GOARCH = ""; $(GO_BIN) install github.com/google/go-licenses@$(GO_LICENSES_VERSION); $$env:GOBIN = $$null; }
-else
-	[[ -s $(GO_LICENSES) ]] || GOBIN=$(TOOL_BIN) GOOS="" GOARCH="" $(GO_BIN) install github.com/google/go-licenses@$(GO_LICENSES_VERSION)
-endif
+generate-dependency-notices:
+	$(CLEAR_GOARGS) $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE
 
 # delay-tool is used for process package testing
 .PHONY: delay-tool
