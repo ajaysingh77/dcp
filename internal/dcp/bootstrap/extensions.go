@@ -63,7 +63,11 @@ func GetExtensions(ctx context.Context, log logr.Logger) ([]DcpExtension, error)
 		// Evaluate symlinks for the directory
 		realExtDir, evalErr := filepath.EvalSymlinks(extDir)
 		if evalErr != nil {
-			log.Error(evalErr, "failed to evaluate symlinks for directory", "directory", extDir)
+			if runtime.GOOS == "windows" {
+				log.Error(evalErr, "failed to evaluate symlinks for directory; note: directory junctions are not supported, use directory symbolic link instead", "directory", extDir)
+			} else {
+				log.Error(evalErr, "failed to evaluate symlinks for directory", "directory", extDir)
+			}
 			continue
 		}
 
