@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/internal/health"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/pointers"
@@ -157,10 +158,7 @@ func (ri *ExecutableRunInfo) Clone() *ExecutableRunInfo {
 	retval.StdOutFile = ri.StdOutFile
 	retval.StdErrFile = ri.StdErrFile
 	retval.healthProbeResults = stdlib_maps.Clone(ri.healthProbeResults)
-	if ri.healthProbesEnabled != nil {
-		retval.healthProbesEnabled = new(bool)
-		*retval.healthProbesEnabled = *ri.healthProbesEnabled
-	}
+	pointers.SetValue(&retval.healthProbesEnabled, ri.healthProbesEnabled)
 	retval.stopAttemptInitiated = ri.stopAttemptInitiated
 	return &retval
 }
@@ -169,7 +167,7 @@ func (ri *ExecutableRunInfo) ApplyTo(exe *apiv1.Executable, log logr.Logger) obj
 	status := &exe.Status
 	changed := noChange
 
-	if ri.ExeState != "" && status.State != ri.ExeState {
+	if ri.ExeState != apiv1.ExecutableStateEmpty && status.State != ri.ExeState {
 		status.State = ri.ExeState
 		changed = statusChanged
 	}
@@ -212,30 +210,9 @@ func (ri *ExecutableRunInfo) ApplyTo(exe *apiv1.Executable, log logr.Logger) obj
 		changed = statusChanged
 	}
 
-	healthResultsChanged := false
-	statusResults := maps.SliceToMap(status.HealthProbeResults, func(hpr apiv1.HealthProbeResult) (string, apiv1.HealthProbeResult) {
-		return hpr.ProbeName, hpr
-	})
-	if len(statusResults) == 0 && len(ri.healthProbeResults) > 0 {
-		statusResults = make(map[string]apiv1.HealthProbeResult)
-	}
-	for probeName, hpr := range ri.healthProbeResults {
-		statusHpr, found := statusResults[probeName]
-		if !found {
-			statusResults[probeName] = hpr
-			healthResultsChanged = true
-		} else {
-			res, timestampDiff := hpr.Diff(&statusHpr)
-			timestampDiff = timestampDiff.Abs()
-			needsUpdate := res == apiv1.Different || (res == apiv1.DiffTimestampOnly && timestampDiff >= maxStaleHealthProbeResultAge)
-			if needsUpdate {
-				statusResults[probeName] = hpr
-				healthResultsChanged = true
-			}
-		}
-	}
+	updatedHealthResults, healthResultsChanged := health.UpdateHealthProbeResults(status.HealthProbeResults, ri.healthProbeResults)
 	if healthResultsChanged {
-		status.HealthProbeResults = maps.Values(statusResults)
+		status.HealthProbeResults = updatedHealthResults
 		changed = statusChanged
 	}
 

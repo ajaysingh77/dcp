@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -29,6 +30,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/internal/health"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
@@ -37,6 +39,7 @@ import (
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	"github.com/microsoft/usvc-apiserver/pkg/pointers"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
@@ -67,6 +70,7 @@ const (
 
 var (
 	containerFinalizer string = fmt.Sprintf("%s/container-reconciler", apiv1.GroupVersion.Group)
+	containerKind             = apiv1.GroupVersion.WithKind(reflect.TypeOf(apiv1.Container{}).Name())
 
 	containerStateInitializers = map[apiv1.ContainerState]containerStateInitializerFunc{
 		apiv1.ContainerStateEmpty:            handleNewContainer,
@@ -129,10 +133,16 @@ type ContainerReconciler struct {
 	// Channel to stop the event worker
 	containerEvtWorkerStop chan struct{}
 
+	// Health probe set used to execute health probes on containers.
+	hpSet *health.HealthProbeSet
+	// Channel used to receive health probe events
+	healthProbeCh *concurrency.UnboundedChan[health.HealthProbeReport]
+
 	// Debouncer used to schedule reconciliation. Extra data is the running container ID whose state changed.
 	debouncer *reconcilerDebouncer[containerID]
 
-	// Count of existing Container resources
+	// Effectively a set of UIDs of the Container objects that are being watched.
+	// When this set becomes empty, we cancel the container watch.
 	watchingResources *syncmap.Map[types.UID, bool]
 
 	// Lock to protect the reconciler data that requires synchronized access
@@ -145,7 +155,14 @@ type ContainerReconciler struct {
 	config ContainerReconcilerConfig
 }
 
-func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Client, log logr.Logger, orchestrator containers.ContainerOrchestrator, config ContainerReconcilerConfig) *ContainerReconciler {
+func NewContainerReconciler(
+	lifetimeCtx context.Context,
+	client ctrl_client.Client,
+	log logr.Logger,
+	orchestrator containers.ContainerOrchestrator,
+	healthProbeSet *health.HealthProbeSet,
+	config ContainerReconcilerConfig,
+) *ContainerReconciler {
 	r := ContainerReconciler{
 		Client:                 client,
 		orchestrator:           orchestrator,
@@ -157,6 +174,8 @@ func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Clie
 		containerEvtCh:         nil,
 		networkEvtCh:           nil,
 		containerEvtWorkerStop: nil,
+		hpSet:                  healthProbeSet,
+		healthProbeCh:          concurrency.NewUnboundedChan[health.HealthProbeReport](lifetimeCtx),
 		debouncer:              newReconcilerDebouncer[containerID](),
 		watchingResources:      &syncmap.Map[types.UID, bool]{},
 		lock:                   &sync.Mutex{},
@@ -166,6 +185,12 @@ func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Clie
 	}
 
 	go r.onShutdown()
+	go r.handleHealthProbeResults()
+	_, subErr := r.hpSet.Subscribe(r.healthProbeCh.In, containerKind)
+	if subErr != nil {
+		// Should never happen
+		log.Error(subErr, "could not subscribe to health probe results, the health of Containers will never be correctly reported")
+	}
 
 	return &r
 }
@@ -317,22 +342,22 @@ func handleNewContainer(
 
 	if container.Spec.Stop {
 		// The container was started with a desired state of stopped, don't attempt to start it.
-		return setContainerState(container, apiv1.ContainerStateFailedToStart)
+		return r.setContainerState(container, apiv1.ContainerStateFailedToStart)
 	}
 
 	status := r.orchestrator.CheckStatus(ctx, containers.CachedRuntimeStatusAllowed)
 	if !status.IsHealthy() {
 		// If the runtime isn't healthy, we will attempt to start the container later (in case the runtime recovers).
 		log.V(1).Info("container runtime is not healthy, retrying reconciliation later...")
-		return setContainerState(container, apiv1.ContainerStateRuntimeUnhealthy)
+		return r.setContainerState(container, apiv1.ContainerStateRuntimeUnhealthy)
 	}
 
 	if container.Spec.Build != nil {
 		// Container has a build context, so need to build it first.
-		change = setContainerState(container, apiv1.ContainerStateBuilding)
+		change = r.setContainerState(container, apiv1.ContainerStateBuilding)
 	} else {
 		// Initiate startup sequence.
-		change = setContainerState(container, apiv1.ContainerStateStarting)
+		change = r.setContainerState(container, apiv1.ContainerStateStarting)
 	}
 
 	return change
@@ -346,7 +371,7 @@ func ensureContainerBuildingState(
 	rcd *runningContainerData,
 	log logr.Logger,
 ) objectChange {
-	change := setContainerState(container, apiv1.ContainerStateBuilding)
+	change := r.setContainerState(container, apiv1.ContainerStateBuilding)
 
 	if rcd == nil {
 		// This is a brand new Container and we need to build it.
@@ -376,7 +401,7 @@ func ensureContainerBuildingState(
 	// It might be just a caching issue, but it also might be because of a write conflict during last update,
 	// so we need to make sure it is what it should be.
 	// Bottom line we always want to apply the changes to the Container object.
-	change |= rcd.applyTo(container)
+	change |= rcd.applyTo(container, log)
 
 	return change
 }
@@ -389,7 +414,7 @@ func ensureContainerStartingState(
 	rcd *runningContainerData,
 	log logr.Logger,
 ) objectChange {
-	change := setContainerState(container, apiv1.ContainerStateStarting)
+	change := r.setContainerState(container, apiv1.ContainerStateStarting)
 
 	if rcd == nil {
 		// This is brand new Container and we need to start it.
@@ -458,7 +483,7 @@ func ensureContainerStartingState(
 	// It might be just a caching issue, but it also might be because of a write conflict during last update,
 	// so we need to make sure it is what it should be.
 	// Bottom line we always want to apply the changes to the Container object.
-	change |= rcd.applyTo(container)
+	change |= rcd.applyTo(container, log)
 
 	return change
 }
@@ -471,7 +496,7 @@ func ensureContainerFailedToStartState(
 	rcd *runningContainerData,
 	log logr.Logger,
 ) objectChange {
-	change := setContainerState(container, apiv1.ContainerStateFailedToStart)
+	change := r.setContainerState(container, apiv1.ContainerStateFailedToStart)
 
 	if rcd == nil {
 		// Can happen if the container was created with Spec.Stop = true
@@ -480,7 +505,7 @@ func ensureContainerFailedToStartState(
 			change |= statusChanged
 		}
 	} else {
-		change |= rcd.applyTo(container)
+		change |= rcd.applyTo(container, log)
 		rcd.closeStartupLogFiles(log)
 
 		// The process of connecting the container to desired network(s) begins before startup attempt,
@@ -506,7 +531,7 @@ func ensureContainerRunningState(
 	rcd *runningContainerData,
 	log logr.Logger,
 ) objectChange {
-	change := setContainerState(container, desiredState)
+	change := r.setContainerState(container, desiredState)
 
 	if rcd == nil {
 		// Should never happen--the runningContainers map should have the data about the Container object.
@@ -517,7 +542,7 @@ func ensureContainerRunningState(
 	if container.Spec.Stop {
 		// Start the stopping sequence
 		rcd.containerState = apiv1.ContainerStateStopping
-		change |= setContainerState(container, apiv1.ContainerStateStopping)
+		change |= r.setContainerState(container, apiv1.ContainerStateStopping)
 		return change
 	}
 
@@ -540,18 +565,18 @@ func ensureContainerRunningState(
 	}
 
 	if desiredState != apiv1.ContainerStateRunning {
-		removeEndpointsForWorkload(r, ctx, container, log)
+		r.disableEndpointsAndHealthProbes(ctx, container, rcd, log)
 	} else {
 		if inspected.Status != containers.ContainerStatusRunning {
 			log.V(1).Info("container is not running, delaying Endpoint creation...")
 			change |= additionalReconciliationNeeded
 		} else {
-			ensureEndpointsForWorkload(ctx, r, container, rcd.reservedPorts, inspected, log)
+			r.enableEndpointsAndHealthProbes(ctx, container, rcd, inspected, log)
 		}
 	}
 
 	rcd.updateFromInspectedContainer(inspected)
-	change |= rcd.applyTo(container)
+	change |= rcd.applyTo(container, log)
 
 	if container.Spec.Networks != nil {
 		connectedNetworks, networkRelatedChange := r.handleContainerNetworkConnections(ctx, container, inspected, rcd, log)
@@ -571,7 +596,7 @@ func ensureContainerExitedState(ctx context.Context,
 	rcd *runningContainerData,
 	log logr.Logger,
 ) objectChange {
-	change := setContainerState(container, apiv1.ContainerStateExited)
+	change := r.setContainerState(container, apiv1.ContainerStateExited)
 
 	if rcd == nil {
 		// Should never happen--the runningContainers map should have the data about the Container object.
@@ -580,7 +605,7 @@ func ensureContainerExitedState(ctx context.Context,
 	}
 
 	rcd.closeStartupLogFiles(log)
-	removeEndpointsForWorkload(r, ctx, container, log)
+	r.disableEndpointsAndHealthProbes(ctx, container, rcd, log)
 
 	log.V(1).Info("inspecting container resource...", "ContainerID", rcd.containerID)
 	inspected, err := inspectContainer(ctx, r.orchestrator, string(rcd.containerID))
@@ -593,7 +618,7 @@ func ensureContainerExitedState(ctx context.Context,
 	}
 
 	rcd.updateFromInspectedContainer(inspected)
-	change |= rcd.applyTo(container)
+	change |= rcd.applyTo(container, log)
 
 	if container.Spec.Networks != nil {
 		connectedNetworks, networkRelatedChange := r.handleContainerNetworkConnections(ctx, container, inspected, rcd, log)
@@ -614,7 +639,7 @@ func ensureContainerUnknownState(
 	rcd *runningContainerData,
 	log logr.Logger,
 ) objectChange {
-	change := setContainerState(container, apiv1.ContainerStateUnknown)
+	change := r.setContainerState(container, apiv1.ContainerStateUnknown)
 	if change != noChange {
 		log.Error(fmt.Errorf("the state of the Container became undetermined"), "")
 	}
@@ -648,7 +673,7 @@ func ensureContainerStoppingState(
 	rcd *runningContainerData,
 	log logr.Logger,
 ) objectChange {
-	change := setContainerState(container, apiv1.ContainerStateStopping)
+	change := r.setContainerState(container, apiv1.ContainerStateStopping)
 
 	if rcd == nil {
 		// Should never happen--the runningContainers map should have the data about the Container object.
@@ -668,10 +693,8 @@ func ensureContainerStoppingState(
 		}
 	}
 
-	change |= rcd.applyTo(container)
-
-	removeEndpointsForWorkload(r, ctx, container, log)
-
+	change |= rcd.applyTo(container, log)
+	r.disableEndpointsAndHealthProbes(ctx, container, rcd, log)
 	return change
 }
 
@@ -1338,7 +1361,7 @@ func (r *ContainerReconciler) cleanupContainerResources(ctx context.Context, con
 // Removes any resources that DCP is managing for the running container.
 // Does not attempt to remove the actual running container, or any orchestrator-managed resource.
 func (r *ContainerReconciler) cleanupDcpContainerResources(ctx context.Context, container *apiv1.Container, log logr.Logger) {
-	removeEndpointsForWorkload(r, ctx, container, log)
+	r.disableEndpointsAndHealthProbes(ctx, container, nil, log)
 	r.releaseContainerWatch(container, log)
 }
 
@@ -1356,6 +1379,42 @@ func (r *ContainerReconciler) startContainerWithTimeout(
 	}
 	inspected, err := startContainer(startContainerCallCtx, r.orchestrator, containerObjectName, string(containerID), streamOptions)
 	return inspected, err
+}
+
+func (r *ContainerReconciler) disableEndpointsAndHealthProbes(
+	ctx context.Context,
+	ctr *apiv1.Container,
+	rcd *runningContainerData,
+	log logr.Logger,
+) {
+	if len(ctr.Spec.HealthProbes) > 0 && (rcd == nil || pointers.TrueValue(rcd.healthProbesEnabled)) {
+		log.V(1).Info("disabling health probes for Container...")
+		r.hpSet.DisableProbes(apiv1.GetNamespacedNameWithKind(ctr))
+		if rcd != nil {
+			pointers.Make(&rcd.healthProbesEnabled, false)
+		}
+	}
+
+	removeEndpointsForWorkload(r, ctx, ctr, log)
+}
+
+func (r *ContainerReconciler) enableEndpointsAndHealthProbes(
+	ctx context.Context,
+	ctr *apiv1.Container,
+	rcd *runningContainerData,
+	inspected *containers.InspectedContainer,
+	log logr.Logger,
+) {
+	if len(ctr.Spec.HealthProbes) > 0 && pointers.NotTrue(rcd.healthProbesEnabled) {
+		log.V(1).Info("enabling health probes for Container...")
+		pointers.Make(&rcd.healthProbesEnabled, true)
+		probeErr := r.hpSet.EnableProbes(apiv1.GetNamespacedNameWithKind(ctr), ctr.Spec.HealthProbes)
+		if probeErr != nil {
+			// Should never happen (unless lifetime context is cancelled, but we should not be here in that case).
+			log.Error(probeErr, "could not enable health probes for Container")
+		}
+	}
+	ensureEndpointsForWorkload(ctx, r, ctr, rcd.reservedPorts, inspected, log)
 }
 
 // NETWORKING SUPPORT METHODS
@@ -1933,41 +1992,100 @@ func (r *ContainerReconciler) processNetworkEvent(em containers.EventMessage) {
 
 // MISCELLANEOUS HELPER METHODS
 
-func setContainerState(container *apiv1.Container, state apiv1.ContainerState) objectChange {
+func (r *ContainerReconciler) setContainerState(container *apiv1.Container, state apiv1.ContainerState) objectChange {
 	change := noChange
-	healthStatus := getDefaultContainerHealthStatus(container, state)
 
 	if container.Status.State != state {
 		container.Status.State = state
 		change = statusChanged
 	}
 
-	if container.Status.HealthStatus != healthStatus {
-		container.Status.HealthStatus = healthStatus
-		change = statusChanged
-	}
+	change |= updateContainerHealthStatus(container, state, r.Log)
 
 	return change
 }
 
-func getDefaultContainerHealthStatus(ctr *apiv1.Container, state apiv1.ContainerState) apiv1.HealthStatus {
+func updateContainerHealthStatus(ctr *apiv1.Container, state apiv1.ContainerState, log logr.Logger) objectChange {
+	var newHealthStatus apiv1.HealthStatus
+
 	switch state {
+
 	case apiv1.ContainerStateEmpty, apiv1.ContainerStatePending, apiv1.ContainerStateBuilding, apiv1.ContainerStateStarting, apiv1.ContainerStatePaused, apiv1.ContainerStateUnknown, apiv1.ContainerStateStopping:
-		return apiv1.HealthStatusCaution
+		newHealthStatus = apiv1.HealthStatusCaution
+
 	case apiv1.ContainerStateRunning:
-		return apiv1.HealthStatusHealthy
+		if len(ctr.Spec.HealthProbes) == 0 {
+			newHealthStatus = apiv1.HealthStatusHealthy
+		} else {
+			newHealthStatus = health.HealthStatusFromProbeResults(ctr.Status.HealthProbeResults)
+		}
+
 	case apiv1.ContainerStateFailedToStart, apiv1.ContainerStateRuntimeUnhealthy:
-		return apiv1.HealthStatusUnhealthy
+		newHealthStatus = apiv1.HealthStatusUnhealthy
+
 	case apiv1.ContainerStateExited:
 		if ctr.Status.ExitCode == apiv1.UnknownExitCode || *ctr.Status.ExitCode == 0 {
-			return apiv1.HealthStatusCaution
+			newHealthStatus = apiv1.HealthStatusCaution
 		} else {
-			return apiv1.HealthStatusUnhealthy
+			newHealthStatus = apiv1.HealthStatusUnhealthy
 		}
+
 	default:
 		// This should never happen and would indicate we failed to account for some Container state.
 		// Report the status as unhealthy, but do not panic. This should be pretty visible for clients and cause a bug report.
-		return apiv1.HealthStatusUnhealthy
+		newHealthStatus = apiv1.HealthStatusUnhealthy
+	}
+
+	if ctr.Status.HealthStatus == newHealthStatus {
+		return noChange
+	}
+
+	log.V(1).Info("Container health status changed",
+		"Container", ctr.NamespacedName().String(),
+		"NewHealthStatus", newHealthStatus,
+		"OldHealthStatus", ctr.Status.HealthStatus,
+	)
+	ctr.Status.HealthStatus = newHealthStatus
+	return statusChanged
+}
+
+func (r *ContainerReconciler) handleHealthProbeResults() {
+	for {
+		select {
+		case <-r.lifetimeCtx.Done():
+			return
+
+		case report, isOpen := <-r.healthProbeCh.Out:
+			if !isOpen {
+				return
+			}
+
+			if report.Owner.Kind != containerKind {
+				r.Log.Error(fmt.Errorf("Container reconciler received health probe report for some other type of object"), "", "Kind", report.Owner.Kind)
+				continue
+			}
+
+			containerName := report.Owner.NamespacedName
+			cid, rcd := r.runningContainers.BorrowByNamespacedName(containerName)
+			if rcd == nil {
+				// Not tracking this Container anymore, most likely Container was deleted and we got a stale report.
+				// We disable probes when the Container reaches final state AND just before removing the finalizer,
+				// so it is very unlikely any Container health probes will go orphaned long-term.
+				// See ExecutableReconciler.handleHealthProbeResults() for why calling DisableProbes(containerName) here
+				// is not a good idea.
+
+				continue
+			}
+
+			rcd.healthProbeResults[report.Probe.Name] = report.Result
+
+			r.runningContainers.QueueDeferredOp(containerName, func(types.NamespacedName, containerID) {
+				// The run may have been deleted by the time we get here, so we do not care if Update() returns false.
+				_ = r.runningContainers.Update(containerName, cid, rcd)
+			})
+
+			r.scheduleContainerReconciliation(containerName, cid)
+		}
 	}
 }
 

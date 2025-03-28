@@ -41,11 +41,6 @@ const (
 	reconciliationDebounceDelay                     = 500 * time.Millisecond
 	reconciliationMaxDelay                          = 5 * time.Second
 
-	// If the health probe result is different by timestamp only, we do not write it to the status
-	// unless the existing result is older than this value.
-	// This helps avoid updating the status very frequently if an object has health probes with tight intervals.
-	maxStaleHealthProbeResultAge = 15 * time.Second
-
 	PersistentLabel              = "com.microsoft.developer.usvc-dev.persistent"
 	CreatorProcessIdLabel        = "com.microsoft.developer.usvc-dev.creatorProcessId"
 	CreatorProcessStartTimeLabel = "com.microsoft.developer.usvc-dev.creatorProcessStartTime"

@@ -206,6 +206,7 @@ func StartTestEnvironment(
 			mgr.GetClient(),
 			log.WithName("ContainerReconciler"),
 			serverInfo.ContainerOrchestrator,
+			hpSet,
 			controllers.ContainerReconcilerConfig{
 				MaxParallelContainerStarts:      math.MaxUint8,
 				ContainerStartupTimeoutOverride: 2 * time.Second,

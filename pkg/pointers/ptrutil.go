@@ -43,3 +43,22 @@ func TrueValue[T ~bool, PT *T](p PT) bool {
 	}
 	return bool(*p)
 }
+
+func NotTrue[T ~bool, PT *T](p PT) bool {
+	if p == nil {
+		return true
+	}
+	return !bool(*p)
+}
+
+func Make[T ~bool, PT *T](pp *PT, val T) {
+	if pp == nil {
+		panic("nil pointer passed as target for pointers.Make()")
+	}
+
+	if *pp == nil {
+		*pp = new(T)
+	}
+
+	**pp = val
+}

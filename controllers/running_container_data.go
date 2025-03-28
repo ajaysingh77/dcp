@@ -18,6 +18,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/internal/health"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
@@ -135,6 +136,12 @@ type runningContainerData struct {
 	// This is initialized with a copy of the Container.Spec, but then updated (the Env and Args part, specifically)
 	// to include all value substitutions for environment variables and startup command arguments.
 	runSpec *apiv1.ContainerSpec
+
+	// The most recent health probe results (indexed by probe name)
+	healthProbeResults map[string]apiv1.HealthProbeResult
+
+	// Whether health probes are enabled for the Container
+	healthProbesEnabled *bool
 }
 
 const placeholderContainerIdPrefix = "__placeholder-"
@@ -161,6 +168,7 @@ func newRunningContainerData(ctr *apiv1.Container) *runningContainerData {
 		networkConnections: make(map[containerNetworkConnectionKey]bool),
 		runSpec:            runSpec,
 		exitCode:           apiv1.UnknownExitCode,
+		healthProbeResults: make(map[string]apiv1.HealthProbeResult),
 	}
 }
 
@@ -182,11 +190,11 @@ func (rcd *runningContainerData) Clone() *runningContainerData {
 		reservedPorts:          stdmaps.Clone(rcd.reservedPorts),
 		networkConnections:     stdmaps.Clone(rcd.networkConnections),
 		runSpec:                rcd.runSpec.DeepCopy(),
+		healthProbeResults:     stdmaps.Clone(rcd.healthProbeResults),
 	}
 
-	if rcd.exitCode != nil {
-		pointers.SetValue(&clone.exitCode, rcd.exitCode)
-	}
+	pointers.SetValue(&clone.exitCode, rcd.exitCode)
+	pointers.SetValue(&clone.healthProbesEnabled, rcd.healthProbesEnabled)
 
 	return &clone
 }
@@ -268,6 +276,15 @@ func (rcd *runningContainerData) UpdateFrom(other *runningContainerData) bool {
 
 	if !rcd.runSpec.Equal(other.runSpec) {
 		rcd.runSpec = other.runSpec.DeepCopy()
+		updated = true
+	}
+
+	if len(other.healthProbeResults) > 0 {
+		updated = maps.Insert(rcd.healthProbeResults, stdmaps.All(other.healthProbeResults)) || updated
+	}
+
+	if other.healthProbesEnabled != nil && !pointers.EqualValue(rcd.healthProbesEnabled, other.healthProbesEnabled) {
+		pointers.SetValue(&rcd.healthProbesEnabled, other.healthProbesEnabled)
 		updated = true
 	}
 
@@ -377,8 +394,13 @@ func (rcd *runningContainerData) updateFromInspectedContainer(inspected *ct.Insp
 	}
 }
 
-func (rcd *runningContainerData) applyTo(ctr *apiv1.Container) objectChange {
-	change := setContainerState(ctr, rcd.containerState)
+func (rcd *runningContainerData) applyTo(ctr *apiv1.Container, log logr.Logger) objectChange {
+	change := noChange
+
+	if rcd.containerState != apiv1.ContainerStateEmpty && rcd.containerState != ctr.Status.State {
+		ctr.Status.State = rcd.containerState
+		change |= statusChanged
+	}
 
 	if rcd.hasValidContainerID() && ctr.Status.ContainerID != string(rcd.containerID) {
 		ctr.Status.ContainerID = string(rcd.containerID)
@@ -451,6 +473,14 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container) objectChange {
 	} else if rcd.containerState == apiv1.ContainerStateFailedToStart && setTimestampIfBeforeOrUnknown(rcd.startAttemptFinishedAt, &ctr.Status.FinishTimestamp) {
 		change |= statusChanged
 	}
+
+	updatedHealthResults, healthResultsChanged := health.UpdateHealthProbeResults(ctr.Status.HealthProbeResults, rcd.healthProbeResults)
+	if healthResultsChanged {
+		ctr.Status.HealthProbeResults = updatedHealthResults
+		change |= statusChanged
+	}
+
+	change |= updateContainerHealthStatus(ctr, rcd.containerState, log)
 
 	return change
 }

@@ -160,6 +160,7 @@ func runControllers(rootLogger logger.Logger) func(cmd *cobra.Command, _ []strin
 			mgr.GetClient(),
 			log.WithName("ContainerReconciler"),
 			containerOrchestrator,
+			hpSet,
 			controllers.ContainerReconcilerConfig{
 				MaxParallelContainerStarts: controllers.DefaultMaxParallelContainerStarts,
 			},

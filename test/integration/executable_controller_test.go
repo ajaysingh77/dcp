@@ -1596,7 +1596,7 @@ func TestExecutableStatusUpdatedByIdeRunner(t *testing.T) {
 			return false, nil
 		}
 
-		// metav1.MicroTime uses RFC 3339 format and truncates the time to microseconds during serialization.
+		// MicroTime uses RFC 3339 format and truncates the time to microseconds during serialization.
 		// This is why we only check that the desired and actual timestamp are within two microseconds of each other.
 		hasStartupTimestamp := !currentExe.Status.StartupTimestamp.IsZero() && osutil.Within(currentExe.Status.StartupTimestamp.Time, desiredStatus.StartupTimestamp.Time, 2*time.Microsecond)
 
@@ -1774,7 +1774,7 @@ func TestExecutableLogsNonFollow(t *testing.T) {
 			})
 
 			t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
-			err := client.Create(ctx, exe.DeepCopy())
+			err := client.Create(ctx, &exe)
 			require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
 
 			t.Logf("Ensure Executable '%s' is in the expected state...", exe.ObjectMeta.Name)
@@ -1895,7 +1895,7 @@ func TestExecutableLogsFollow(t *testing.T) {
 			})
 
 			t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
-			err := client.Create(ctx, exe.DeepCopy())
+			err := client.Create(ctx, &exe)
 			require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
 
 			t.Logf("Ensure Executable '%s' is in the expected state...", exe.ObjectMeta.Name)
@@ -1980,7 +1980,7 @@ func TestExecutableLogsFollowIncremental(t *testing.T) {
 	})
 
 	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
-	err := client.Create(ctx, exe.DeepCopy())
+	err := client.Create(ctx, &exe)
 	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
 
 	// We might need to tweak this value if it turns that the test is unreliable on slow CI machines.
@@ -2048,7 +2048,7 @@ func TestExecutableLogsTimestamped(t *testing.T) {
 	})
 
 	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
-	err := client.Create(ctx, exe.DeepCopy())
+	err := client.Create(ctx, &exe)
 	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
 
 	t.Logf("Ensure logs for Executable '%s' can be captured...", exe.ObjectMeta.Name)
@@ -2113,7 +2113,7 @@ func TestExecutableLogsFollowStreamEndsOnDelete(t *testing.T) {
 	})
 
 	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
-	err := client.Create(ctx, exe.DeepCopy())
+	err := client.Create(ctx, &exe)
 	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
 
 	t.Logf("Start following Executable '%s' logs...", exe.ObjectMeta.Name)
@@ -2135,7 +2135,7 @@ func TestExecutableLogsFollowStreamEndsOnDelete(t *testing.T) {
 	require.Equal(t, "Standard output log line 2", scanner.Text(), "Second log line does not match expected content for Executable '%s'", exe.ObjectMeta.Name)
 
 	t.Logf("Deleting Executable '%s'...", exe.ObjectMeta.Name)
-	err = client.Delete(ctx, exe.DeepCopy())
+	err = client.Delete(ctx, &exe)
 	require.NoError(t, err, "Could not delete Executable '%s'", exe.ObjectMeta.Name)
 
 	t.Logf("Ensure log stream for Executable '%s' has ended...", exe.ObjectMeta.Name)
@@ -2217,7 +2217,7 @@ func TestExecutableHealthBasic(t *testing.T) {
 			}
 
 			t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
-			err := client.Create(ctx, exe.DeepCopy())
+			err := client.Create(ctx, &exe)
 			require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
 
 			if !tc.simulateStartupFailure {
@@ -2284,7 +2284,7 @@ func TestExecutableHealthSingleProbe(t *testing.T) {
 	}
 
 	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
-	err := client.Create(ctx, exe.DeepCopy())
+	err := client.Create(ctx, &exe)
 	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
 
 	t.Logf("Ensure Executable '%s' is running, but considered unhealthy...", exe.ObjectMeta.Name)
@@ -2308,7 +2308,7 @@ func TestExecutableHealthSingleProbe(t *testing.T) {
 	require.Len(t, updatedExe.Status.HealthProbeResults, 1, "Expected a single health probe result for Executable '%s'", exe.ObjectMeta.Name)
 	healthyTimestamp := updatedExe.Status.HealthProbeResults[0].Timestamp
 	require.NotZero(t, healthyTimestamp, "Expected a valid timestamp for the healthy health probe result for Executable '%s'", exe.ObjectMeta.Name)
-	require.True(t, healthyTimestamp.After(unhealthyTimestamp.Time), "Expected healthy health probe result to be equal or newer than the unhealthy one for Executable '%s'", exe.ObjectMeta.Name)
+	require.True(t, healthyTimestamp.After(unhealthyTimestamp.Time), "Expected healthy health probe result to be newer than the unhealthy one for Executable '%s'", exe.ObjectMeta.Name)
 
 	t.Logf("Changing health probe response back to to unhealthy...")
 	setProbeResponse(apiv1.HealthProbeOutcomeFailure)
@@ -2372,7 +2372,7 @@ func TestExecutableHealthMultipleProbes(t *testing.T) {
 	}
 
 	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
-	err := client.Create(ctx, exe.DeepCopy())
+	err := client.Create(ctx, &exe)
 	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
 
 	t.Logf("Ensure Executable '%s' is running and healthy...", exe.ObjectMeta.Name)
@@ -2454,7 +2454,7 @@ func TestExecutableHealthScheduleUntilSuccess(t *testing.T) {
 	t.Logf("Setting up HTTP server for health probe responses...")
 	probeUrl, setProbeResponse := createTestHealthEndpoint(ctx)
 
-	exeName := "test-executable-health-shedule-until-success"
+	exeName := "test-executable-health-schedule-until-success"
 	exe := apiv1.Executable{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      exeName,
@@ -2479,7 +2479,7 @@ func TestExecutableHealthScheduleUntilSuccess(t *testing.T) {
 	}
 
 	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
-	err := client.Create(ctx, exe.DeepCopy())
+	err := client.Create(ctx, &exe)
 	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
 
 	t.Logf("Ensure Executable '%s' is running, but considered unhealthy...", exe.ObjectMeta.Name)
@@ -2503,7 +2503,7 @@ func TestExecutableHealthScheduleUntilSuccess(t *testing.T) {
 	require.Len(t, updatedExe.Status.HealthProbeResults, 1, "Expected a single health probe result for Executable '%s'", exe.ObjectMeta.Name)
 	healthyTimestamp := updatedExe.Status.HealthProbeResults[0].Timestamp
 	require.NotZero(t, healthyTimestamp, "Expected a valid timestamp for the healthy health probe result for Executable '%s'", exe.ObjectMeta.Name)
-	require.True(t, healthyTimestamp.After(unhealthyTimestamp.Time), "Expected healthy health probe result to be equal or newer than the unhealthy one for Executable '%s'", exe.ObjectMeta.Name)
+	require.True(t, healthyTimestamp.After(unhealthyTimestamp.Time), "Expected healthy health probe result to be newer than the unhealthy one for Executable '%s'", exe.ObjectMeta.Name)
 
 	t.Logf("Changing health probe response back to to unhealthy (this should have NO effect on Executable health)...")
 	setProbeResponse(apiv1.HealthProbeOutcomeFailure)

@@ -119,7 +119,7 @@ func NewExecutableReconciler(
 		Log:               log,
 	}
 
-	go r.handleHealthProbeResults(lifetimeCtx)
+	go r.handleHealthProbeResults()
 	_, subscriptionErr := r.hpSet.Subscribe(r.healthProbeCh.In, executableKind)
 	if subscriptionErr != nil {
 		// Should never happen
@@ -296,24 +296,7 @@ func ensureExecutableRunningState(
 
 	// Ensure the status matches the current state.
 	change |= runInfo.ApplyTo(exe, log)
-
-	ensureEndpointsForWorkload(ctx, r, exe, runInfo.ReservedPorts, struct{}{}, log)
-
-	if len(exe.Spec.HealthProbes) > 0 && (runInfo.healthProbesEnabled == nil || !*runInfo.healthProbesEnabled) {
-		log.V(1).Info("enabling health probes for Executable...")
-
-		// healthProbesEnabled is used to avoid enabling health probes multiple times for the same Executable
-		// Enablement only fails if the lifetime context is cancelled, or under "should never happen" conditions,
-		// so we set it unconditionally to avoid repeated attempts.
-		runInfo.healthProbesEnabled = new(bool)
-		*runInfo.healthProbesEnabled = true
-
-		probeErr := r.hpSet.EnableProbes(apiv1.GetNamespacedNameWithKind(exe), exe.Spec.HealthProbes)
-		if probeErr != nil {
-			log.Error(probeErr, "could not enable health probes for Executable")
-		}
-	}
-
+	r.enableEndpointsAndHealthProbes(ctx, exe, runInfo, log)
 	return change
 }
 
@@ -345,15 +328,7 @@ func ensureExecutableStoppingState(
 	}
 
 	change |= runInfo.ApplyTo(exe, log)
-
-	if len(exe.Spec.HealthProbes) > 0 && runInfo.healthProbesEnabled != nil && *runInfo.healthProbesEnabled {
-		log.V(1).Info("disabling health probes for Executable...")
-		*runInfo.healthProbesEnabled = false
-		r.hpSet.DisableProbes(apiv1.GetNamespacedNameWithKind(exe))
-	}
-
-	removeEndpointsForWorkload(r, ctx, exe, log)
-
+	r.disableEndpointsAndHealthProbes(ctx, exe, runInfo, log)
 	return change
 }
 
@@ -366,22 +341,12 @@ func ensureExecutableFinalState(
 	log logr.Logger,
 ) objectChange {
 	change := r.setExecutableState(exe, desiredState)
-
 	if runInfo == nil {
 		return change // See ensureExecutableRunningState() for explanation
 	}
 
-	// Ensure the status matches the current state.
-	change |= runInfo.ApplyTo(exe, log)
-
-	if len(exe.Spec.HealthProbes) > 0 && runInfo.healthProbesEnabled != nil && *runInfo.healthProbesEnabled {
-		log.V(1).Info("disabling health probes for Executable...")
-		*runInfo.healthProbesEnabled = false
-		r.hpSet.DisableProbes(apiv1.GetNamespacedNameWithKind(exe))
-	}
-
-	removeEndpointsForWorkload(r, ctx, exe, log)
-
+	change |= runInfo.ApplyTo(exe, log) // Ensure the status matches the current state.
+	r.disableEndpointsAndHealthProbes(ctx, exe, runInfo, log)
 	return change
 }
 
@@ -630,13 +595,48 @@ func (r *ExecutableReconciler) getExecutableRunner(exe *apiv1.Executable) (Execu
 }
 
 func (r *ExecutableReconciler) releaseExecutableResources(ctx context.Context, exe *apiv1.Executable, log logr.Logger) {
-	if len(exe.Spec.HealthProbes) > 0 {
-		log.V(1).Info("disabling health probes for (deleted) Executable...")
+	r.disableEndpointsAndHealthProbes(ctx, exe, nil, log)
+	r.deleteOutputFiles(ctx, exe, log)
+}
+
+func (r *ExecutableReconciler) enableEndpointsAndHealthProbes(
+	ctx context.Context,
+	exe *apiv1.Executable,
+	runInfo *ExecutableRunInfo,
+	log logr.Logger,
+) {
+	ensureEndpointsForWorkload(ctx, r, exe, runInfo.ReservedPorts, struct{}{}, log)
+
+	if len(exe.Spec.HealthProbes) > 0 && pointers.NotTrue(runInfo.healthProbesEnabled) {
+		log.V(1).Info("enabling health probes for Executable...")
+
+		// healthProbesEnabled is used to avoid enabling health probes multiple times for the same Executable
+		// Enablement only fails if the lifetime context is cancelled, or under "should never happen" conditions,
+		// so we set it unconditionally to avoid repeated attempts.
+		pointers.Make(&runInfo.healthProbesEnabled, true)
+
+		probeErr := r.hpSet.EnableProbes(apiv1.GetNamespacedNameWithKind(exe), exe.Spec.HealthProbes)
+		if probeErr != nil {
+			log.Error(probeErr, "could not enable health probes for Executable")
+		}
+	}
+}
+
+func (r *ExecutableReconciler) disableEndpointsAndHealthProbes(
+	ctx context.Context,
+	exe *apiv1.Executable,
+	runInfo *ExecutableRunInfo,
+	log logr.Logger,
+) {
+	if len(exe.Spec.HealthProbes) > 0 && (runInfo == nil || pointers.TrueValue(runInfo.healthProbesEnabled)) {
+		log.V(1).Info("disabling health probes for Executable...")
 		r.hpSet.DisableProbes(apiv1.GetNamespacedNameWithKind(exe))
+		if runInfo != nil {
+			pointers.Make(&runInfo.healthProbesEnabled, false)
+		}
 	}
 
 	removeEndpointsForWorkload(r, ctx, exe, log)
-	r.deleteOutputFiles(ctx, exe, log)
 }
 
 func (r *ExecutableReconciler) deleteOutputFiles(ctx context.Context, exe *apiv1.Executable, log logr.Logger) {
@@ -829,10 +829,10 @@ func (r *ExecutableReconciler) computeEffectiveInvocationArgs(
 	return nil
 }
 
-func (r *ExecutableReconciler) handleHealthProbeResults(lifetimeCtx context.Context) {
+func (r *ExecutableReconciler) handleHealthProbeResults() {
 	for {
 		select {
-		case <-lifetimeCtx.Done():
+		case <-r.lifetimeCtx.Done():
 			return
 
 		case report, isOpen := <-r.healthProbeCh.Out:
@@ -851,7 +851,7 @@ func (r *ExecutableReconciler) handleHealthProbeResults(lifetimeCtx context.Cont
 				// Not tracking this Executable anymore, most likely Executable was deleted and we got a stale report.
 				// We disable probes when the Executable reaches final state AND just before removing the finalizer,
 				// so it is very unlikely any Executable health probes will go orphaned long-term.
-				// It might look like it would be a good idea to call DisableProbes() here "just in case"
+				// It might look like it would be a good idea to call DisableProbes(exeName) here "just in case"
 				// (DisableProbes() is idempotent), but it is not, for two reasons:
 				// 1. handleHealthProbeResults() runs asynchronously compared to the main reconciliation loop,
 				//    and calling DisableProbes() here might put us in a race condition with an Executable
@@ -925,13 +925,17 @@ func updateExecutableHealthStatus(exe *apiv1.Executable, state apiv1.ExecutableS
 		newHealthStatus = apiv1.HealthStatusUnhealthy
 	}
 
-	if exe.Status.HealthStatus != newHealthStatus {
-		log.V(1).Info("Health status changed", "Executable", exe.NamespacedName().String(), "NewHealthStatus", newHealthStatus)
-		exe.Status.HealthStatus = newHealthStatus
-		return statusChanged
-	} else {
+	if exe.Status.HealthStatus == newHealthStatus {
 		return noChange
 	}
+
+	log.V(1).Info("Executable health status changed",
+		"Executable", exe.NamespacedName().String(),
+		"NewHealthStatus", newHealthStatus,
+		"OldHealthStatus", exe.Status.HealthStatus,
+	)
+	exe.Status.HealthStatus = newHealthStatus
+	return statusChanged
 }
 
 var _ RunChangeHandler = (*ExecutableReconciler)(nil)

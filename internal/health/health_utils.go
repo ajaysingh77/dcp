@@ -4,10 +4,18 @@ import (
 	"errors"
 	"fmt"
 	stdslices "slices"
+	"time"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
+)
+
+const (
+	// If the health probe result is different by timestamp only, we do not write it to the status
+	// unless the existing result is older than this value.
+	// This helps avoid updating the status very frequently if an object has health probes with tight intervals.
+	maxStaleHealthProbeResultAge = 15 * time.Second
 )
 
 // Computes the health status of an object that has one or more health probes associated with it.
@@ -29,6 +37,43 @@ func HealthStatusFromProbeResults(results []apiv1.HealthProbeResult) apiv1.Healt
 		return apiv1.HealthStatusHealthy
 	} else {
 		return apiv1.HealthStatusCaution
+	}
+}
+
+// Computes updated health probe results based on the "previous" and "latest" results.
+// Returns the updated results and a flag indicating whether the map has changed (true if the results have changed).
+func UpdateHealthProbeResults(previous []apiv1.HealthProbeResult, latest map[string]apiv1.HealthProbeResult) ([]apiv1.HealthProbeResult, bool) {
+	healthResultsChanged := false
+
+	results := maps.SliceToMap(previous, func(hpr apiv1.HealthProbeResult) (string, apiv1.HealthProbeResult) {
+		return hpr.ProbeName, hpr
+	})
+	if len(results) == 0 && len(latest) > 0 {
+		results = make(map[string]apiv1.HealthProbeResult)
+	}
+
+	for probeName, hpr := range latest {
+		statusHpr, found := results[probeName]
+
+		if !found {
+			results[probeName] = hpr
+			healthResultsChanged = true
+		} else {
+			res, timestampDiff := hpr.Diff(&statusHpr)
+			timestampDiff = timestampDiff.Abs()
+			needsUpdate := res == apiv1.Different || (res == apiv1.DiffTimestampOnly && timestampDiff >= maxStaleHealthProbeResultAge)
+
+			if needsUpdate {
+				results[probeName] = hpr
+				healthResultsChanged = true
+			}
+		}
+	}
+
+	if healthResultsChanged {
+		return maps.Values(results), true
+	} else {
+		return previous, false
 	}
 }
 
