@@ -41,7 +41,6 @@ import (
 const (
 	msgApiServerStartupFailed          = "API server could not be started"
 	dataFolderPath                     = "data" // Not really used for in-memory storage, but needs to be consistent between CRDs.
-	invalidPort                        = -1
 	DCP_RESOURCE_WATCH_TIMEOUT_SECONDS = "DCP_RESOURCE_WATCH_TIMEOUT_SECONDS"
 )
 

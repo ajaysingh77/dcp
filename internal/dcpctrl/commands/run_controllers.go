@@ -66,7 +66,7 @@ func getManager(ctx context.Context, log logr.Logger) (ctrl_manager.Manager, err
 	}
 
 	// We need to make sure the API server is responding to requests before setting up the controllers
-	// as we can get connection refuesed errors during setup otherwise.
+	// as we can get connection refused errors during setup otherwise.
 	_, err = resiliency.RetryGetExponential(retryCtx, func() (interface{}, error) {
 		var exeList apiv1.ExecutableList
 		if listErr := mgr.GetAPIReader().List(retryCtx, &exeList); listErr != nil {
@@ -128,7 +128,7 @@ func runControllers(rootLogger logger.Logger) func(cmd *cobra.Command, _ []strin
 			ctrlCtx,
 			log.WithName("HealthProbeSet"),
 			map[apiv1.HealthProbeType]health.HealthProbeExecutor{
-				apiv1.HealthProbeTypeHttp: health.HealthProbeExecutorFunc(health.ExecuteHttpProbe),
+				apiv1.HealthProbeTypeHttp: health.NewHttpProbeExecutor(mgr.GetClient(), log.WithName("HttpProbeExecutor")),
 			},
 		)
 

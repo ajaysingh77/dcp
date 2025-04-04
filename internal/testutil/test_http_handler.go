@@ -2,6 +2,8 @@ package testutil
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -19,6 +21,9 @@ type ResponseSpec struct {
 
 	// Active is set to true if the response should be used for the next request.
 	Active *atomic.Bool
+
+	// A function to call when the response is used.
+	Observer func(*http.Request)
 }
 
 // The route spec describes how the HTTP test server should route and handle requests.
@@ -50,6 +55,32 @@ func ServeHttp(lifetimeCtx context.Context, routes []RouteSpec) string {
 	return server.URL
 }
 
+// Starts a new HTTP test server on specific address and port with the given route specs.
+// The server will run until the lifetimeCtx is cancelled.
+func ServeHttpFrom(lifetimeCtx context.Context, address string, port int32, routes []RouteSpec) string {
+	mux := http.NewServeMux()
+	for _, route := range routes {
+		mux.HandleFunc(route.Pattern, makeHandler(route.Responses))
+	}
+
+	l, lErr := net.Listen("tcp", fmt.Sprintf("%s:%d", address, port))
+	if lErr != nil {
+		panic(fmt.Sprintf("failed to listen on %s:%d: %v", address, port, lErr))
+	}
+	server := &httptest.Server{
+		Listener: l,
+		Config:   &http.Server{Handler: mux},
+	}
+	server.Start()
+
+	go func() {
+		<-lifetimeCtx.Done()
+		server.Close()
+	}()
+
+	return server.URL
+}
+
 func makeHandler(responseSpecs []ResponseSpec) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		i := slices.IndexFunc(responseSpecs, func(rs ResponseSpec) bool { return rs.Active.Load() })
@@ -60,6 +91,9 @@ func makeHandler(responseSpecs []ResponseSpec) http.HandlerFunc {
 		}
 
 		spec := responseSpecs[i]
+		if spec.Observer != nil {
+			spec.Observer(r)
+		}
 		w.WriteHeader(spec.StatusCode)
 		if len(spec.Body) > 0 {
 			_, err := w.Write(spec.Body)

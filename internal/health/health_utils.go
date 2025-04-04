@@ -7,6 +7,7 @@ import (
 	"time"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
@@ -105,13 +106,13 @@ func VerifyHealthResults(expected map[string]apiv1.HealthProbeOutcome, results [
 }
 
 // Verifies that the LATEST health probe result for each probe and owner combination matches expectations.
-func VerifyHealthReports(expected map[apiv1.NamespacedNameWithKind]map[string]apiv1.HealthProbeOutcome, reports []HealthProbeReport) error {
-	var seen []apiv1.NamespacedNameWithKind
+func VerifyHealthReports(expected map[commonapi.NamespacedNameWithKind]map[string]apiv1.HealthProbeOutcome, reports []HealthProbeReport) error {
+	var seen []commonapi.NamespacedNameWithKind
 	var err error
 
-	byOwner := slices.GroupBy[[]HealthProbeReport, apiv1.NamespacedNameWithKind](
+	byOwner := slices.GroupBy[[]HealthProbeReport, commonapi.NamespacedNameWithKind](
 		reports,
-		func(report HealthProbeReport) apiv1.NamespacedNameWithKind { return report.Owner },
+		func(report HealthProbeReport) commonapi.NamespacedNameWithKind { return report.Owner },
 	)
 
 	for owner, reports := range byOwner {
@@ -133,7 +134,7 @@ func VerifyHealthReports(expected map[apiv1.NamespacedNameWithKind]map[string]ap
 		seen = append(seen, owner)
 	}
 
-	unseen := slices.DiffFunc(maps.Keys(expected), seen, func(a, b apiv1.NamespacedNameWithKind) bool { return a == b })
+	unseen := slices.DiffFunc(maps.Keys(expected), seen, func(a, b commonapi.NamespacedNameWithKind) bool { return a == b })
 	if len(unseen) > 0 {
 		err = errors.Join(err, fmt.Errorf("Results for the following owners are missing: %v", unseen))
 	}

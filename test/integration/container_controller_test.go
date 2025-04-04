@@ -6,8 +6,10 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/health"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
+	internal_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
@@ -1640,7 +1643,7 @@ func TestContainerHealthSingleProbe(t *testing.T) {
 	defer cancel()
 
 	t.Logf("Setting up HTTP server for health probe responses...")
-	probeUrl, setProbeResponse := createTestHealthEndpoint(ctx)
+	healthEndpoint := internal_testutil.NewTestHttpEndpoint(ctx)
 
 	const testName = "container-health-single-probe"
 	const imageName = testName + "-image"
@@ -1657,7 +1660,7 @@ func TestContainerHealthSingleProbe(t *testing.T) {
 					Name: "healthz",
 					Type: apiv1.HealthProbeTypeHttp,
 					HttpProbe: &apiv1.HttpProbe{
-						Url: probeUrl,
+						Url: healthEndpoint.Url(),
 					},
 					Schedule: apiv1.HealthProbeSchedule{
 						Interval:     metav1.Duration{Duration: 500 * time.Millisecond},
@@ -1683,7 +1686,7 @@ func TestContainerHealthSingleProbe(t *testing.T) {
 
 	t.Logf("Changing health probe response to healthy...")
 	time.Sleep(10 * time.Millisecond) // Ensure the timestamp of the next health probe result is different
-	setProbeResponse(apiv1.HealthProbeOutcomeSuccess)
+	healthEndpoint.SetOutcome(apiv1.HealthProbeOutcomeSuccess)
 
 	t.Logf("Ensure Container '%s' health status becomes healthy...", ctr.ObjectMeta.Name)
 	updatedCtr = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
@@ -1695,7 +1698,7 @@ func TestContainerHealthSingleProbe(t *testing.T) {
 	require.True(t, healthyTimestamp.After(unhealthyTimestamp.Time), "Expected healthy health probe result to be newer than the unhealthy one for Container '%s'", ctr.ObjectMeta.Name)
 
 	t.Logf("Changing health probe response back to to unhealthy...")
-	setProbeResponse(apiv1.HealthProbeOutcomeFailure)
+	healthEndpoint.SetOutcome(apiv1.HealthProbeOutcomeFailure)
 
 	t.Logf("Ensure Container '%s' is running and considered unhealthy again...", ctr.ObjectMeta.Name)
 	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
@@ -1717,10 +1720,10 @@ func TestContainerHealthMultipleProbes(t *testing.T) {
 	defer cancel()
 
 	t.Logf("Setting up HTTP probe endpoints...")
-	probe1Url, setProbe1 := createTestHealthEndpoint(ctx)
-	probe2Url, setProbe2 := createTestHealthEndpoint(ctx)
-	setProbe1(apiv1.HealthProbeOutcomeSuccess)
-	setProbe2(apiv1.HealthProbeOutcomeSuccess)
+	he1 := internal_testutil.NewTestHttpEndpoint(ctx)
+	he2 := internal_testutil.NewTestHttpEndpoint(ctx)
+	he1.SetOutcome(apiv1.HealthProbeOutcomeSuccess)
+	he2.SetOutcome(apiv1.HealthProbeOutcomeSuccess)
 
 	const testName = "container-health-multiple-probes"
 	const imageName = testName + "-image"
@@ -1737,7 +1740,7 @@ func TestContainerHealthMultipleProbes(t *testing.T) {
 					Name: "p1",
 					Type: apiv1.HealthProbeTypeHttp,
 					HttpProbe: &apiv1.HttpProbe{
-						Url: probe1Url,
+						Url: he1.Url(),
 					},
 					Schedule: apiv1.HealthProbeSchedule{
 						Interval: metav1.Duration{Duration: 500 * time.Millisecond},
@@ -1747,7 +1750,7 @@ func TestContainerHealthMultipleProbes(t *testing.T) {
 					Name: "p2",
 					Type: apiv1.HealthProbeTypeHttp,
 					HttpProbe: &apiv1.HttpProbe{
-						Url: probe2Url,
+						Url: he2.Url(),
 					},
 					Schedule: apiv1.HealthProbeSchedule{
 						Interval: metav1.Duration{Duration: 500 * time.Millisecond},
@@ -1774,7 +1777,7 @@ func TestContainerHealthMultipleProbes(t *testing.T) {
 	})
 
 	t.Logf("Changing health probe 1 response to unhealthy and verifying the Container '%s' status changes accordingly...", ctr.ObjectMeta.Name)
-	setProbe1(apiv1.HealthProbeOutcomeFailure)
+	he1.SetOutcome(apiv1.HealthProbeOutcomeFailure)
 	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
 		unhealthy := c.Status.HealthStatus == apiv1.HealthStatusUnhealthy
 		hasExpectedResults := unhealthy &&
@@ -1786,7 +1789,7 @@ func TestContainerHealthMultipleProbes(t *testing.T) {
 	})
 
 	t.Logf("Changing health probe 2 response to unhealthy and verifying the Container '%s' status changes accordingly...", ctr.ObjectMeta.Name)
-	setProbe2(apiv1.HealthProbeOutcomeFailure)
+	he2.SetOutcome(apiv1.HealthProbeOutcomeFailure)
 	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
 		unhealthy := c.Status.HealthStatus == apiv1.HealthStatusUnhealthy
 		hasExpectedResults := unhealthy &&
@@ -1798,7 +1801,7 @@ func TestContainerHealthMultipleProbes(t *testing.T) {
 	})
 
 	t.Logf("Changing health probe 1 response back to healthy and verifying the Container '%s' status changes accordingly...", ctr.ObjectMeta.Name)
-	setProbe1(apiv1.HealthProbeOutcomeSuccess)
+	he1.SetOutcome(apiv1.HealthProbeOutcomeSuccess)
 	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
 		unhealthy := c.Status.HealthStatus == apiv1.HealthStatusUnhealthy
 		hasExpectedResults := unhealthy &&
@@ -1810,7 +1813,7 @@ func TestContainerHealthMultipleProbes(t *testing.T) {
 	})
 
 	t.Logf("Changing health probe 2 response back to healthy and verifying the Container '%s' becomes healthy...", ctr.ObjectMeta.Name)
-	setProbe2(apiv1.HealthProbeOutcomeSuccess)
+	he2.SetOutcome(apiv1.HealthProbeOutcomeSuccess)
 	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
 		healthy := c.Status.HealthStatus == apiv1.HealthStatusHealthy
 		hasExpectedResults := healthy &&
@@ -1839,7 +1842,7 @@ func TestContainerHealthScheduleUntilSuccess(t *testing.T) {
 	defer cancel()
 
 	t.Logf("Setting up HTTP server for health probe responses...")
-	probeUrl, setProbeResponse := createTestHealthEndpoint(ctx)
+	healthEndpoint := internal_testutil.NewTestHttpEndpoint(ctx)
 
 	const testName = "container-health-schedule-until-success"
 	const imageName = testName + "-image"
@@ -1856,7 +1859,7 @@ func TestContainerHealthScheduleUntilSuccess(t *testing.T) {
 					Name: "healthz",
 					Type: apiv1.HealthProbeTypeHttp,
 					HttpProbe: &apiv1.HttpProbe{
-						Url: probeUrl,
+						Url: healthEndpoint.Url(),
 					},
 					Schedule: apiv1.HealthProbeSchedule{
 						Interval: metav1.Duration{Duration: 100 * time.Millisecond},
@@ -1872,30 +1875,30 @@ func TestContainerHealthScheduleUntilSuccess(t *testing.T) {
 	require.NoError(t, err, "Could not create Container '%s'", ctr.ObjectMeta.Name)
 
 	t.Logf("Ensure Container '%s' is running, but considered unhealthy...", ctr.ObjectMeta.Name)
-	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+	updatedCtr := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
 		running := c.Status.State == apiv1.ContainerStateRunning
 		unhealthy := c.Status.HealthStatus == apiv1.HealthStatusUnhealthy
 		return running && unhealthy, nil
 	})
-	require.Len(t, updatedExe.Status.HealthProbeResults, 1, "Expected a single health probe result for Container '%s'", ctr.ObjectMeta.Name)
-	unhealthyTimestamp := updatedExe.Status.HealthProbeResults[0].Timestamp
+	require.Len(t, updatedCtr.Status.HealthProbeResults, 1, "Expected a single health probe result for Container '%s'", ctr.ObjectMeta.Name)
+	unhealthyTimestamp := updatedCtr.Status.HealthProbeResults[0].Timestamp
 	require.NotZero(t, unhealthyTimestamp, "Expected a valid timestamp for the unhealthy health probe result for Container '%s'", ctr.ObjectMeta.Name)
 
 	t.Logf("Changing health probe response to healthy...")
 	time.Sleep(10 * time.Millisecond) // Ensure the timestamp of the next health probe result is different
-	setProbeResponse(apiv1.HealthProbeOutcomeSuccess)
+	healthEndpoint.SetOutcome(apiv1.HealthProbeOutcomeSuccess)
 
 	t.Logf("Ensure Container '%s' is running and considered healthy...", ctr.ObjectMeta.Name)
-	updatedExe = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+	updatedCtr = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
 		return c.Status.HealthStatus == apiv1.HealthStatusHealthy, nil
 	})
-	require.Len(t, updatedExe.Status.HealthProbeResults, 1, "Expected a single health probe result for Container '%s'", ctr.ObjectMeta.Name)
-	healthyTimestamp := updatedExe.Status.HealthProbeResults[0].Timestamp
+	require.Len(t, updatedCtr.Status.HealthProbeResults, 1, "Expected a single health probe result for Container '%s'", ctr.ObjectMeta.Name)
+	healthyTimestamp := updatedCtr.Status.HealthProbeResults[0].Timestamp
 	require.NotZero(t, healthyTimestamp, "Expected a valid timestamp for the healthy health probe result for Container '%s'", ctr.ObjectMeta.Name)
 	require.True(t, healthyTimestamp.After(unhealthyTimestamp.Time), "Expected healthy health probe result to be newer than the unhealthy one for Container '%s'", ctr.ObjectMeta.Name)
 
 	t.Logf("Changing health probe response back to to unhealthy (this should have NO effect on Container health)...")
-	setProbeResponse(apiv1.HealthProbeOutcomeFailure)
+	healthEndpoint.SetOutcome(apiv1.HealthProbeOutcomeFailure)
 	// Sleep for a while to give the controller chance to execute the probe again (if it would)
 	time.Sleep(ctr.Spec.HealthProbes[0].Schedule.Interval.Duration * 5)
 
@@ -1903,7 +1906,7 @@ func TestContainerHealthScheduleUntilSuccess(t *testing.T) {
 	finalExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
 		return c.Status.HealthStatus == apiv1.HealthStatusHealthy, nil
 	})
-	resultDiff, _ := updatedExe.Status.HealthProbeResults[0].Diff(&finalExe.Status.HealthProbeResults[0])
+	resultDiff, _ := updatedCtr.Status.HealthProbeResults[0].Diff(&finalExe.Status.HealthProbeResults[0])
 	require.Equalf(t, apiv1.DiffNone, resultDiff, "Expected the health probe result to remain the same for Container '%s'", ctr.ObjectMeta.Name)
 
 	t.Logf("Deleting Container '%s'...", ctr.ObjectMeta.Name)
@@ -2256,4 +2259,101 @@ ContainerEventsLoop:
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
 		return c.Status.State == apiv1.ContainerStateExited && c.Status.HealthStatus == apiv1.HealthStatusCaution, nil
 	})
+}
+
+// Verify that Service port and address are injected into a HTTP probe URL and headers for a Container,
+// and that the probe is executed correctly.
+func TestContainerHttpHealthProbePortInjected(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const baseName = "container-http-health-probe-port-injected"
+	const dcpTestDataHeader = "DCP-TEST-DATA"
+
+	t.Logf("Setting up HTTP endpoint for health probe responses...")
+	healthEndpoint := internal_testutil.NewTestHttpEndpoint(ctx)
+	healthEndpoint.SetOutcome(apiv1.HealthProbeOutcomeSuccess)
+	healthEndpointAddr, healthEndpointPort, addrAndPortErr := healthEndpoint.AddressAndPort()
+	require.NoError(t, addrAndPortErr, "Could not get address and port for health endpoint")
+
+	probeCalled := make(chan struct{})
+	closeOnce := sync.OnceFunc(func() { close(probeCalled) })
+
+	healthEndpoint.SetHealthyResponseObserver(func(r *http.Request) {
+		headerValue := r.Header.Get(dcpTestDataHeader)
+		require.NotEmpty(t, headerValue, "Expected header '%s' not found in health probe request", dcpTestDataHeader)
+		require.Equal(t, fmt.Sprintf("%s:%d", healthEndpointAddr, healthEndpointPort), headerValue)
+		closeOnce()
+	})
+
+	svc := apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      baseName + "-service",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ServiceSpec{
+			Protocol: apiv1.TCP,
+			Address:  healthEndpointAddr,
+			Port:     healthEndpointPort,
+		},
+	}
+
+	t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+	err := client.Create(ctx, &svc)
+	require.NoError(t, err, "Could not create Service '%s'", svc.ObjectMeta.Name)
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      baseName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: baseName + "-image",
+			HealthProbes: []apiv1.HealthProbe{
+				{
+					Name: "healthz",
+					Type: apiv1.HealthProbeTypeHttp,
+					HttpProbe: &apiv1.HttpProbe{
+						Url: fmt.Sprintf(`http://{{- addressFor "%s" -}}:{{- portFor "%s" -}}%s`, svc.Name, svc.Name, internal_testutil.TestHttpEndpointPath),
+						Headers: []apiv1.HttpHeader{
+							{
+								Name:  dcpTestDataHeader,
+								Value: fmt.Sprintf(`{{- addressFor "%s" -}}:{{- portFor "%s" -}}`, svc.Name, svc.Name),
+							},
+						},
+					},
+					Schedule: apiv1.HealthProbeSchedule{
+						Interval: metav1.Duration{Duration: 500 * time.Millisecond},
+					},
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create Container '%s'", ctr.ObjectMeta.Name)
+
+	t.Logf("Waiting for the health probe for '%s' to be called...", ctr.ObjectMeta.Name)
+	select {
+	case <-probeCalled:
+		t.Logf("Health probe for '%s' was called successfully", ctr.ObjectMeta.Name)
+	case <-ctx.Done():
+		t.Fatalf("Health probe for '%s' was not called in time", ctr.ObjectMeta.Name)
+	}
+
+	t.Logf("Ensure Container '%s' is running and considered healthy...", ctr.ObjectMeta.Name)
+	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		running := c.Status.State == apiv1.ContainerStateRunning
+		healthy := c.Status.HealthStatus == apiv1.HealthStatusHealthy
+		return running && healthy, nil
+	})
+
+	t.Logf("Deleting Container '%s'...", ctr.ObjectMeta.Name)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, c *apiv1.Container) error {
+		return client.Delete(ctx, c)
+	})
+	require.NoError(t, err, "Could not delete Container '%s'", ctr.ObjectMeta.Name)
 }

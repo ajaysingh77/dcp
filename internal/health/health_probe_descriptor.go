@@ -5,6 +5,7 @@ import (
 	"time"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 )
 
 // HealthProbeDescriptor contains data necessary to run and report results of a health probe.
@@ -13,7 +14,13 @@ type healthProbeDescriptor struct {
 	probe *apiv1.HealthProbe
 
 	// The owner of the probe (e.g. Container, Executable, etc.)
-	owner apiv1.NamespacedNameWithKind
+	owner commonapi.DcpModelObject
+
+	// The owner NamespacedNameWithKind (cached for quick access)
+	ownerNNK commonapi.NamespacedNameWithKind
+
+	// The serialized owner NamespacedNameWithKind (cached for quick access)
+	ownerDescription string
 
 	// The probe identifier (cached for quick access)
 	identifier healthProbeIdentifier
@@ -29,14 +36,16 @@ type healthProbeDescriptor struct {
 	nextExecutionTime time.Time
 }
 
-func newHealthProbeDescriptor(probe *apiv1.HealthProbe, owner apiv1.NamespacedNameWithKind) *healthProbeDescriptor {
+func newHealthProbeDescriptor(probe *apiv1.HealthProbe, owner commonapi.DcpModelObject) *healthProbeDescriptor {
 	hps := &healthProbeDescriptor{
 		probe:           probe,
 		owner:           owner,
+		ownerNNK:        commonapi.GetNamespacedNameWithKind(owner),
 		identifier:      getIdentifier(probe, owner),
 		cancelExecution: nil,
 		lastResult:      nil,
 	}
+	hps.ownerDescription = hps.ownerNNK.String()
 	hps.computeNextExecutionTime()
 	return hps
 }

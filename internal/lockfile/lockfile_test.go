@@ -1,6 +1,6 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 
-package lockfile
+package lockfile_test
 
 import (
 	"bufio"
@@ -16,6 +16,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/microsoft/usvc-apiserver/internal/lockfile"
 	int_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
@@ -28,7 +29,7 @@ var (
 )
 
 // Create a new Lockfile, lock it, write some to it, unlock.
-// Lock it agan and verify the data can be read back.
+// Lock it again and verify the data can be read back.
 func TestLockfileWriteRead(t *testing.T) {
 	t.Parallel()
 
@@ -39,10 +40,10 @@ func TestLockfileWriteRead(t *testing.T) {
 	defer func() {
 		_ = os.Remove(path) // Best effort cleanup
 	}()
-	lf, err := NewLockfile(path)
+	lf, err := lockfile.NewLockfile(path)
 	require.NoError(t, err)
 
-	lockErr := lf.TryLock(testCtx, DefaultLockRetryInterval)
+	lockErr := lf.TryLock(testCtx, lockfile.DefaultLockRetryInterval)
 	require.NoError(t, lockErr)
 
 	_, writeErr := io.WriteString(lf, "Hello, World!")
@@ -51,7 +52,7 @@ func TestLockfileWriteRead(t *testing.T) {
 	unlockErr := lf.Unlock()
 	require.NoError(t, unlockErr)
 
-	lockErr = lf.TryLock(testCtx, DefaultLockRetryInterval)
+	lockErr = lf.TryLock(testCtx, lockfile.DefaultLockRetryInterval)
 	require.NoError(t, lockErr)
 
 	_, seekErr := lf.Seek(0, io.SeekStart)
@@ -80,10 +81,10 @@ func TestLockfileWriteReadTruncate(t *testing.T) {
 	defer func() {
 		_ = os.Remove(path) // Best effort cleanup
 	}()
-	lf, err := NewLockfile(path)
+	lf, err := lockfile.NewLockfile(path)
 	require.NoError(t, err)
 
-	lockErr := lf.TryLock(testCtx, DefaultLockRetryInterval)
+	lockErr := lf.TryLock(testCtx, lockfile.DefaultLockRetryInterval)
 	require.NoError(t, lockErr)
 
 	_, writeErr := io.WriteString(lf, "Hello, World!")
@@ -92,7 +93,7 @@ func TestLockfileWriteReadTruncate(t *testing.T) {
 	unlockErr := lf.Unlock()
 	require.NoError(t, unlockErr)
 
-	lockErr = lf.TryLock(testCtx, DefaultLockRetryInterval)
+	lockErr = lf.TryLock(testCtx, lockfile.DefaultLockRetryInterval)
 	require.NoError(t, lockErr)
 
 	_, seekErr := lf.Seek(0, io.SeekStart)
@@ -103,7 +104,7 @@ func TestLockfileWriteReadTruncate(t *testing.T) {
 
 	require.Equal(t, "Hello, World!", string(content))
 
-	lockErr = lf.TryLock(testCtx, DefaultLockRetryInterval)
+	lockErr = lf.TryLock(testCtx, lockfile.DefaultLockRetryInterval)
 	require.NoError(t, lockErr)
 
 	truncateErr := lf.Truncate(0)
@@ -118,7 +119,7 @@ func TestLockfileWriteReadTruncate(t *testing.T) {
 	unlockErr = lf.Unlock()
 	require.NoError(t, unlockErr)
 
-	lockErr = lf.TryLock(testCtx, DefaultLockRetryInterval)
+	lockErr = lf.TryLock(testCtx, lockfile.DefaultLockRetryInterval)
 	require.NoError(t, lockErr)
 
 	_, seekErr = lf.Seek(0, io.SeekStart)

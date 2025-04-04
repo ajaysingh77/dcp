@@ -4,9 +4,6 @@ package controllers
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"strings"
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -16,19 +13,15 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
-)
-
-const (
-	serviceProducerAnnotation = "service-producer"
-	workloadOwnerKey          = ".metadata.owner"
 )
 
 var workloadEndpointCache *syncmap.Map[ServiceWorkloadEndpointKey, bool] = &syncmap.Map[ServiceWorkloadEndpointKey, bool]{}
 
 type ServiceWorkloadEndpointKey struct {
-	apiv1.NamespacedNameWithKind
+	commonapi.NamespacedNameWithKind
 	ServiceName string
 }
 
@@ -37,16 +30,16 @@ type EndpointOwner[EndpointCreationContext any] interface {
 
 	// Creates a new Endpoint object for the given Service exposed by the workload object (owner parameter).
 	// The Service is represented by the serviceProducer parameter.
-	createEndpoint(ctx context.Context, owner ctrl_client.Object, serviceProducer ServiceProducer, ecc EndpointCreationContext, log logr.Logger) (*apiv1.Endpoint, error)
+	createEndpoint(ctx context.Context, owner ctrl_client.Object, serviceProducer commonapi.ServiceProducer, ecc EndpointCreationContext, log logr.Logger) (*apiv1.Endpoint, error)
 
 	// Validates that the existing Endpoint object still correctly represents the Service exposed by the workload object (owner parameter).
 	// If an error is returned, the Endpoint will be deleted and a new one will be created
 	// (via call to createEndpoint function).
-	validateExistingEndpoint(ctx context.Context, owner ctrl_client.Object, serviceProducer ServiceProducer, ecc EndpointCreationContext, endpoint *apiv1.Endpoint, log logr.Logger) error
+	validateExistingEndpoint(ctx context.Context, owner ctrl_client.Object, serviceProducer commonapi.ServiceProducer, ecc EndpointCreationContext, endpoint *apiv1.Endpoint, log logr.Logger) error
 }
 
 func SetupEndpointIndexWithManager(mgr ctrl.Manager) error {
-	return mgr.GetFieldIndexer().IndexField(context.Background(), &apiv1.Endpoint{}, workloadOwnerKey, func(rawObj ctrl_client.Object) []string {
+	return mgr.GetFieldIndexer().IndexField(context.Background(), &apiv1.Endpoint{}, commonapi.WorkloadOwnerKey, func(rawObj ctrl_client.Object) []string {
 		endpoint := rawObj.(*apiv1.Endpoint)
 		return slices.Map[metav1.OwnerReference, string](endpoint.OwnerReferences, func(ref metav1.OwnerReference) string {
 			return string(ref.UID)
@@ -57,25 +50,25 @@ func SetupEndpointIndexWithManager(mgr ctrl.Manager) error {
 func ensureEndpointsForWorkload[EndpointCreationContext any](
 	ctx context.Context,
 	r EndpointOwner[EndpointCreationContext],
-	owner dcpModelObject,
+	owner commonapi.DcpModelObject,
 	reservedServicePorts map[types.NamespacedName]int32,
 	ecc EndpointCreationContext,
 	log logr.Logger,
 ) {
-	serviceProducers, err := getServiceProducersForObject(owner, log)
+	serviceProducers, err := commonapi.GetServiceProducersForObject(owner, log)
 	if err != nil || len(serviceProducers) == 0 {
 		return
 	}
 
 	var childEndpoints apiv1.EndpointList
-	if err = r.List(ctx, &childEndpoints, ctrl_client.InNamespace(owner.GetNamespace()), ctrl_client.MatchingFields{workloadOwnerKey: string(owner.GetUID())}); err != nil {
+	if err = r.List(ctx, &childEndpoints, ctrl_client.InNamespace(owner.GetNamespace()), ctrl_client.MatchingFields{commonapi.WorkloadOwnerKey: string(owner.GetUID())}); err != nil {
 		log.Error(err, "failed to list child Endpoint objects", "Workload", owner.NamespacedName().String())
 	}
 
 	for _, serviceProducer := range serviceProducers {
 		// Check if we have already created an Endpoint for this workload.
 		sweKey := ServiceWorkloadEndpointKey{
-			NamespacedNameWithKind: apiv1.GetNamespacedNameWithKind(owner),
+			NamespacedNameWithKind: commonapi.GetNamespacedNameWithKind(owner),
 			ServiceName:            serviceProducer.ServiceName,
 		}
 		existingEndpoints := slices.Select(childEndpoints.Items, func(e apiv1.Endpoint) bool {
@@ -165,9 +158,9 @@ func ensureEndpointsForWorkload[EndpointCreationContext any](
 	}
 }
 
-func removeEndpointsForWorkload(r ctrl_client.Client, ctx context.Context, owner dcpModelObject, log logr.Logger) {
+func removeEndpointsForWorkload(r ctrl_client.Client, ctx context.Context, owner commonapi.DcpModelObject, log logr.Logger) {
 	var childEndpoints apiv1.EndpointList
-	if err := r.List(ctx, &childEndpoints, ctrl_client.InNamespace(owner.GetNamespace()), ctrl_client.MatchingFields{workloadOwnerKey: string(owner.GetUID())}); err != nil {
+	if err := r.List(ctx, &childEndpoints, ctrl_client.InNamespace(owner.GetNamespace()), ctrl_client.MatchingFields{commonapi.WorkloadOwnerKey: string(owner.GetUID())}); err != nil {
 		log.Error(err, "failed to list child Endpoint objects", "Workload", owner.NamespacedName().String())
 	}
 
@@ -181,96 +174,10 @@ func removeEndpointsForWorkload(r ctrl_client.Client, ctx context.Context, owner
 		}
 
 		sweKey := ServiceWorkloadEndpointKey{
-			NamespacedNameWithKind: apiv1.GetNamespacedNameWithKind(owner),
+			NamespacedNameWithKind: commonapi.GetNamespacedNameWithKind(owner),
 			ServiceName:            endpoint.Spec.ServiceName,
 		}
 
 		workloadEndpointCache.Delete(sweKey)
-	}
-}
-
-func getServiceProducersForObject(owner dcpModelObject, log logr.Logger) ([]ServiceProducer, error) {
-	annotations := owner.GetAnnotations()
-
-	spa, found := annotations[serviceProducerAnnotation]
-	if !found {
-		return nil, nil
-	}
-
-	retval := make([]ServiceProducer, 0)
-	err := json.Unmarshal([]byte(spa), &retval)
-
-	if err != nil {
-		log.Error(err, fmt.Sprintf("%s: the annotation could not be parsed", serviceProducerIsInvalid),
-			"AnnotationText", spa,
-			"Workload", owner.NamespacedName().String(),
-		)
-		return nil, err
-	}
-
-	for i := range retval {
-		sp := retval[i]
-		sp.InferServiceNamespace(owner)
-		retval[i] = sp
-	}
-
-	return retval, nil
-}
-
-const serviceProducerIsInvalid = "service-producer annotation is invalid"
-
-type ServiceProducer struct {
-	// Name of the service that the workload implements.
-	ServiceName string `json:"serviceName"`
-
-	// Namespace of the service that the workload implements.
-	// It is optional and defaults to the namespace of the workload.
-	ServiceNamespace string `json:"serviceNamespace,omitempty"`
-
-	// Address that should be used (listened on) by the workload to serve the service.
-	// It defaults to localhost if not present.
-	// For Containers this is the address that the workload should listen on INSIDE the container.
-	// This is NOT the address that the Container will be available on the host network;
-	// that address is part of the Container spec, specifically it is the HostIP property of the ContainerPort definition(s).
-	Address string `json:"address,omitempty"`
-
-	// Port used by the workload to serve the service.
-	//
-	// For Containers it is mandatory and must match one of the Container ports.
-	// We first match on HostPort, and if one is found, we use that port.
-	// If no HostPort is found, we match on ContainerPort.
-	// If such port is found, we proxy to the corresponding host port.
-	//
-	// For Executables it is required UNLESS the Executable also expect the port to be injected into it
-	// via environment variable and {{- portForServing "<service-name>" -}} template function.
-	Port int32 `json:"port,omitempty"`
-}
-
-func (sp *ServiceProducer) InferServiceNamespace(owner ctrl_client.Object) {
-	if sp.ServiceNamespace != "" {
-		return
-	}
-
-	nn := asNamespacedName(sp.ServiceName, owner.GetNamespace())
-	sp.ServiceNamespace = nn.Namespace
-	sp.ServiceName = nn.Name
-}
-
-func (sp *ServiceProducer) ServiceNamespacedName() types.NamespacedName {
-	return types.NamespacedName{
-		Namespace: sp.ServiceNamespace,
-		Name:      sp.ServiceName,
-	}
-}
-
-func asNamespacedName(maybeNamespacedName, defaultNamespace string) types.NamespacedName {
-	if !strings.Contains(maybeNamespacedName, string(types.Separator)) {
-		return types.NamespacedName{Namespace: defaultNamespace, Name: maybeNamespacedName}
-	}
-
-	parts := strings.SplitN(maybeNamespacedName, string(types.Separator), 2)
-	return types.NamespacedName{
-		Namespace: parts[0],
-		Name:      parts[1],
 	}
 }

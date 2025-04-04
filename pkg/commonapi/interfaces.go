@@ -2,10 +2,17 @@ package commonapi
 
 import (
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type ObjectStruct interface {
+}
+
+type DcpModelObject interface {
+	apiserver_resource.Object
+	ctrl_client.Object
+	NamespacedName() types.NamespacedName
 }
 
 type DeepCopyable[T ObjectStruct] interface {
@@ -14,8 +21,7 @@ type DeepCopyable[T ObjectStruct] interface {
 
 type PObjectStruct[T ObjectStruct] interface {
 	*T
-	ctrl_client.Object
-	apiserver_resource.Object
+	DcpModelObject
 }
 
 type PCopyableObjectStruct[T ObjectStruct] interface {

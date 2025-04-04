@@ -30,93 +30,82 @@ func NewTimestampAwareReader(inner io.Reader, includeTimestamps bool) *timestamp
 }
 
 func (tr *timestampAwareReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, io.ErrShortBuffer
+	}
+
 	if tr.includeTimestamps {
 		// If we want timestamps, just read from the inner stream as normal
 		return tr.inner.Read(p)
 	}
 
-	toRead := len(p)
+	bufSize := len(p)
+	written := 0
+	var b byte
+	var readErr error
 
-	read := 0
 	for {
-		if read >= toRead {
+		if written == bufSize {
 			break
 		}
 
 		if tr.maybeTimestamp {
-			b, readErr := tr.reader.ReadByte()
-			// We're buffering and hit a read error (including EOF); we assume the buffer is a timestamp and stop processing input
+			b, readErr = tr.reader.ReadByte()
 			if readErr != nil {
-				return read, readErr
+				// Do not clear the buffer and do not change maybeTimestamp, allowing us to properly resume when new data is available
+				return written, readErr
 			}
 
-			if unicode.IsSpace(rune(b)) {
-				tr.maybeTimestamp = false
-				// Parsing RFC3339 also handles versions of RFC3339 with sub-second precision, so we only do the one check.
-				// This code specifically doesn't handle non-RFC3339 timestamps as those can include spaces and would be too difficult to properly parse.
-				// Currently all log sources write in RFC3339 format, but if that changes, we would need to special case that scenario.
-				if _, timeParseErr := time.Parse(time.RFC3339, string(tr.timestampBuffer.String())); timeParseErr != nil {
-					// We honestly shouldn't run into this situation with any of our log sources, but someone could have a very customized container log setup
-					writeErr := tr.timestampBuffer.WriteByte(b)
-					if writeErr != nil {
-						return read, writeErr
-					}
-				} else if b == '\r' || b == '\n' {
-					// We found a timestamp followed by a newline, so we should discard the timestamp and write the newline character
-					tr.timestampBuffer.Reset()
-					p[read] = b
-					read += 1
-					continue
-				} else {
-					// We found a timestamp followed by a space; throw away the space and continue reading
-					tr.timestampBuffer.Reset()
-				}
-			} else {
-				writeErr := tr.timestampBuffer.WriteByte(b)
-				if writeErr != nil {
-					return read, writeErr
-				}
+			_ = tr.timestampBuffer.WriteByte(b) // WriteByte() never fails (only panics if memory is exhausted)
 
-				if tr.timestampBuffer.Len() > maxTimestampLength {
-					tr.maybeTimestamp = false
+			switch {
+
+			case b == '\r' || b == '\n' || tr.timestampBuffer.Len() > maxTimestampLength:
+				// Timestamp (if any) is not separated by whitespace, just write out whatever we buffered
+				tr.maybeTimestamp = false
+
+			case unicode.IsSpace(rune(b)):
+				// Parsing RFC3339 also handles versions of RFC3339 with sub-second precision, so we only do the one check.
+				// This code specifically doesn't handle non-RFC3339 timestamps as those can include spaces,
+				// and would be too difficult to properly parse. Currently all log sources write in RFC3339 format,
+				// but if that changes, we would need to special case that scenario.
+
+				// Try parsing what we buffered, minus the last whitespace character
+				_, timeParseErr := time.Parse(time.RFC3339, string(tr.timestampBuffer.Bytes()[:tr.timestampBuffer.Len()-1]))
+				if timeParseErr == nil {
+					// Throw away the timestamp and the space and proceed with the rest of the line
+					tr.timestampBuffer.Reset()
 				}
+				// If we hit an error parsing the timestamp, we assume it's not a timestamp and just write it out.
+
+				tr.maybeTimestamp = false
+
 			}
 		}
 
 		if !tr.maybeTimestamp {
+			// If we have buffered data, write it out, otherwise read from the inner stream.
 			if tr.timestampBuffer.Len() > 0 {
-				b, readErr := tr.timestampBuffer.ReadByte()
-				if readErr != nil {
-					// If we hit an error reading from the buffer, we're in a bad state and should stop
-					return read, readErr
-				}
-
+				b, _ = tr.timestampBuffer.ReadByte() // The only possible error is EOF (if the buffer is empty)
 				if tr.timestampBuffer.Len() <= 0 {
-					// Reset the buffer once we're done reading the current data
 					tr.timestampBuffer.Reset()
 				}
-
-				p[read] = b
-				read += 1
-				if b == '\n' {
-					tr.maybeTimestamp = true
-				}
 			} else {
-				b, readErr := tr.reader.ReadByte()
+				b, readErr = tr.reader.ReadByte()
 				if readErr != nil {
-					return read, readErr
+					return written, readErr
 				}
+			}
 
-				p[read] = b
-				read += 1
-				if b == '\n' {
-					tr.maybeTimestamp = true
-				}
+			p[written] = b
+			written += 1
+			if b == '\n' && tr.timestampBuffer.Len() <= 0 {
+				tr.maybeTimestamp = true
 			}
 		}
 	}
 
-	return read, nil
+	return written, nil
 }
 
 func (tr *timestampAwareReader) Close() error {

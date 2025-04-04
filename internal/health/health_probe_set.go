@@ -15,6 +15,7 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
+	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 )
 
@@ -110,9 +111,9 @@ func (hps *HealthProbeSet) Subscribe(sink chan<- HealthProbeReport, ownerKind sc
 }
 
 // Adds a set of health probes to the probe set and schedules their execution as necessary.
-func (hps *HealthProbeSet) EnableProbes(owner apiv1.NamespacedNameWithKind, probes []apiv1.HealthProbe) error {
-	if owner.Empty() {
-		return fmt.Errorf("owner cannot be empty")
+func (hps *HealthProbeSet) EnableProbes(owner commonapi.DcpModelObject, probes []apiv1.HealthProbe) error {
+	if owner == nil {
+		return fmt.Errorf("must specify owner")
 	}
 	if hps.lifetimeCtx.Err() != nil {
 		return hps.lifetimeCtx.Err()
@@ -122,7 +123,8 @@ func (hps *HealthProbeSet) EnableProbes(owner apiv1.NamespacedNameWithKind, prob
 	defer hps.lock.Unlock()
 	var err error
 
-	hps.log.V(1).Info("Enabling health probes", "Owner", owner.String(), "NumberOfProbes", len(probes))
+	ownerDesc := commonapi.GetNamespacedNameWithKind(owner).String()
+	hps.log.V(1).Info("Enabling health probes", "Owner", ownerDesc, "NumberOfProbes", len(probes))
 
 	for _, probe := range probes {
 		pprobe := probe.DeepCopy()
@@ -133,9 +135,9 @@ func (hps *HealthProbeSet) EnableProbes(owner apiv1.NamespacedNameWithKind, prob
 			// As long as the set of probes is the same, that's fine.
 
 			if !existingPD.probe.Equal(pprobe) {
-				err = errors.Join(err, fmt.Errorf("probe %s for %s already exists with different definition: %s vs %s", probe.Name, owner.String(), probe.String(), existingPD.probe.String()))
+				err = errors.Join(err, fmt.Errorf("probe %s for %s already exists with different definition: %s vs %s", probe.Name, ownerDesc, probe.String(), existingPD.probe.String()))
 			} else {
-				hps.log.V(1).Info("Probe already exists for owner, ignoring", "Probe", probe.Name, "Owner", owner.String())
+				hps.log.V(1).Info("Probe already exists for owner, ignoring", "Probe", probe.Name, "Owner", ownerDesc)
 			}
 
 			continue
@@ -143,7 +145,7 @@ func (hps *HealthProbeSet) EnableProbes(owner apiv1.NamespacedNameWithKind, prob
 
 		hps.probesById[pd.identifier] = pd
 		if pd.nextExecutionTime != unknownFuture {
-			hps.log.V(1).Info("Scheduling health probe", "Probe", probe.Name, "Owner", owner.String(), "NextExecutionTime", pd.nextExecutionTime)
+			hps.log.V(1).Info("Scheduling health probe", "Probe", probe.Name, "Owner", ownerDesc, "NextExecutionTime", pd.nextExecutionTime)
 			hps.probesByExecutionTime.Enqueue(pd)
 			hps.activeProbes++
 			hps.haveProbesToExecute.Set()
@@ -156,22 +158,25 @@ func (hps *HealthProbeSet) EnableProbes(owner apiv1.NamespacedNameWithKind, prob
 }
 
 // Removes all health probes owned by the specified object and cancels remaining probe executions, if any.
-func (hps *HealthProbeSet) DisableProbes(owner apiv1.NamespacedNameWithKind) {
-	if owner.Empty() {
+func (hps *HealthProbeSet) DisableProbes(owner commonapi.DcpModelObject) {
+	if owner == nil {
+		hps.log.Error(fmt.Errorf("DisableProbes called with nil owner, ignoring..."), "")
 		return
 	}
 
-	hps.log.V(1).Info("Disabling health probes", "Owner", owner.String())
+	ownerNNK := commonapi.GetNamespacedNameWithKind(owner)
+	ownerDesc := ownerNNK.String()
+	hps.log.V(1).Info("Disabling health probes", "Owner", ownerDesc)
 
 	hps.lock.Lock()
 	defer hps.lock.Unlock()
 
 	newProbesById := make(map[healthProbeIdentifier]*healthProbeDescriptor, len(hps.probesById))
 	for _, pd := range hps.probesById {
-		if pd.owner != owner {
+		if pd.ownerNNK != ownerNNK {
 			newProbesById[pd.identifier] = pd
 		} else if pd.cancelExecution != nil {
-			hps.log.V(1).Info("Cancelling health probe execution", "Probe", pd.probe.Name, "Owner", owner.String())
+			hps.log.V(1).Info("Cancelling health probe execution", "Probe", pd.probe.Name, "Owner", ownerDesc)
 			pd.cancelExecution()
 			pd.cancelExecution = nil
 			if pd.nextExecutionTime != unknownFuture {
@@ -185,10 +190,10 @@ func (hps *HealthProbeSet) DisableProbes(owner apiv1.NamespacedNameWithKind) {
 	it := hps.probesByExecutionTime.Iterator()
 	for it.Next() {
 		hd := it.Value().(*healthProbeDescriptor)
-		if hd.owner != owner {
+		if hd.ownerNNK != ownerNNK {
 			newProbesByExecutionTime.Enqueue(hd)
 		} else {
-			hps.log.V(1).Info("Removing health probe from execution queue", "Probe", hd.probe.Name, "Owner", owner.String())
+			hps.log.V(1).Info("Removing health probe from execution queue", "Probe", hd.probe.Name, "Owner", ownerDesc)
 		}
 	}
 	hps.probesByExecutionTime = newProbesByExecutionTime
@@ -257,7 +262,7 @@ func (hps *HealthProbeSet) runProbeScheduler(schedulerCtx context.Context) {
 					hps.log.V(1).Info("Next probe scheduler pass determined",
 						"WaitDuration", waitDuration,
 						"MostUrgentProbe", pd.probe.Name,
-						"Owner", pd.owner.String(),
+						"Owner", pd.ownerDescription,
 					)
 				}
 				timer.Reset(waitDuration)
@@ -286,7 +291,7 @@ func (hps *HealthProbeSet) scheduleProbes() {
 			if hps.log.V(1).Enabled() {
 				hps.log.V(1).Info("The most urgent probe is not due yet; scheduling pass completed",
 					"MostUrgentProbe", pd.probe.Name,
-					"Owner", pd.owner.String(),
+					"Owner", pd.ownerDescription,
 					"NextExecutionTime", pd.nextExecutionTime,
 				)
 			}
@@ -299,7 +304,7 @@ func (hps *HealthProbeSet) scheduleProbes() {
 		if !found {
 			hps.log.Error(fmt.Errorf("no executor found for health probe"), "",
 				"Probe", pd.probe.String(),
-				"Owner", pd.owner.String(),
+				"Owner", pd.ownerDescription,
 			)
 			continue
 		}
@@ -310,7 +315,7 @@ func (hps *HealthProbeSet) scheduleProbes() {
 		if hps.log.V(1).Enabled() {
 			hps.log.V(1).Info("Scheduling health probe execution",
 				"Probe", pd.probe.Name,
-				"Owner", pd.owner.String(),
+				"Owner", pd.ownerDescription,
 			)
 		}
 		enqueueErr := hps.execQueue.Enqueue(func(_ context.Context) {
@@ -352,15 +357,15 @@ func (hps *HealthProbeSet) executeSingleProbe(executionCtx context.Context, pd *
 
 	hps.lock.Lock()
 	probe := pd.probe
-	owner := pd.owner
-	ss, ssFound := hps.resultSubscriptions[owner.Kind]
+
+	ss, ssFound := hps.resultSubscriptions[pd.ownerNNK.Kind]
 	_, found := hps.probesById[pd.identifier]
 	hps.lock.Unlock()
 
 	if !found {
 		hps.log.V(1).Info("Health probe was disabled before execution",
 			"Probe", probe.Name,
-			"Owner", owner.String(),
+			"Owner", pd.ownerDescription,
 		)
 		return
 	}
@@ -369,7 +374,7 @@ func (hps *HealthProbeSet) executeSingleProbe(executionCtx context.Context, pd *
 		// This can happen if the subscription was cancelled just after the probe was scheduled.
 		hps.log.V(1).Info("No subscribers found for health probe result",
 			"Probe", probe.Name,
-			"Owner", owner.String(),
+			"Owner", pd.ownerDescription,
 		)
 		return
 	}
@@ -380,7 +385,7 @@ func (hps *HealthProbeSet) executeSingleProbe(executionCtx context.Context, pd *
 	if hps.log.V(1).Enabled() {
 		hps.log.V(1).Info("Starting health probe execution...",
 			"Probe", probe.Name,
-			"Owner", owner.String(),
+			"Owner", pd.ownerDescription,
 		)
 	}
 
@@ -391,13 +396,13 @@ func (hps *HealthProbeSet) executeSingleProbe(executionCtx context.Context, pd *
 			}
 		}()
 
-		result, executionErr = probeExecutor.Execute(executionCtx, probe)
+		result, executionErr = probeExecutor.Execute(executionCtx, probe, pd.owner, pd.identifier)
 	}()
 
 	if executionErr != nil {
 		hps.log.Error(executionErr, "health probe execution failed",
 			"Probe", probe.Name,
-			"Owner", owner.String(),
+			"Owner", pd.ownerDescription,
 		)
 		result = apiv1.HealthProbeResult{
 			Outcome:   apiv1.HealthProbeOutcomeUnknown,
@@ -409,7 +414,7 @@ func (hps *HealthProbeSet) executeSingleProbe(executionCtx context.Context, pd *
 		if hps.log.V(1).Enabled() {
 			hps.log.V(1).Info("Completed health probe execution",
 				"Probe", probe.Name,
-				"Owner", owner.String(),
+				"Owner", pd.ownerDescription,
 				"Result", result.Outcome,
 				"Reason", result.Reason,
 			)
@@ -418,7 +423,7 @@ func (hps *HealthProbeSet) executeSingleProbe(executionCtx context.Context, pd *
 	report := HealthProbeReport{
 		Probe:  probe,
 		Result: result,
-		Owner:  owner,
+		Owner:  pd.ownerNNK,
 	}
 
 	// Notify all subscribers first, then schedule the next execution
@@ -426,7 +431,7 @@ func (hps *HealthProbeSet) executeSingleProbe(executionCtx context.Context, pd *
 	if hps.log.V(1).Enabled() {
 		hps.log.V(1).Info("Subscribers notified about health probe result",
 			"Probe", probe.Name,
-			"Owner", owner.String(),
+			"Owner", pd.ownerDescription,
 		)
 	}
 
@@ -442,7 +447,7 @@ func (hps *HealthProbeSet) executeSingleProbe(executionCtx context.Context, pd *
 		if hps.log.V(1).Enabled() {
 			hps.log.V(1).Info("Health probe was disabled after execution",
 				"Probe", probe.Name,
-				"Owner", owner.String(),
+				"Owner", pd.ownerDescription,
 			)
 		}
 		return
@@ -454,7 +459,7 @@ func (hps *HealthProbeSet) executeSingleProbe(executionCtx context.Context, pd *
 		if hps.log.V(1).Enabled() {
 			hps.log.V(1).Info("Scheduling next health probe execution",
 				"Probe", probe.Name,
-				"Owner", owner.String(),
+				"Owner", pd.ownerDescription,
 				"NextExecutionTime", pd.nextExecutionTime,
 			)
 		}
@@ -464,7 +469,7 @@ func (hps *HealthProbeSet) executeSingleProbe(executionCtx context.Context, pd *
 		if hps.log.V(1).Enabled() {
 			hps.log.V(1).Info("Health probe won't be scheduled for execution anymore (became inactive, or lifetime context expired)",
 				"Probe", probe.Name,
-				"Owner", owner.String(),
+				"Owner", pd.ownerDescription,
 			)
 		}
 		hps.activeProbes--

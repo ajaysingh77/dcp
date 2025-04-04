@@ -25,6 +25,8 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/logs"
+	"github.com/microsoft/usvc-apiserver/internal/templating"
+	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
@@ -152,7 +154,7 @@ func (r *ContainerExecReconciler) ensureExec(ctx context.Context, exec *apiv1.Co
 	}
 
 	container := apiv1.Container{}
-	getContainerErr := r.Get(ctx, asNamespacedName(exec.Spec.ContainerName, exec.Namespace), &container)
+	getContainerErr := r.Get(ctx, commonapi.AsNamespacedName(exec.Spec.ContainerName, exec.Namespace), &container)
 	if getContainerErr != nil {
 		// If we failed to find the target container, retry later
 		r.Log.V(1).Info("failed to find target Container for ContainerExec, retrying later", "Container", exec.Spec.ContainerName)
@@ -175,7 +177,7 @@ func (r *ContainerExecReconciler) ensureExec(ctx context.Context, exec *apiv1.Co
 
 	effectiveEnv, envErr := r.computeEffectiveEnvironment(ctx, exec, &container, log)
 	if envErr != nil {
-		if isTransientTemplateError(envErr) {
+		if templating.IsTransientTemplateError(envErr) {
 			log.V(1).Info("could not compute effective environment for the ContainerExec job, retrying startup...", "Cause", envErr.Error())
 			return additionalReconciliationNeeded
 		}
@@ -188,7 +190,7 @@ func (r *ContainerExecReconciler) ensureExec(ctx context.Context, exec *apiv1.Co
 
 	effectiveArgs, argsErr := r.computeEffectiveInvocationArgs(ctx, exec, &container, log)
 	if argsErr != nil {
-		if isTransientTemplateError(argsErr) {
+		if templating.IsTransientTemplateError(argsErr) {
 			log.V(1).Info("could not compute effective invocation arguments for the ContainerExec job, retrying startup...", "Cause", argsErr.Error())
 			return additionalReconciliationNeeded
 		}
@@ -299,14 +301,14 @@ func (r *ContainerExecReconciler) computeEffectiveEnvironment(
 	// Note: there is no value substitution by DCP for .env files, these are handled by container orchestrator directly.
 	effectiveEnv := []apiv1.EnvVar{}
 
-	tmpl, err := newSpecValueTemplate(ctx, r, ctr, map[types.NamespacedName]int32{}, log)
+	tmpl, err := templating.NewSpecValueTemplate(ctx, r, ctr, nil, log)
 	if err != nil {
 		return effectiveEnv, err
 	}
 
 	for _, envVar := range exec.Spec.Env {
 		substitutionCtx := fmt.Sprintf("environment variable %s", envVar.Name)
-		effectiveValue, templateErr := executeTemplate(tmpl, ctr, envVar.Value, substitutionCtx, log)
+		effectiveValue, templateErr := templating.ExecuteTemplate(tmpl, ctr, envVar.Value, substitutionCtx, log)
 		if templateErr != nil {
 			return effectiveEnv, templateErr
 		}
@@ -324,14 +326,14 @@ func (r *ContainerExecReconciler) computeEffectiveInvocationArgs(
 	log logr.Logger,
 ) ([]string, error) {
 	effectiveArgs := []string{}
-	tmpl, err := newSpecValueTemplate(ctx, r, ctr, map[types.NamespacedName]int32{}, log)
+	tmpl, err := templating.NewSpecValueTemplate(ctx, r, ctr, nil, log)
 	if err != nil {
 		return effectiveArgs, err
 	}
 
 	for i, arg := range exec.Spec.Args {
 		substitutionCtx := fmt.Sprintf("argument %d", i)
-		effectiveValue, templateErr := executeTemplate(tmpl, ctr, arg, substitutionCtx, log)
+		effectiveValue, templateErr := templating.ExecuteTemplate(tmpl, ctr, arg, substitutionCtx, log)
 		if templateErr != nil {
 			return effectiveArgs, templateErr
 		}

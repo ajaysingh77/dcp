@@ -8,6 +8,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 )
 
@@ -27,7 +28,7 @@ func newMockProbeExecutor() *mockProbeExecutor {
 	}
 }
 
-func (m *mockProbeExecutor) Execute(executionCtx context.Context, probe *apiv1.HealthProbe) (apiv1.HealthProbeResult, error) {
+func (m *mockProbeExecutor) Execute(executionCtx context.Context, probe *apiv1.HealthProbe, _ commonapi.DcpModelObject, probeID healthProbeIdentifier) (apiv1.HealthProbeResult, error) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	now := time.Now()

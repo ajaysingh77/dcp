@@ -2,17 +2,17 @@ package concurrency
 
 import "context"
 
-type syncChannel struct {
+type SyncChannel struct {
 	ch chan struct{}
 }
 
-func NewSyncChannel() *syncChannel {
-	return &syncChannel{
+func NewSyncChannel() *SyncChannel {
+	return &SyncChannel{
 		ch: make(chan struct{}, 1),
 	}
 }
 
-func (sc *syncChannel) Lock(ctx context.Context) error {
+func (sc *SyncChannel) Lock(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -28,7 +28,7 @@ func (sc *syncChannel) Lock(ctx context.Context) error {
 	return nil
 }
 
-func (sc *syncChannel) TryLock() bool {
+func (sc *SyncChannel) TryLock() bool {
 	select {
 	case sc.ch <- struct{}{}:
 		return true
@@ -37,7 +37,7 @@ func (sc *syncChannel) TryLock() bool {
 	}
 }
 
-func (sc *syncChannel) Unlock() {
+func (sc *SyncChannel) Unlock() {
 	// Non-blocking for caller
 	select {
 	case <-sc.ch:

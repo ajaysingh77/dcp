@@ -15,7 +15,7 @@ func OpenTempFile(name string, flag int, perm os.FileMode) (*os.File, error) {
 }
 
 func init() {
-	DcpTempDir = sync.OnceValue[string](func() string {
+	DcpTempDir = sync.OnceValue(func() string {
 		sessionDir := DcpSessionDir()
 		if sessionDir != "" {
 			return sessionDir

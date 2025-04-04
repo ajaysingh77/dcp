@@ -22,6 +22,7 @@ import (
 
 	"github.com/microsoft/usvc-apiserver/internal/contextdata"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
+	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
@@ -306,7 +307,6 @@ func (ls *LogStorage) resourceEventHandler(evt watch.Event, log logr.Logger) {
 
 	activeResourceWatchers, found := ls.resourceWatchers.Load(apiObj.GetObjectMeta().GetUID())
 	if found {
-		log.V(1).Info("started notifying resource watchers of parent resource event", "Event", rwevt.Type, "Resource", apiObj.GetObjectMeta().GetName())
 		watcherCount := 0
 		activeResourceWatchers.Range(func(rw *resourceWatcher, _ bool) bool {
 			if rw.Queue(rwevt) {
@@ -314,12 +314,19 @@ func (ls *LogStorage) resourceEventHandler(evt watch.Event, log logr.Logger) {
 			}
 			return true
 		})
-		log.V(1).Info("completed notifying resource watchers of parent resource event", "Event", rwevt.Type, "Resource", apiObj.GetObjectMeta().GetName(), "WatcherCount", watcherCount)
-	} else {
-		log.V(1).Info("no watchers registered for this resource", "Event", rwevt.Type, "Resource", apiObj.GetObjectMeta().GetName())
+		if watcherCount > 0 {
+			log.V(1).Info("completed notifying resource watchers of parent resource event",
+				"Event", rwevt.Type,
+				"Resource", commonapi.GetNamespacedNameWithKindForResourceObject(apiObj).String(),
+				"WatcherCount", watcherCount,
+			)
+		}
 	}
 
-	log.V(1).Info("notify the log streamer of resource update")
+	log.V(1).Info("notify the log streamer of resource update",
+		"Event", rwevt.Type,
+		"Resource", commonapi.GetNamespacedNameWithKindForResourceObject(apiObj).String(),
+	)
 	_ = ls.logStreamerEventQueue.Enqueue(func(_ context.Context) {
 		ls.logStreamer.OnResourceUpdated(rwevt, log)
 	})
@@ -477,7 +484,7 @@ func (ls *LogStorage) resourceStreamerFactory(resourceName string, options *LogO
 						return
 					}
 
-					// We're following logs and the parent isn't ready to stream yet, wait for an update event to try agian
+					// We're following logs and the parent isn't ready to stream yet, wait for an update event to try again
 					log.V(1).Info("waiting for parent resource to be ready to stream logs")
 				}
 			}

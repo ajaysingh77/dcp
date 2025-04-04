@@ -9,11 +9,9 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"net/http"
 	"os"
 	"regexp"
 	std_slices "slices"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -158,7 +156,7 @@ func StartTestEnvironment(
 		ctx,
 		log.WithName("HealthProbeSet"),
 		map[apiv1.HealthProbeType]health.HealthProbeExecutor{
-			apiv1.HealthProbeTypeHttp: health.HealthProbeExecutorFunc(health.ExecuteHttpProbe),
+			apiv1.HealthProbeTypeHttp: health.NewHttpProbeExecutor(mgr.GetClient(), log.WithName("HttpProbeExecutor")),
 		},
 	)
 
@@ -505,40 +503,4 @@ func waitForObjectLogs[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](
 		}
 		return nil
 	}
-}
-
-// Starts a test HTTP server that can be used as a target for HTTP health probes.
-// Returns the server's address and a function to make the server respond as healthy or unhealthy.
-// By default the server responds with 500 Internal Server Error (unhealthy).
-func createTestHealthEndpoint(lifetimeCtx context.Context) (string, func(apiv1.HealthProbeOutcome)) {
-	enableHealthyResp := &atomic.Bool{}
-	enableHealthyResp.Store(true)
-	enableUnhealthyResp := &atomic.Bool{}
-	enableUnhealthyResp.Store(true)
-
-	setResponse := func(outcome apiv1.HealthProbeOutcome) {
-		switch outcome {
-		case apiv1.HealthProbeOutcomeSuccess:
-			enableUnhealthyResp.Store(false)
-			// No need to set enableHealtyResp to true, it's the last in the response list
-			// and its Active flag is always true.
-		case apiv1.HealthProbeOutcomeFailure:
-			enableUnhealthyResp.Store(true)
-		default:
-			panic(fmt.Sprintf("Unsupported health probe outcome: %s", outcome))
-		}
-	}
-
-	const urlPath = "/healthz"
-	probeUrl := internal_testutil.ServeHttp(lifetimeCtx, []internal_testutil.RouteSpec{
-		{
-			Pattern: urlPath,
-			Responses: []internal_testutil.ResponseSpec{
-				{StatusCode: http.StatusServiceUnavailable, Active: enableUnhealthyResp},
-				{StatusCode: http.StatusOK, Active: enableHealthyResp},
-			},
-		},
-	})
-
-	return probeUrl + urlPath, setResponse
 }

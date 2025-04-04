@@ -39,6 +39,8 @@ const (
 	IPv4AllInterfaceAddress     = "0.0.0.0" // Equivalent to net.IPv4zero
 	IPv6AllInterfaceAddress     = "[::]"    // Equivalent to net.IPv6zero
 
+	InvalidPort = 0
+
 	// Use a relatively short timeout for network operations such as IP lookup or socket open
 	// because we are only interested in local addresses and ports, so the operation should be fast.
 	NetworkOpTimeout = 2 * time.Second

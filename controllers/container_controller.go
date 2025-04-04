@@ -34,7 +34,9 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
+	"github.com/microsoft/usvc-apiserver/internal/templating"
 	"github.com/microsoft/usvc-apiserver/internal/version"
+	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
@@ -440,7 +442,7 @@ func ensureContainerStartingState(
 		r.scheduleContainerCreation(container, rcd, log, noDelay)
 		change |= statusChanged
 
-	} else if isTransientTemplateError(rcd.startupError) {
+	} else if templating.IsTransientTemplateError(rcd.startupError) {
 		// Retry startup after transient error.
 
 		rcd.startupError = nil
@@ -1017,7 +1019,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 		err := func() error {
 			err := r.computeEffectiveEnvironment(startupCtx, container, rcd, log)
 			if err != nil {
-				if isTransientTemplateError(err) {
+				if templating.IsTransientTemplateError(err) {
 					log.Info("could not compute effective environment for the Container, retrying startup...", "Cause", err.Error())
 				} else {
 					log.Error(err, "could not compute effective environment for the Container")
@@ -1028,7 +1030,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 
 			err = r.computeEffectiveInvocationArgs(startupCtx, container, rcd, log)
 			if err != nil {
-				if isTransientTemplateError(err) {
+				if templating.IsTransientTemplateError(err) {
 					log.Info("could not compute effective invocation arguments for the Container, retrying startup...", "Cause", err.Error())
 				} else {
 					log.Error(err, "could not compute effective invocation arguments for the Container")
@@ -1283,7 +1285,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			rcd.startAttemptFinishedAt = metav1.NowMicro()
 
 			// Keep in "starting" state if the error is a transient error, otherwise initiate the transition to "failed to start".
-			if !isTransientTemplateError(err) {
+			if !templating.IsTransientTemplateError(err) {
 				rcd.containerState = apiv1.ContainerStateFailedToStart
 			}
 		}
@@ -1389,7 +1391,7 @@ func (r *ContainerReconciler) disableEndpointsAndHealthProbes(
 ) {
 	if len(ctr.Spec.HealthProbes) > 0 && (rcd == nil || pointers.TrueValue(rcd.healthProbesEnabled)) {
 		log.V(1).Info("disabling health probes for Container...")
-		r.hpSet.DisableProbes(apiv1.GetNamespacedNameWithKind(ctr))
+		r.hpSet.DisableProbes(ctr)
 		if rcd != nil {
 			pointers.Make(&rcd.healthProbesEnabled, false)
 		}
@@ -1408,13 +1410,13 @@ func (r *ContainerReconciler) enableEndpointsAndHealthProbes(
 	if len(ctr.Spec.HealthProbes) > 0 && pointers.NotTrue(rcd.healthProbesEnabled) {
 		log.V(1).Info("enabling health probes for Container...")
 		pointers.Make(&rcd.healthProbesEnabled, true)
-		probeErr := r.hpSet.EnableProbes(apiv1.GetNamespacedNameWithKind(ctr), ctr.Spec.HealthProbes)
+		probeErr := r.hpSet.EnableProbes(ctr, ctr.Spec.HealthProbes)
 		if probeErr != nil {
 			// Should never happen (unless lifetime context is cancelled, but we should not be here in that case).
 			log.Error(probeErr, "could not enable health probes for Container")
 		}
 	}
-	ensureEndpointsForWorkload(ctx, r, ctr, rcd.reservedPorts, inspected, log)
+	ensureEndpointsForWorkload(ctx, r, ctr, nil, inspected, log)
 }
 
 // NETWORKING SUPPORT METHODS
@@ -1582,7 +1584,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 		network := &networks.Items[i]
 
 		index := slices.IndexFunc(childNetworkConnections.Items, func(cnc apiv1.ContainerNetworkConnection) bool {
-			return asNamespacedName(cnc.Spec.ContainerNetworkName, container.GetNamespace()) == network.NamespacedName()
+			return commonapi.AsNamespacedName(cnc.Spec.ContainerNetworkName, container.GetNamespace()) == network.NamespacedName()
 		})
 
 		if index >= 0 {
@@ -1613,11 +1615,11 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 
 		networkConnectionKey := containerNetworkConnectionKey{
 			Container: container.NamespacedName(),
-			Network:   asNamespacedName(connection.Name, container.Namespace),
+			Network:   commonapi.AsNamespacedName(connection.Name, container.Namespace),
 		}
 
 		found := slices.Any(*container.Spec.Networks, func(network apiv1.ContainerNetworkConnectionConfig) bool {
-			return asNamespacedName(network.Name, container.GetNamespace()) == asNamespacedName(connection.Spec.ContainerNetworkName, container.GetNamespace())
+			return commonapi.AsNamespacedName(network.Name, container.GetNamespace()) == commonapi.AsNamespacedName(connection.Spec.ContainerNetworkName, container.GetNamespace())
 		})
 
 		if found {
@@ -1639,7 +1641,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 	for i := range *container.Spec.Networks {
 		network := (*container.Spec.Networks)[i]
 
-		namespacedNetworkName := asNamespacedName(network.Name, container.Namespace)
+		namespacedNetworkName := commonapi.AsNamespacedName(network.Name, container.Namespace)
 
 		networkConnectionKey := containerNetworkConnectionKey{
 			Container: container.NamespacedName(),
@@ -1653,7 +1655,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 		}
 
 		found = slices.Any(childNetworkConnections.Items, func(cnc apiv1.ContainerNetworkConnection) bool {
-			namespacedConnection := asNamespacedName(cnc.Spec.ContainerNetworkName, container.Namespace)
+			namespacedConnection := commonapi.AsNamespacedName(cnc.Spec.ContainerNetworkName, container.Namespace)
 
 			return namespacedConnection == namespacedNetworkName
 		})
@@ -1709,7 +1711,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 func (r *ContainerReconciler) createEndpoint(
 	ctx context.Context,
 	owner ctrl_client.Object,
-	serviceProducer ServiceProducer,
+	serviceProducer commonapi.ServiceProducer,
 	inspected *containers.InspectedContainer,
 	log logr.Logger,
 ) (*apiv1.Endpoint, error) {
@@ -1745,7 +1747,7 @@ func (r *ContainerReconciler) createEndpoint(
 func (r *ContainerReconciler) validateExistingEndpoint(
 	ctx context.Context,
 	owner ctrl_client.Object,
-	serviceProducer ServiceProducer,
+	serviceProducer commonapi.ServiceProducer,
 	inspected *containers.InspectedContainer,
 	endpoint *apiv1.Endpoint,
 	log logr.Logger,
@@ -2097,14 +2099,14 @@ func (r *ContainerReconciler) computeEffectiveEnvironment(
 ) error {
 	// Note: there is no value substitution by DCP for .env files, these are handled by container orchestrator directly.
 
-	tmpl, err := newSpecValueTemplate(ctx, r, ctr, acquiredRCD.reservedPorts, log)
+	tmpl, err := templating.NewSpecValueTemplate(ctx, r, ctr, nil, log)
 	if err != nil {
 		return err
 	}
 
 	for i, envVar := range acquiredRCD.runSpec.Env {
 		substitutionCtx := fmt.Sprintf("environment variable %s", envVar.Name)
-		effectiveValue, templateErr := executeTemplate(tmpl, ctr, envVar.Value, substitutionCtx, log)
+		effectiveValue, templateErr := templating.ExecuteTemplate(tmpl, ctr, envVar.Value, substitutionCtx, log)
 		if templateErr != nil {
 			return templateErr
 		}
@@ -2121,14 +2123,14 @@ func (r *ContainerReconciler) computeEffectiveInvocationArgs(
 	acquiredRCD *runningContainerData,
 	log logr.Logger,
 ) error {
-	tmpl, err := newSpecValueTemplate(ctx, r, ctr, acquiredRCD.reservedPorts, log)
+	tmpl, err := templating.NewSpecValueTemplate(ctx, r, ctr, nil, log)
 	if err != nil {
 		return err
 	}
 
 	for i, arg := range acquiredRCD.runSpec.Args {
 		substitutionCtx := fmt.Sprintf("argument %d", i)
-		effectiveValue, templateErr := executeTemplate(tmpl, ctr, arg, substitutionCtx, log)
+		effectiveValue, templateErr := templating.ExecuteTemplate(tmpl, ctr, arg, substitutionCtx, log)
 		if templateErr != nil {
 			return templateErr
 		}

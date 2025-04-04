@@ -12,11 +12,9 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -209,12 +207,6 @@ func saveChangesWithCustomReconciliationDelay[T commonapi.ObjectStruct, PCT comm
 			return ctrl.Result{}, nil
 		}
 	})
-}
-
-type dcpModelObject interface {
-	apiserver_resource.Object
-	ctrl_client.Object
-	NamespacedName() types.NamespacedName
 }
 
 type ControllerContextOption string

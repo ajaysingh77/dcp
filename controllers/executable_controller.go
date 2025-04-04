@@ -28,6 +28,8 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/logs"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
+	"github.com/microsoft/usvc-apiserver/internal/templating"
+	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
@@ -362,7 +364,7 @@ func (r *ExecutableReconciler) startExecutable(ctx context.Context, exe *apiv1.E
 	reservedServicePorts := make(map[types.NamespacedName]int32)
 
 	err := r.computeEffectiveEnvironment(ctx, exe, reservedServicePorts, log)
-	if isTransientTemplateError(err) {
+	if templating.IsTransientTemplateError(err) {
 		log.Info("could not compute effective environment for the Executable, retrying startup...", "Cause", err.Error())
 		return r.setExecutableState(exe, apiv1.ExecutableStateStarting) | additionalReconciliationNeeded
 	} else if err != nil {
@@ -372,7 +374,7 @@ func (r *ExecutableReconciler) startExecutable(ctx context.Context, exe *apiv1.E
 	}
 
 	err = r.computeEffectiveInvocationArgs(ctx, exe, reservedServicePorts, log)
-	if isTransientTemplateError(err) {
+	if templating.IsTransientTemplateError(err) {
 		log.Info("could not compute effective invocation arguments for the Executable, retrying startup...", "Cause", err.Error())
 		return r.setExecutableState(exe, apiv1.ExecutableStateStarting) | additionalReconciliationNeeded
 	} else if err != nil {
@@ -615,7 +617,7 @@ func (r *ExecutableReconciler) enableEndpointsAndHealthProbes(
 		// so we set it unconditionally to avoid repeated attempts.
 		pointers.Make(&runInfo.healthProbesEnabled, true)
 
-		probeErr := r.hpSet.EnableProbes(apiv1.GetNamespacedNameWithKind(exe), exe.Spec.HealthProbes)
+		probeErr := r.hpSet.EnableProbes(exe, exe.Spec.HealthProbes)
 		if probeErr != nil {
 			log.Error(probeErr, "could not enable health probes for Executable")
 		}
@@ -630,7 +632,7 @@ func (r *ExecutableReconciler) disableEndpointsAndHealthProbes(
 ) {
 	if len(exe.Spec.HealthProbes) > 0 && (runInfo == nil || pointers.TrueValue(runInfo.healthProbesEnabled)) {
 		log.V(1).Info("disabling health probes for Executable...")
-		r.hpSet.DisableProbes(apiv1.GetNamespacedNameWithKind(exe))
+		r.hpSet.DisableProbes(exe)
 		if runInfo != nil {
 			pointers.Make(&runInfo.healthProbesEnabled, false)
 		}
@@ -674,7 +676,7 @@ func (r *ExecutableReconciler) scheduleExecutableReconciliation(rti reconcileTri
 func (r *ExecutableReconciler) createEndpoint(
 	ctx context.Context,
 	owner ctrl_client.Object,
-	serviceProducer ServiceProducer,
+	serviceProducer commonapi.ServiceProducer,
 	_ struct{}, // Endpoint creation context data, not used for Executables
 	log logr.Logger,
 ) (*apiv1.Endpoint, error) {
@@ -685,7 +687,7 @@ func (r *ExecutableReconciler) createEndpoint(
 	}
 
 	if !networking.IsValidPort(int(serviceProducer.Port)) {
-		return nil, fmt.Errorf("%s: missing information about the port to expose the service", serviceProducerIsInvalid)
+		return nil, fmt.Errorf("information about the port to expose the service is missing; service-producer annotation is invalid")
 	}
 
 	address := serviceProducer.Address
@@ -721,7 +723,7 @@ func (r *ExecutableReconciler) createEndpoint(
 func (r *ExecutableReconciler) validateExistingEndpoint(
 	ctx context.Context,
 	owner ctrl_client.Object,
-	serviceProducer ServiceProducer,
+	serviceProducer commonapi.ServiceProducer,
 	_ struct{},
 	_ *apiv1.Endpoint,
 	log logr.Logger,
@@ -779,14 +781,14 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(
 
 	// Apply variable substitutions.
 
-	tmpl, err := newSpecValueTemplate(ctx, r, exe, reservedServicePorts, log)
+	tmpl, err := templating.NewSpecValueTemplate(ctx, r, exe, reservedServicePorts, log)
 	if err != nil {
 		return err
 	}
 
 	for key, value := range envMap.Data() {
 		substitutionCtx := fmt.Sprintf("environment variable %s", key)
-		effectiveValue, templateErr := executeTemplate(tmpl, exe, value, substitutionCtx, log)
+		effectiveValue, templateErr := templating.ExecuteTemplate(tmpl, exe, value, substitutionCtx, log)
 		if templateErr != nil {
 			return templateErr
 		}
@@ -810,7 +812,7 @@ func (r *ExecutableReconciler) computeEffectiveInvocationArgs(
 	reservedServicePorts map[types.NamespacedName]int32,
 	log logr.Logger,
 ) error {
-	tmpl, err := newSpecValueTemplate(ctx, r, exe, reservedServicePorts, log)
+	tmpl, err := templating.NewSpecValueTemplate(ctx, r, exe, reservedServicePorts, log)
 	if err != nil {
 		return err
 	}
@@ -818,7 +820,7 @@ func (r *ExecutableReconciler) computeEffectiveInvocationArgs(
 	effectiveArgs := make([]string, len(exe.Spec.Args))
 	for i, arg := range exe.Spec.Args {
 		substitutionCtx := fmt.Sprintf("argument %s", arg)
-		effectiveArg, templateErr := executeTemplate(tmpl, exe, arg, substitutionCtx, log)
+		effectiveArg, templateErr := templating.ExecuteTemplate(tmpl, exe, arg, substitutionCtx, log)
 		if templateErr != nil {
 			return templateErr
 		}

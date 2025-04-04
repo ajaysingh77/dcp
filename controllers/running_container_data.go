@@ -127,9 +127,6 @@ type runningContainerData struct {
 	// Standard error content from startup commands will be saved to this log.
 	startupStderrLog *startupLog
 
-	// The map of ports reserved for services that the Container implements
-	reservedPorts map[types.NamespacedName]int32
-
 	networkConnections map[containerNetworkConnectionKey]bool
 
 	// The "run spec" that was used to start the container.
@@ -164,7 +161,6 @@ func newRunningContainerData(ctr *apiv1.Container) *runningContainerData {
 	return &runningContainerData{
 		containerState:     apiv1.ContainerStatePending,
 		containerID:        placeholderID,
-		reservedPorts:      make(map[types.NamespacedName]int32),
 		networkConnections: make(map[containerNetworkConnectionKey]bool),
 		runSpec:            runSpec,
 		exitCode:           apiv1.UnknownExitCode,
@@ -187,7 +183,6 @@ func (rcd *runningContainerData) Clone() *runningContainerData {
 		startAttemptFinishedAt: rcd.startAttemptFinishedAt,
 		startupStdoutLog:       rcd.startupStdoutLog,
 		startupStderrLog:       rcd.startupStderrLog,
-		reservedPorts:          stdmaps.Clone(rcd.reservedPorts),
 		networkConnections:     stdmaps.Clone(rcd.networkConnections),
 		runSpec:                rcd.runSpec.DeepCopy(),
 		healthProbeResults:     stdmaps.Clone(rcd.healthProbeResults),
@@ -261,11 +256,6 @@ func (rcd *runningContainerData) UpdateFrom(other *runningContainerData) bool {
 
 	if rcd.startupStderrLog != other.startupStderrLog {
 		rcd.startupStderrLog = other.startupStderrLog
-		updated = true
-	}
-
-	if !stdmaps.Equal(rcd.reservedPorts, other.reservedPorts) {
-		rcd.reservedPorts = stdmaps.Clone(other.reservedPorts)
 		updated = true
 	}
 

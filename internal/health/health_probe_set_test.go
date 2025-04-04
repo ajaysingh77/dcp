@@ -10,10 +10,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
@@ -26,8 +26,8 @@ const (
 )
 
 var (
-	executableKind = apiv1.GroupVersion.WithKind(reflect.TypeOf(apiv1.Executable{}).Name())
-	containerKind  = apiv1.GroupVersion.WithKind(reflect.TypeOf(apiv1.Container{}).Name())
+	executableGVK = apiv1.GroupVersion.WithKind(reflect.TypeOf(apiv1.Executable{}).Name())
+	containerGVK  = apiv1.GroupVersion.WithKind(reflect.TypeOf(apiv1.Container{}).Name())
 )
 
 // Ensure that the health probe set can support multiple subscribers
@@ -58,50 +58,77 @@ func TestHealthProbeSetMultipleSubscribers(t *testing.T) {
 	containerSub2Sink := concurrency.NewUnboundedChan[HealthProbeReport](ctx)
 	go storeResults(ctx, containerSub2Sink.Out, &reports, "containerSub2", lock)
 
-	exeSub1, exeSub1Err := hps.Subscribe(exeSub1Sink.In, executableKind)
+	exeSub1, exeSub1Err := hps.Subscribe(exeSub1Sink.In, executableGVK)
 	require.NoError(t, exeSub1Err)
 	defer exeSub1.Cancel()
-	exeSub2, exeSub2Err := hps.Subscribe(exeSub2Sink.In, executableKind)
+	exeSub2, exeSub2Err := hps.Subscribe(exeSub2Sink.In, executableGVK)
 	require.NoError(t, exeSub2Err)
 	defer exeSub2.Cancel()
-	containerSub1, containerSub1Err := hps.Subscribe(containerSub1Sink.In, containerKind)
+	containerSub1, containerSub1Err := hps.Subscribe(containerSub1Sink.In, containerGVK)
 	require.NoError(t, containerSub1Err)
 	defer containerSub1.Cancel()
-	containerSub2, containerSub2Err := hps.Subscribe(containerSub2Sink.In, containerKind)
+	containerSub2, containerSub2Err := hps.Subscribe(containerSub2Sink.In, containerGVK)
 	require.NoError(t, containerSub2Err)
 	defer containerSub2.Cancel()
 
-	exe1Name := apiv1.NamespacedNameWithKind{NamespacedName: types.NamespacedName{Name: "exe1"}, Kind: executableKind}
-	container1Name := apiv1.NamespacedNameWithKind{NamespacedName: types.NamespacedName{Name: "container1"}, Kind: containerKind}
-	container2Name := apiv1.NamespacedNameWithKind{NamespacedName: types.NamespacedName{Name: "container2"}, Kind: containerKind}
+	exe1 := apiv1.Executable{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: apiv1.GroupVersion.String(),
+			Kind:       executableGVK.Kind,
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "exe1",
+			Namespace: metav1.NamespaceNone,
+		},
+	}
+	ctr1 := apiv1.Container{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: apiv1.GroupVersion.String(),
+			Kind:       containerGVK.Kind,
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "container1",
+			Namespace: metav1.NamespaceNone,
+		},
+	}
+	ctr2 := apiv1.Container{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: apiv1.GroupVersion.String(),
+			Kind:       containerGVK.Kind,
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "container2",
+			Namespace: metav1.NamespaceNone,
+		},
+	}
 
 	// Enable probes for an executable and a container
-	require.NoError(t, hps.EnableProbes(exe1Name,
-		[]apiv1.HealthProbe{getHttpProbe("exe-http-probe1"), getHttpProbe("exe-http-probe2"), getHttpProbe("exe-http-probe3")},
-	))
-	require.NoError(t, hps.EnableProbes(container1Name,
-		[]apiv1.HealthProbe{getHttpProbe("container-http-probe1"), getHttpProbe("container-http-probe2")},
-	))
-	require.NoError(t, hps.EnableProbes(container2Name, []apiv1.HealthProbe{getHttpProbe("container-http-probe3")}))
+	require.NoError(t, hps.EnableProbes(&exe1, []apiv1.HealthProbe{
+		getHttpProbe("exe-http-probe1"), getHttpProbe("exe-http-probe2"), getHttpProbe("exe-http-probe3"),
+	}))
+	require.NoError(t, hps.EnableProbes(&ctr1, []apiv1.HealthProbe{
+		getHttpProbe("container-http-probe1"), getHttpProbe("container-http-probe2"),
+	}))
+	require.NoError(t, hps.EnableProbes(&ctr2, []apiv1.HealthProbe{getHttpProbe("container-http-probe3")}))
 
 	// We expect
 	// -- All Executable subscribers to receive results for all Executable probes (3 probes for exe1)
 	// -- All Container subscribers to receive results for all Container probes (2 probes for container1, 1 probe for container2)
 	// -- Executor called for all probes
 
-	exeExpectedResults := map[apiv1.NamespacedNameWithKind]map[string]apiv1.HealthProbeOutcome{
-		exe1Name: {
+	exeExpectedResults := map[commonapi.NamespacedNameWithKind]map[string]apiv1.HealthProbeOutcome{
+		commonapi.GetNamespacedNameWithKind(&exe1): {
 			"exe-http-probe1": apiv1.HealthProbeOutcomeSuccess,
 			"exe-http-probe2": apiv1.HealthProbeOutcomeSuccess,
 			"exe-http-probe3": apiv1.HealthProbeOutcomeSuccess,
 		},
 	}
-	containerExpectedResults := map[apiv1.NamespacedNameWithKind]map[string]apiv1.HealthProbeOutcome{
-		container1Name: {
+	containerExpectedResults := map[commonapi.NamespacedNameWithKind]map[string]apiv1.HealthProbeOutcome{
+		commonapi.GetNamespacedNameWithKind(&ctr1): {
 			"container-http-probe1": apiv1.HealthProbeOutcomeSuccess,
 			"container-http-probe2": apiv1.HealthProbeOutcomeSuccess,
 		},
-		container2Name: {
+		commonapi.GetNamespacedNameWithKind(&ctr2): {
 			"container-http-probe3": apiv1.HealthProbeOutcomeSuccess,
 		},
 	}
@@ -122,7 +149,7 @@ func TestHealthProbeSetMultipleSubscribers(t *testing.T) {
 }
 
 // Ensure that health probe execution can be enabled and disabled per owner.
-// When all executions are disablet, the scheduler goroutine should stop.
+// When all executions are disabled, the scheduler goroutine should stop.
 func TestHealthProbeSetEnableDisable(t *testing.T) {
 	t.Parallel()
 
@@ -143,27 +170,45 @@ func TestHealthProbeSetEnableDisable(t *testing.T) {
 	// Start capturing health reports
 	reportsChan := concurrency.NewUnboundedChan[HealthProbeReport](ctx)
 	go storeResults(ctx, reportsChan.Out, &reports, "sub", lock)
-	sub, subErr := hps.Subscribe(reportsChan.In, executableKind)
+	sub, subErr := hps.Subscribe(reportsChan.In, executableGVK)
 	require.NoError(t, subErr)
 	defer sub.Cancel()
 
-	exe1Name := apiv1.NamespacedNameWithKind{NamespacedName: types.NamespacedName{Name: "exe1"}, Kind: executableKind}
-	exe2Name := apiv1.NamespacedNameWithKind{NamespacedName: types.NamespacedName{Name: "exe2"}, Kind: executableKind}
+	exe1 := apiv1.Executable{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: apiv1.GroupVersion.String(),
+			Kind:       executableGVK.Kind,
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "exe1",
+			Namespace: metav1.NamespaceNone,
+		},
+	}
+	exe2 := apiv1.Executable{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: apiv1.GroupVersion.String(),
+			Kind:       executableGVK.Kind,
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "exe2",
+			Namespace: metav1.NamespaceNone,
+		},
+	}
 
 	// Enable health probes for first Executable
-	require.NoError(t, hps.EnableProbes(exe1Name, []apiv1.HealthProbe{getHttpProbe("exe1-http-probe")}))
+	require.NoError(t, hps.EnableProbes(&exe1, []apiv1.HealthProbe{getHttpProbe("exe1-http-probe")}))
 
 	// Verify reports are coming in
 	waitErr := wait.PollUntilContextCancel(ctx, expectedStatePollInterval, false /* poll immediately */, func(ctx context.Context) (bool, error) {
-		return subscriberHasResults("sub", &reports, map[apiv1.NamespacedNameWithKind]map[string]apiv1.HealthProbeOutcome{
-			exe1Name: {"exe1-http-probe": apiv1.HealthProbeOutcomeSuccess},
+		return subscriberHasResults("sub", &reports, map[commonapi.NamespacedNameWithKind]map[string]apiv1.HealthProbeOutcome{
+			commonapi.GetNamespacedNameWithKind(&exe1): {"exe1-http-probe": apiv1.HealthProbeOutcomeSuccess},
 		}, lock) == nil, nil
 	})
 	require.NoError(t, waitErr, "Expected health reports for Executable `exe1` are missing")
 
 	// Enable health probes for the second Executable and disable probes for the first Executable
-	require.NoError(t, hps.EnableProbes(exe2Name, []apiv1.HealthProbe{getHttpProbe("exe2-http-probe")}))
-	hps.DisableProbes(exe1Name)
+	require.NoError(t, hps.EnableProbes(&exe2, []apiv1.HealthProbe{getHttpProbe("exe2-http-probe")}))
+	hps.DisableProbes(&exe1)
 
 	// Verify reports are coming in for the second owner ONLY (wait till last 10 reports are for the second Executable only)
 	waitErr = wait.PollUntilContextCancel(ctx, expectedStatePollInterval, true /* poll immediately */, func(ctx context.Context) (bool, error) {
@@ -177,12 +222,14 @@ func TestHealthProbeSetEnableDisable(t *testing.T) {
 		} else {
 			lastReports = reports
 		}
-		return slices.All(lastReports, func(rws healthProbeReportWithSubscription) bool { return rws.Report.Owner == exe2Name }), nil
+		return slices.All(lastReports, func(rws healthProbeReportWithSubscription) bool {
+			return rws.Report.Owner == commonapi.GetNamespacedNameWithKind(&exe2)
+		}), nil
 	})
 	require.NoError(t, waitErr, "Expected health reports for Executable `exe2` are missing")
 
 	// Disable execution for the second Executable and verify the reports stop coming in
-	hps.DisableProbes(exe2Name)
+	hps.DisableProbes(&exe2)
 	const periodsToWait = 5
 	noMoreReportsErr := testutil.LengthNotChanging(ctx, &reports, expectedStatePollInterval, periodsToWait, lock)
 	require.NoError(t, noMoreReportsErr, "Reports should stop coming in after disabling all probes")
@@ -192,10 +239,10 @@ func TestHealthProbeSetEnableDisable(t *testing.T) {
 	lock.Unlock()
 
 	// Enable probes for the first Executable again and verify reports are coming in
-	require.NoError(t, hps.EnableProbes(exe1Name, []apiv1.HealthProbe{getHttpProbe("exe1-http-probe")}))
+	require.NoError(t, hps.EnableProbes(&exe1, []apiv1.HealthProbe{getHttpProbe("exe1-http-probe")}))
 	waitErr = wait.PollUntilContextCancel(ctx, expectedStatePollInterval, false /* poll immediately */, func(ctx context.Context) (bool, error) {
-		return subscriberHasResults("sub", &reports, map[apiv1.NamespacedNameWithKind]map[string]apiv1.HealthProbeOutcome{
-			exe1Name: {"exe1-http-probe": apiv1.HealthProbeOutcomeSuccess},
+		return subscriberHasResults("sub", &reports, map[commonapi.NamespacedNameWithKind]map[string]apiv1.HealthProbeOutcome{
+			commonapi.GetNamespacedNameWithKind(&exe1): {"exe1-http-probe": apiv1.HealthProbeOutcomeSuccess},
 		}, lock) == nil, nil
 	})
 	require.NoError(t, waitErr, "Expected health reports for Executable `exe1` (after re-enabling health checks) are missing")
@@ -222,22 +269,31 @@ func TestHealthProbeSetNoStarvation(t *testing.T) {
 	// Start capturing health reports
 	reportsChan := concurrency.NewUnboundedChan[HealthProbeReport](ctx)
 	go storeResults(ctx, reportsChan.Out, &reports, "sub", lock)
-	sub, subErr := hps.Subscribe(reportsChan.In, executableKind)
+	sub, subErr := hps.Subscribe(reportsChan.In, executableGVK)
 	require.NoError(t, subErr)
 	defer sub.Cancel()
 
-	exe1Name := apiv1.NamespacedNameWithKind{NamespacedName: types.NamespacedName{Name: "exe1"}, Kind: executableKind}
+	exe1 := apiv1.Executable{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: apiv1.GroupVersion.String(),
+			Kind:       executableGVK.Kind,
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "exe1",
+			Namespace: metav1.NamespaceNone,
+		},
+	}
 
 	// Enable two health probes for the Executable, one with tight schedule, one much more relaxed
-	require.NoError(t, hps.EnableProbes(exe1Name, []apiv1.HealthProbe{
+	require.NoError(t, hps.EnableProbes(&exe1, []apiv1.HealthProbe{
 		getHttpProbeWithInterval("exe1-http-probe-tight", 10*time.Millisecond),
 		getHttpProbeWithInterval("exe1-http-probe-relaxed", 200*time.Millisecond),
 	}))
 
 	// Verify reports are coming in for both probes
 	waitErr := wait.PollUntilContextCancel(ctx, expectedStatePollInterval, false /* poll immediately */, func(ctx context.Context) (bool, error) {
-		return subscriberHasResults("sub", &reports, map[apiv1.NamespacedNameWithKind]map[string]apiv1.HealthProbeOutcome{
-			exe1Name: {
+		return subscriberHasResults("sub", &reports, map[commonapi.NamespacedNameWithKind]map[string]apiv1.HealthProbeOutcome{
+			commonapi.GetNamespacedNameWithKind(&exe1): {
 				"exe1-http-probe-tight":   apiv1.HealthProbeOutcomeSuccess,
 				"exe1-http-probe-relaxed": apiv1.HealthProbeOutcomeSuccess,
 			},
@@ -252,7 +308,7 @@ func TestHealthProbeSetNoStarvation(t *testing.T) {
 		defer lock.Unlock()
 
 		relaxedProbeResultCount := slices.LenIf(reports, func(rws healthProbeReportWithSubscription) bool {
-			return rws.Report.Owner == exe1Name && rws.Report.Probe.Name == "exe1-http-probe-relaxed"
+			return rws.Report.Owner == commonapi.GetNamespacedNameWithKind(&exe1) && rws.Report.Probe.Name == "exe1-http-probe-relaxed"
 		})
 		return relaxedProbeResultCount >= numResultsToWaitFor, nil
 	})
@@ -280,20 +336,29 @@ func TestHealthProbeSetContextCancellation(t *testing.T) {
 
 	// Start capturing health reports
 	reportsChan := concurrency.NewUnboundedChan[HealthProbeReport](ctx)
-	go storeResults(ctx, reportsChan.Out, &reports, "sub", lock) // Deliberately using text context, not HealthPorbeSet context
-	sub, subErr := hps.Subscribe(reportsChan.In, executableKind)
+	go storeResults(ctx, reportsChan.Out, &reports, "sub", lock) // Deliberately using text context, not HealthProbeSet context
+	sub, subErr := hps.Subscribe(reportsChan.In, executableGVK)
 	require.NoError(t, subErr)
 	defer sub.Cancel()
 
-	exe1Name := apiv1.NamespacedNameWithKind{NamespacedName: types.NamespacedName{Name: "exe1"}, Kind: executableKind}
+	exe1 := apiv1.Executable{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: apiv1.GroupVersion.String(),
+			Kind:       executableGVK.Kind,
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "exe1",
+			Namespace: metav1.NamespaceNone,
+		},
+	}
 
 	// Enable health probes for the Executable
-	require.NoError(t, hps.EnableProbes(exe1Name, []apiv1.HealthProbe{getHttpProbe("exe1-http-probe")}))
+	require.NoError(t, hps.EnableProbes(&exe1, []apiv1.HealthProbe{getHttpProbe("exe1-http-probe")}))
 
 	// Verify reports are coming in
 	waitErr := wait.PollUntilContextCancel(ctx, expectedStatePollInterval, false /* poll immediately */, func(ctx context.Context) (bool, error) {
-		return subscriberHasResults("sub", &reports, map[apiv1.NamespacedNameWithKind]map[string]apiv1.HealthProbeOutcome{
-			exe1Name: {"exe1-http-probe": apiv1.HealthProbeOutcomeSuccess},
+		return subscriberHasResults("sub", &reports, map[commonapi.NamespacedNameWithKind]map[string]apiv1.HealthProbeOutcome{
+			commonapi.GetNamespacedNameWithKind(&exe1): {"exe1-http-probe": apiv1.HealthProbeOutcomeSuccess},
 		}, lock) == nil, nil
 	})
 	require.NoError(t, waitErr, "Expected health reports for Executable `exe1` are missing")
@@ -362,7 +427,7 @@ func storeResults(
 func subscriberHasResults(
 	subscription string,
 	reports *[]healthProbeReportWithSubscription,
-	expected map[apiv1.NamespacedNameWithKind]map[string]apiv1.HealthProbeOutcome,
+	expected map[commonapi.NamespacedNameWithKind]map[string]apiv1.HealthProbeOutcome,
 	lock *sync.Mutex,
 ) error {
 	lock.Lock()

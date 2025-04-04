@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"net/http"
+	"reflect"
 	"regexp"
 	std_slices "slices"
 	"strconv"
@@ -441,33 +443,35 @@ func TestExecutableStartupFailureProcess(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
+	exeName := "executable-startup-failure-process"
+
 	exe := &apiv1.Executable{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "executable-startup-failure-process",
+			Name:      exeName,
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/executable-startup-failure-process",
+			ExecutablePath: "path/to/" + exeName,
 		},
 	}
 
-	t.Logf("Preparing run for Executable '%s'... (should fail)", exe.ObjectMeta.Name)
+	t.Logf("Preparing run for Executable '%s'... (should fail)", exeName)
 	testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
 		Condition: internal_testutil.ProcessSearchCriteria{
 			Command: []string{exe.Spec.ExecutablePath},
 		},
-		StartupError: fmt.Errorf("simulated startup failure for Executable '%s'", exe.ObjectMeta.Name),
+		StartupError: fmt.Errorf("simulated startup failure for Executable '%s'", exeName),
 	})
 	defer testProcessExecutor.RemoveAutoExecution(internal_testutil.ProcessSearchCriteria{
 		Command: []string{exe.Spec.ExecutablePath},
 	})
 
-	t.Logf("Creating Executable '%s'", exe.ObjectMeta.Name)
+	t.Logf("Creating Executable '%s'", exeName)
 	if err := client.Create(ctx, exe); err != nil {
 		t.Fatalf("Could not create Executable: %v", err)
 	}
 
-	t.Logf("Waiting for Executable '%s' to end up in 'failed to start' state...", exe.ObjectMeta.Name)
+	t.Logf("Waiting for Executable '%s' to end up in 'failed to start' state...", exeName)
 	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(exe), func(currentExe *apiv1.Executable) (bool, error) {
 		stateFailedToStart := currentExe.Status.State == apiv1.ExecutableStateFailedToStart
 		finishTimestampSet := !currentExe.Status.FinishTimestamp.IsZero()
@@ -1034,7 +1038,7 @@ func TestClientExecutablePortForInjected(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	var expectedPort int32 = 7750
+	const expectedPort int32 = 7750
 
 	svc := apiv1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1068,7 +1072,7 @@ func TestClientExecutablePortForInjected(t *testing.T) {
 		},
 	}
 
-	t.Logf("Creating Executable '%s' that is producing the Service '%s'...", exe.ObjectMeta.Name, svc.ObjectMeta.Name)
+	t.Logf("Creating Executable '%s' that is consuming Service '%s'...", exe.ObjectMeta.Name, svc.ObjectMeta.Name)
 	err = client.Create(ctx, &exe)
 	require.NoError(t, err, "Could not create an Executable")
 
@@ -1457,6 +1461,7 @@ func TestExecutableEnvironmentVariablesHandling(t *testing.T) {
 	}
 }
 
+// Verify that the address and port for serving a Service are injected into the Executable environment variables. Both the address and port are set via service-producer annotation.
 func TestExecutableServingAddressInjected(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -1744,7 +1749,7 @@ func TestExecutableLogsNonFollow(t *testing.T) {
 			exe := apiv1.Executable{
 				TypeMeta: metav1.TypeMeta{
 					APIVersion: apiv1.GroupVersion.Version,
-					Kind:       "Executable",
+					Kind:       reflect.TypeOf(apiv1.Executable{}).Name(),
 				},
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      tc.exeName,
@@ -1761,9 +1766,9 @@ func TestExecutableLogsNonFollow(t *testing.T) {
 				},
 				RunCommand: func(pe *internal_testutil.ProcessExecution) int32 {
 					_, stdoutErr := pe.Cmd.Stdout.Write(osutil.WithNewline([]byte("Standard output log line 1")))
-					require.NoError(t, stdoutErr, "Could not write to stdout of Executable '%s'", exe.ObjectMeta.Name)
+					require.NoError(t, stdoutErr, "Could not write to stdout of Executable '%s'", tc.exeName)
 					_, stderrErr := pe.Cmd.Stderr.Write(osutil.WithNewline([]byte("Standard error log line 1")))
-					require.NoError(t, stderrErr, "Could not write to stderr of Executable '%s'", exe.ObjectMeta.Name)
+					require.NoError(t, stderrErr, "Could not write to stderr of Executable '%s'", tc.exeName)
 
 					<-tc.finishExecution.Wait()
 					return 0
@@ -1773,14 +1778,14 @@ func TestExecutableLogsNonFollow(t *testing.T) {
 				Command: []string{exe.Spec.ExecutablePath},
 			})
 
-			t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
+			t.Logf("Creating Executable '%s'...", tc.exeName)
 			err := client.Create(ctx, &exe)
-			require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+			require.NoError(t, err, "Could not create Executable '%s'", tc.exeName)
 
-			t.Logf("Ensure Executable '%s' is in the expected state...", exe.ObjectMeta.Name)
+			t.Logf("Ensure Executable '%s' is in the expected state...", tc.exeName)
 			_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), tc.readyToReadLogs)
 
-			t.Logf("Ensure logs for Executable '%s' can be captured...", exe.ObjectMeta.Name)
+			t.Logf("Ensure logs for Executable '%s' can be captured...", tc.exeName)
 			opts := apiv1.LogOptions{
 				Follow:     false,
 				Source:     "stdout",
@@ -1863,7 +1868,7 @@ func TestExecutableLogsFollow(t *testing.T) {
 			exe := apiv1.Executable{
 				TypeMeta: metav1.TypeMeta{
 					APIVersion: apiv1.GroupVersion.Version,
-					Kind:       "Executable",
+					Kind:       reflect.TypeOf(apiv1.Executable{}).Name(),
 				},
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      tc.exeName,
@@ -1883,7 +1888,7 @@ func TestExecutableLogsFollow(t *testing.T) {
 
 					for i, line := range lines {
 						_, stdoutErr := pe.Cmd.Stdout.Write(osutil.WithNewline(line))
-						require.NoError(t, stdoutErr, "Could not write line %d to stdout of Executable '%s'", i, exe.ObjectMeta.Name)
+						require.NoError(t, stdoutErr, "Could not write line %d to stdout of Executable '%s'", i, tc.exeName)
 					}
 
 					<-tc.finishExecution.Wait()
@@ -1894,14 +1899,14 @@ func TestExecutableLogsFollow(t *testing.T) {
 				Command: []string{exe.Spec.ExecutablePath},
 			})
 
-			t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
+			t.Logf("Creating Executable '%s'...", tc.exeName)
 			err := client.Create(ctx, &exe)
-			require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+			require.NoError(t, err, "Could not create Executable '%s'", tc.exeName)
 
-			t.Logf("Ensure Executable '%s' is in the expected state...", exe.ObjectMeta.Name)
+			t.Logf("Ensure Executable '%s' is in the expected state...", tc.exeName)
 			_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), tc.readyToReadLogs)
 
-			t.Logf("Start following Executable '%s' logs...", exe.ObjectMeta.Name)
+			t.Logf("Start following Executable '%s' logs...", tc.exeName)
 			logsErrCh := make(chan error, 1)
 			logStreamOpen := concurrency.NewAutoResetEvent(false)
 			opts := apiv1.LogOptions{
@@ -1917,7 +1922,7 @@ func TestExecutableLogsFollow(t *testing.T) {
 			<-logStreamOpen.Wait()
 			tc.startWriting.Set()
 			err = <-logsErrCh
-			require.NoError(t, err, "Could not follow logs for Executable '%s'", exe.ObjectMeta.Name)
+			require.NoError(t, err, "Could not follow logs for Executable '%s'", tc.exeName)
 		})
 	}
 }
@@ -1935,7 +1940,7 @@ func TestExecutableLogsFollowIncremental(t *testing.T) {
 	exe := apiv1.Executable{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: apiv1.GroupVersion.Version,
-			Kind:       "Executable",
+			Kind:       reflect.TypeOf(apiv1.Executable{}).Name(),
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      exeName,
@@ -1970,7 +1975,7 @@ func TestExecutableLogsFollowIncremental(t *testing.T) {
 				line.written = time.Now()
 				linesLock.Unlock()
 				_, stdoutErr := pe.Cmd.Stdout.Write(osutil.WithNewline(line.content))
-				require.NoError(t, stdoutErr, "Could not write line %d to stdout of Executable '%s'", i, exe.ObjectMeta.Name)
+				require.NoError(t, stdoutErr, "Could not write line %d to stdout of Executable '%s'", i, exeName)
 			}
 			return 0
 		},
@@ -1979,32 +1984,32 @@ func TestExecutableLogsFollowIncremental(t *testing.T) {
 		Command: []string{exe.Spec.ExecutablePath},
 	})
 
-	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
+	t.Logf("Creating Executable '%s'...", exeName)
 	err := client.Create(ctx, &exe)
-	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, err, "Could not create Executable '%s'", exeName)
 
 	// We might need to tweak this value if it turns that the test is unreliable on slow CI machines.
 	const maxLogCaptureDelay time.Duration = 2 * time.Second
 
-	t.Logf("Start following Executable '%s' logs...", exe.ObjectMeta.Name)
+	t.Logf("Start following Executable '%s' logs...", exeName)
 	opts := apiv1.LogOptions{
 		Follow:     true,
 		Source:     "stdout",
 		Timestamps: false,
 	}
 	logStream, logStreamErr := openLogStream(ctx, &exe, opts, nil)
-	require.NoError(t, logStreamErr, "Could not open log stream for Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, logStreamErr, "Could not open log stream for Executable '%s'", exeName)
 
 	scanner := bufio.NewScanner(usvc_io.NewContextReader(ctx, logStream, true /* leverageReadCloser */))
 	for i, line := range lines {
 		writeLine.Set()
 		gotLine := scanner.Scan()
-		require.True(t, gotLine, "Could not read line %d from log stream for Executable '%s', the reported error was %v", i, exe.ObjectMeta.Name, scanner.Err())
+		require.True(t, gotLine, "Could not read line %d from log stream for Executable '%s', the reported error was %v", i, exeName, scanner.Err())
 		linesLock.Lock()
 		logCaptureDelay := time.Since(line.written)
 		linesLock.Unlock()
-		require.Equal(t, string(line.content), scanner.Text(), "Log line %d does not match expected content for Executable '%s'", i, exe.ObjectMeta.Name)
-		require.Lessf(t, logCaptureDelay, maxLogCaptureDelay, "Log line %d took too long to arrive for Executable '%s'", i, exe.ObjectMeta.Name)
+		require.Equal(t, string(line.content), scanner.Text(), "Log line %d does not match expected content for Executable '%s'", i, exeName)
+		require.Lessf(t, logCaptureDelay, maxLogCaptureDelay, "Log line %d took too long to arrive for Executable '%s'", i, exeName)
 	}
 }
 
@@ -2020,7 +2025,7 @@ func TestExecutableLogsTimestamped(t *testing.T) {
 	exe := apiv1.Executable{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: apiv1.GroupVersion.Version,
-			Kind:       "Executable",
+			Kind:       reflect.TypeOf(apiv1.Executable{}).Name(),
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      exeName,
@@ -2037,9 +2042,9 @@ func TestExecutableLogsTimestamped(t *testing.T) {
 		},
 		RunCommand: func(pe *internal_testutil.ProcessExecution) int32 {
 			_, stdoutErr := pe.Cmd.Stdout.Write(osutil.WithNewline([]byte("Standard output log line 1")))
-			require.NoError(t, stdoutErr, "Could not write to stdout of Executable '%s'", exe.ObjectMeta.Name)
+			require.NoError(t, stdoutErr, "Could not write to stdout of Executable '%s'", exeName)
 			_, stderrErr := pe.Cmd.Stderr.Write(osutil.WithNewline([]byte("Standard error log line 1")))
-			require.NoError(t, stderrErr, "Could not write to stderr of Executable '%s'", exe.ObjectMeta.Name)
+			require.NoError(t, stderrErr, "Could not write to stderr of Executable '%s'", exeName)
 			return 0
 		},
 	})
@@ -2047,11 +2052,11 @@ func TestExecutableLogsTimestamped(t *testing.T) {
 		Command: []string{exe.Spec.ExecutablePath},
 	})
 
-	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
+	t.Logf("Creating Executable '%s'...", exeName)
 	err := client.Create(ctx, &exe)
-	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, err, "Could not create Executable '%s'", exeName)
 
-	t.Logf("Ensure logs for Executable '%s' can be captured...", exe.ObjectMeta.Name)
+	t.Logf("Ensure logs for Executable '%s' can be captured...", exeName)
 	opts := apiv1.LogOptions{
 		Follow:     true,
 		Source:     "stdout",
@@ -2080,7 +2085,7 @@ func TestExecutableLogsFollowStreamEndsOnDelete(t *testing.T) {
 	exe := apiv1.Executable{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: apiv1.GroupVersion.Version,
-			Kind:       "Executable",
+			Kind:       reflect.TypeOf(apiv1.Executable{}).Name(),
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      exeName,
@@ -2100,9 +2105,9 @@ func TestExecutableLogsFollowStreamEndsOnDelete(t *testing.T) {
 		},
 		RunCommand: func(pe *internal_testutil.ProcessExecution) int32 {
 			_, stdoutErr := pe.Cmd.Stdout.Write(osutil.WithNewline([]byte("Standard output log line 1")))
-			require.NoError(t, stdoutErr, "Could not write first line to stdout of Executable '%s'", exe.ObjectMeta.Name)
+			require.NoError(t, stdoutErr, "Could not write first line to stdout of Executable '%s'", exeName)
 			_, stdoutErr = pe.Cmd.Stdout.Write(osutil.WithNewline([]byte("Standard output log line 2")))
-			require.NoError(t, stdoutErr, "Could not write second line to stdout of Executable '%s'", exe.ObjectMeta.Name)
+			require.NoError(t, stdoutErr, "Could not write second line to stdout of Executable '%s'", exeName)
 
 			<-finishExecution.Wait()
 			return 0
@@ -2112,36 +2117,36 @@ func TestExecutableLogsFollowStreamEndsOnDelete(t *testing.T) {
 		Command: []string{exe.Spec.ExecutablePath},
 	})
 
-	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
+	t.Logf("Creating Executable '%s'...", exeName)
 	err := client.Create(ctx, &exe)
-	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, err, "Could not create Executable '%s'", exeName)
 
-	t.Logf("Start following Executable '%s' logs...", exe.ObjectMeta.Name)
+	t.Logf("Start following Executable '%s' logs...", exeName)
 	opts := apiv1.LogOptions{
 		Follow:     true,
 		Source:     "stdout",
 		Timestamps: false,
 	}
 	logStream, logStreamErr := openLogStream(ctx, &exe, opts, nil)
-	require.NoError(t, logStreamErr, "Could not open log stream for Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, logStreamErr, "Could not open log stream for Executable '%s'", exeName)
 
-	t.Logf("Ensure Executable '%s' logs are captured...", exe.ObjectMeta.Name)
+	t.Logf("Ensure Executable '%s' logs are captured...", exeName)
 	scanner := bufio.NewScanner(usvc_io.NewContextReader(ctx, logStream, true /* leverageReadCloser */))
 	gotLine := scanner.Scan()
-	require.True(t, gotLine, "Could not read first line from log stream for Executable '%s', the reported error was %v", exe.ObjectMeta.Name, scanner.Err())
-	require.Equal(t, "Standard output log line 1", scanner.Text(), "First log line does not match expected content for Executable '%s'", exe.ObjectMeta.Name)
+	require.True(t, gotLine, "Could not read first line from log stream for Executable '%s', the reported error was %v", exeName, scanner.Err())
+	require.Equal(t, "Standard output log line 1", scanner.Text(), "First log line does not match expected content for Executable '%s'", exeName)
 	gotLine = scanner.Scan()
-	require.True(t, gotLine, "Could not read second line from log stream for Executable '%s', the reported error was %v", exe.ObjectMeta.Name, scanner.Err())
-	require.Equal(t, "Standard output log line 2", scanner.Text(), "Second log line does not match expected content for Executable '%s'", exe.ObjectMeta.Name)
+	require.True(t, gotLine, "Could not read second line from log stream for Executable '%s', the reported error was %v", exeName, scanner.Err())
+	require.Equal(t, "Standard output log line 2", scanner.Text(), "Second log line does not match expected content for Executable '%s'", exeName)
 
-	t.Logf("Deleting Executable '%s'...", exe.ObjectMeta.Name)
+	t.Logf("Deleting Executable '%s'...", exeName)
 	err = client.Delete(ctx, &exe)
-	require.NoError(t, err, "Could not delete Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, err, "Could not delete Executable '%s'", exeName)
 
-	t.Logf("Ensure log stream for Executable '%s' has ended...", exe.ObjectMeta.Name)
+	t.Logf("Ensure log stream for Executable '%s' has ended...", exeName)
 	gotLine = scanner.Scan()
-	require.False(t, gotLine, "Unexpectedly read another line from log stream for Executable '%s'", exe.ObjectMeta.Name)
-	require.NoError(t, scanner.Err(), "The log stream for Executable '%s' did not end gracefully", exe.ObjectMeta.Name)
+	require.False(t, gotLine, "Unexpectedly read another line from log stream for Executable '%s'", exeName)
+	require.NoError(t, scanner.Err(), "The log stream for Executable '%s' did not end gracefully", exeName)
 }
 
 // Ensure that Executable health status changes according to its state (no health probes).
@@ -2204,35 +2209,35 @@ func TestExecutableHealthBasic(t *testing.T) {
 			}
 
 			if tc.simulateStartupFailure {
-				t.Logf("Simulating Executable '%s' startup failure...", exe.ObjectMeta.Name)
+				t.Logf("Simulating Executable '%s' startup failure...", tc.exeName)
 				testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
 					Condition: internal_testutil.ProcessSearchCriteria{
 						Command: []string{exe.Spec.ExecutablePath},
 					},
-					StartupError: fmt.Errorf("simulated statup failure for Executable '%s'", exe.ObjectMeta.Name),
+					StartupError: fmt.Errorf("simulated statup failure for Executable '%s'", tc.exeName),
 				})
 				defer testProcessExecutor.RemoveAutoExecution(internal_testutil.ProcessSearchCriteria{
 					Command: []string{exe.Spec.ExecutablePath},
 				})
 			}
 
-			t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
+			t.Logf("Creating Executable '%s'...", tc.exeName)
 			err := client.Create(ctx, &exe)
-			require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+			require.NoError(t, err, "Could not create Executable '%s'", tc.exeName)
 
 			if !tc.simulateStartupFailure {
-				t.Logf("Ensure Executable '%s' is running...", exe.ObjectMeta.Name)
+				t.Logf("Ensure Executable '%s' is running...", tc.exeName)
 				_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 					return currentExe.Status.State == apiv1.ExecutableStateRunning, nil
 				})
 				pid, processErr := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
-				require.NoError(t, processErr, "Process for Executable '%s' could not be started", exe.ObjectMeta.Name)
+				require.NoError(t, processErr, "Process for Executable '%s' could not be started", tc.exeName)
 
-				t.Logf("Simulate Executable '%s' run finish...", exe.ObjectMeta.Name)
+				t.Logf("Simulate Executable '%s' run finish...", tc.exeName)
 				testProcessExecutor.SimulateProcessExit(t, pid, tc.exitCode)
 			}
 
-			t.Logf("Ensure Executable '%s' is in the expected state, including health status...", exe.ObjectMeta.Name)
+			t.Logf("Ensure Executable '%s' is in the expected state, including health status...", tc.exeName)
 			_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 				hasFinishTimestamp := !currentExe.Status.FinishTimestamp.IsZero()
 				inExpectedState := currentExe.Status.State == tc.expectedState
@@ -2240,11 +2245,11 @@ func TestExecutableHealthBasic(t *testing.T) {
 				return hasFinishTimestamp && inExpectedState && hasExpectedHealthStatus, nil
 			})
 
-			t.Logf("Deleting Executable '%s'...", exe.ObjectMeta.Name)
+			t.Logf("Deleting Executable '%s'...", tc.exeName)
 			err = retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
 				return client.Delete(ctx, currentExe)
 			})
-			require.NoError(t, err, "Could not delete Executable '%s'", exe.ObjectMeta.Name)
+			require.NoError(t, err, "Could not delete Executable '%s'", tc.exeName)
 		})
 	}
 }
@@ -2257,7 +2262,7 @@ func TestExecutableHealthSingleProbe(t *testing.T) {
 	defer cancel()
 
 	t.Logf("Setting up HTTP server for health probe responses...")
-	probeUrl, setProbeResponse := createTestHealthEndpoint(ctx)
+	healthEndpoint := internal_testutil.NewTestHttpEndpoint(ctx)
 
 	exeName := "test-executable-health-single-probe"
 	exe := apiv1.Executable{
@@ -2272,7 +2277,7 @@ func TestExecutableHealthSingleProbe(t *testing.T) {
 					Name: "healthz",
 					Type: apiv1.HealthProbeTypeHttp,
 					HttpProbe: &apiv1.HttpProbe{
-						Url: probeUrl,
+						Url: healthEndpoint.Url(),
 					},
 					Schedule: apiv1.HealthProbeSchedule{
 						Interval:     metav1.Duration{Duration: 500 * time.Millisecond},
@@ -2299,7 +2304,7 @@ func TestExecutableHealthSingleProbe(t *testing.T) {
 
 	t.Logf("Changing health probe response to healthy...")
 	time.Sleep(10 * time.Millisecond) // Ensure the timestamp of the next health probe result is different
-	setProbeResponse(apiv1.HealthProbeOutcomeSuccess)
+	healthEndpoint.SetOutcome(apiv1.HealthProbeOutcomeSuccess)
 
 	t.Logf("Ensure Executable '%s' is running and considered healthy...", exe.ObjectMeta.Name)
 	updatedExe = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
@@ -2311,7 +2316,7 @@ func TestExecutableHealthSingleProbe(t *testing.T) {
 	require.True(t, healthyTimestamp.After(unhealthyTimestamp.Time), "Expected healthy health probe result to be newer than the unhealthy one for Executable '%s'", exe.ObjectMeta.Name)
 
 	t.Logf("Changing health probe response back to to unhealthy...")
-	setProbeResponse(apiv1.HealthProbeOutcomeFailure)
+	healthEndpoint.SetOutcome(apiv1.HealthProbeOutcomeFailure)
 
 	t.Logf("Ensure Executable '%s' is running and considered unhealthy again...", exe.ObjectMeta.Name)
 	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
@@ -2333,10 +2338,10 @@ func TestExecutableHealthMultipleProbes(t *testing.T) {
 	defer cancel()
 
 	t.Logf("Setting up HTTP probe endpoints...")
-	probe1Url, setProbe1 := createTestHealthEndpoint(ctx)
-	probe2Url, setProbe2 := createTestHealthEndpoint(ctx)
-	setProbe1(apiv1.HealthProbeOutcomeSuccess)
-	setProbe2(apiv1.HealthProbeOutcomeSuccess)
+	he1 := internal_testutil.NewTestHttpEndpoint(ctx)
+	he2 := internal_testutil.NewTestHttpEndpoint(ctx)
+	he1.SetOutcome(apiv1.HealthProbeOutcomeSuccess)
+	he2.SetOutcome(apiv1.HealthProbeOutcomeSuccess)
 
 	exeName := "test-executable-health-multiple-probes"
 	exe := apiv1.Executable{
@@ -2351,7 +2356,7 @@ func TestExecutableHealthMultipleProbes(t *testing.T) {
 					Name: "p1",
 					Type: apiv1.HealthProbeTypeHttp,
 					HttpProbe: &apiv1.HttpProbe{
-						Url: probe1Url,
+						Url: he1.Url(),
 					},
 					Schedule: apiv1.HealthProbeSchedule{
 						Interval: metav1.Duration{Duration: 500 * time.Millisecond},
@@ -2361,7 +2366,7 @@ func TestExecutableHealthMultipleProbes(t *testing.T) {
 					Name: "p2",
 					Type: apiv1.HealthProbeTypeHttp,
 					HttpProbe: &apiv1.HttpProbe{
-						Url: probe2Url,
+						Url: he2.Url(),
 					},
 					Schedule: apiv1.HealthProbeSchedule{
 						Interval: metav1.Duration{Duration: 500 * time.Millisecond},
@@ -2388,7 +2393,7 @@ func TestExecutableHealthMultipleProbes(t *testing.T) {
 	})
 
 	t.Logf("Changing health probe 1 response to unhealthy and verifying the Executable '%s' status changes accordingly...", exe.ObjectMeta.Name)
-	setProbe1(apiv1.HealthProbeOutcomeFailure)
+	he1.SetOutcome(apiv1.HealthProbeOutcomeFailure)
 	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 		unhealthy := currentExe.Status.HealthStatus == apiv1.HealthStatusUnhealthy
 		hasExpectedResults := unhealthy &&
@@ -2400,7 +2405,7 @@ func TestExecutableHealthMultipleProbes(t *testing.T) {
 	})
 
 	t.Logf("Changing health probe 2 response to unhealthy and verifying the Executable '%s' status changes accordingly...", exe.ObjectMeta.Name)
-	setProbe2(apiv1.HealthProbeOutcomeFailure)
+	he2.SetOutcome(apiv1.HealthProbeOutcomeFailure)
 	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 		unhealthy := currentExe.Status.HealthStatus == apiv1.HealthStatusUnhealthy
 		hasExpectedResults := unhealthy &&
@@ -2412,7 +2417,7 @@ func TestExecutableHealthMultipleProbes(t *testing.T) {
 	})
 
 	t.Logf("Changing health probe 1 response back to healthy and verifying the Executable '%s' status changes accordingly...", exe.ObjectMeta.Name)
-	setProbe1(apiv1.HealthProbeOutcomeSuccess)
+	he1.SetOutcome(apiv1.HealthProbeOutcomeSuccess)
 	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 		unhealthy := currentExe.Status.HealthStatus == apiv1.HealthStatusUnhealthy
 		hasExpectedResults := unhealthy &&
@@ -2424,7 +2429,7 @@ func TestExecutableHealthMultipleProbes(t *testing.T) {
 	})
 
 	t.Logf("Changing health probe 2 response back to healthy and verifying the Executable '%s' becomes healthy...", exe.ObjectMeta.Name)
-	setProbe2(apiv1.HealthProbeOutcomeSuccess)
+	he2.SetOutcome(apiv1.HealthProbeOutcomeSuccess)
 	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 		healthy := currentExe.Status.HealthStatus == apiv1.HealthStatusHealthy
 		hasExpectedResults := healthy &&
@@ -2452,7 +2457,7 @@ func TestExecutableHealthScheduleUntilSuccess(t *testing.T) {
 	defer cancel()
 
 	t.Logf("Setting up HTTP server for health probe responses...")
-	probeUrl, setProbeResponse := createTestHealthEndpoint(ctx)
+	healthEndpoint := internal_testutil.NewTestHttpEndpoint(ctx)
 
 	exeName := "test-executable-health-schedule-until-success"
 	exe := apiv1.Executable{
@@ -2467,7 +2472,7 @@ func TestExecutableHealthScheduleUntilSuccess(t *testing.T) {
 					Name: "healthz",
 					Type: apiv1.HealthProbeTypeHttp,
 					HttpProbe: &apiv1.HttpProbe{
-						Url: probeUrl,
+						Url: healthEndpoint.Url(),
 					},
 					Schedule: apiv1.HealthProbeSchedule{
 						Interval: metav1.Duration{Duration: 100 * time.Millisecond},
@@ -2494,7 +2499,7 @@ func TestExecutableHealthScheduleUntilSuccess(t *testing.T) {
 
 	t.Logf("Changing health probe response to healthy...")
 	time.Sleep(10 * time.Millisecond) // Ensure the timestamp of the next health probe result is different
-	setProbeResponse(apiv1.HealthProbeOutcomeSuccess)
+	healthEndpoint.SetOutcome(apiv1.HealthProbeOutcomeSuccess)
 
 	t.Logf("Ensure Executable '%s' is running and considered healthy...", exe.ObjectMeta.Name)
 	updatedExe = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
@@ -2506,7 +2511,7 @@ func TestExecutableHealthScheduleUntilSuccess(t *testing.T) {
 	require.True(t, healthyTimestamp.After(unhealthyTimestamp.Time), "Expected healthy health probe result to be newer than the unhealthy one for Executable '%s'", exe.ObjectMeta.Name)
 
 	t.Logf("Changing health probe response back to to unhealthy (this should have NO effect on Executable health)...")
-	setProbeResponse(apiv1.HealthProbeOutcomeFailure)
+	healthEndpoint.SetOutcome(apiv1.HealthProbeOutcomeFailure)
 	// Sleep for a while to give the controller chance to execute the probe again (if it would)
 	time.Sleep(exe.Spec.HealthProbes[0].Schedule.Interval.Duration * 5)
 
@@ -2628,31 +2633,351 @@ func TestExecutableStopFailureCausesUnknownState(t *testing.T) {
 		RunCommand: func(pe *internal_testutil.ProcessExecution) int32 {
 			return 0 // Is not going to be used really, because of StopError
 		},
-		StopError: fmt.Errorf("simulated stop failure for Executable '%s'", exe.ObjectMeta.Name),
+		StopError: fmt.Errorf("simulated stop failure for Executable '%s'", exeName),
 	})
 	defer testProcessExecutor.RemoveAutoExecution(psc)
 
-	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
+	t.Logf("Creating Executable '%s'...", exeName)
 	err := client.Create(ctx, &exe)
-	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, err, "Could not create Executable '%s'", exeName)
 
-	t.Logf("Ensure Executable '%s' is running...", exe.ObjectMeta.Name)
+	t.Logf("Ensure Executable '%s' is running...", exeName)
 	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 		return currentExe.Status.State == apiv1.ExecutableStateRunning, nil
 	})
 
-	t.Logf("Stopping Executable '%s'...", exe.ObjectMeta.Name)
+	t.Logf("Stopping Executable '%s'...", exeName)
 	err = retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
 		exePatch := currentExe.DeepCopy()
 		exePatch.Spec.Stop = true
 		return client.Patch(ctx, exePatch, ctrl_client.MergeFromWithOptions(currentExe, ctrl_client.MergeFromWithOptimisticLock{}))
 	})
-	require.NoError(t, err, "Could not stop Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, err, "Could not stop Executable '%s'", exeName)
 
-	t.Logf("Ensure Executable '%s' is in Unknown state (becasue of simulated stop error)...", exe.ObjectMeta.Name)
+	t.Logf("Ensure Executable '%s' is in Unknown state (becasue of simulated stop error)...", exeName)
 	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 		return currentExe.Status.State == apiv1.ExecutableStateUnknown, nil
 	})
+}
+
+// Verify that Service port and address are injected into a HTTP probe URL and headers for an Executable,
+// and that the probe is executed correctly.
+func TestExecutableHttpHealthProbePortInjected(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const baseName = "test-executable-http-health-probe-port-injected"
+	const dcpTestDataHeader = "DCP-TEST-DATA"
+
+	t.Logf("Setting up HTTP endpoint for health probe responses...")
+	healthEndpoint := internal_testutil.NewTestHttpEndpoint(ctx)
+	healthEndpoint.SetOutcome(apiv1.HealthProbeOutcomeSuccess)
+	healthEndpointAddr, healthEndpointPort, addrAndPortErr := healthEndpoint.AddressAndPort()
+	require.NoError(t, addrAndPortErr, "Could not get address and port for health endpoint")
+
+	probeCalled := make(chan struct{})
+	closeOnce := sync.OnceFunc(func() { close(probeCalled) })
+
+	healthEndpoint.SetHealthyResponseObserver(func(r *http.Request) {
+		headerValue := r.Header.Get(dcpTestDataHeader)
+		require.NotEmpty(t, headerValue, "Expected header '%s' not found in health probe request", dcpTestDataHeader)
+		require.Equal(t, fmt.Sprintf("%s:%d", healthEndpointAddr, healthEndpointPort), headerValue)
+		closeOnce()
+	})
+
+	svc := apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      baseName + "-svc",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ServiceSpec{
+			Protocol: apiv1.TCP,
+			Address:  healthEndpointAddr,
+			Port:     healthEndpointPort,
+		},
+	}
+
+	t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+	err := client.Create(ctx, &svc)
+	require.NoError(t, err, "Could not create Service '%s'", svc.ObjectMeta.Name)
+
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      baseName + "-exe",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/" + baseName + "-exe",
+			HealthProbes: []apiv1.HealthProbe{
+				{
+					Name: "healthz",
+					Type: apiv1.HealthProbeTypeHttp,
+					HttpProbe: &apiv1.HttpProbe{
+						Url: fmt.Sprintf(`http://{{- addressFor "%s" -}}:{{- portFor "%s" -}}%s`, svc.Name, svc.Name, internal_testutil.TestHttpEndpointPath),
+						Headers: []apiv1.HttpHeader{
+							{
+								Name:  dcpTestDataHeader,
+								Value: fmt.Sprintf(`{{- addressFor "%s" -}}:{{- portFor "%s" -}}`, svc.Name, svc.Name),
+							},
+						},
+					},
+					Schedule: apiv1.HealthProbeSchedule{
+						Interval:     metav1.Duration{Duration: 500 * time.Millisecond},
+						InitialDelay: &metav1.Duration{Duration: 1 * time.Second},
+					},
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
+	err = client.Create(ctx, &exe)
+	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+
+	t.Logf("Waiting for the health probe for '%s' to be called...", exe.ObjectMeta.Name)
+	select {
+	case <-probeCalled:
+		t.Logf("Health probe for '%s' was called successfully", exe.ObjectMeta.Name)
+	case <-ctx.Done():
+		t.Fatalf("Health probe for '%s' was not called in time", exe.ObjectMeta.Name)
+	}
+
+	t.Logf("Ensure Executable '%s' is running and healthy...", exe.ObjectMeta.Name)
+	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		running := currentExe.Status.State == apiv1.ExecutableStateRunning
+		healthy := currentExe.Status.HealthStatus == apiv1.HealthStatusHealthy
+		return running && healthy, nil
+	})
+
+	t.Logf("Deleting Executable '%s'...", exe.ObjectMeta.Name)
+	err = retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		return client.Delete(ctx, currentExe)
+	})
+	require.NoError(t, err, "Could not delete Executable '%s'", exe.ObjectMeta.Name)
+}
+
+// Verify that Service serving port and address are injected into a HTTP health probe URL and headers
+// and that the probe is executed correctly. The port is automatically allocated by DCP.
+func TestExecutableHttpHealthProbePortAllocatedAndInjected(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const baseName = "test-executable-http-health-probe-port-allocated-and-injected"
+	const dcpTestDataHeader = "DCP-TEST-DATA"
+
+	svc := apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      baseName + "-svc",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ServiceSpec{
+			Protocol: apiv1.TCP,
+			Port:     7227,
+		},
+	}
+
+	t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+	err := client.Create(ctx, &svc)
+	require.NoError(t, err, "Could not create Service '%s'", svc.ObjectMeta.Name)
+
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      baseName + "-exe",
+			Namespace: metav1.NamespaceNone,
+			// No address and no port information
+			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s"}]`, svc.ObjectMeta.Name)},
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/" + baseName + "-exe",
+			HealthProbes: []apiv1.HealthProbe{
+				{
+					Name: "healthz",
+					Type: apiv1.HealthProbeTypeHttp,
+					HttpProbe: &apiv1.HttpProbe{
+						Url: fmt.Sprintf(`http://{{- addressForServing "%s" -}}:{{- portForServing "%s" -}}%s`, svc.Name, svc.Name, internal_testutil.TestHttpEndpointPath),
+						Headers: []apiv1.HttpHeader{
+							{
+								Name:  dcpTestDataHeader,
+								Value: fmt.Sprintf(`{{- addressForServing "%s" -}}:{{- portForServing "%s" -}}`, svc.Name, svc.Name),
+							},
+						},
+					},
+					Schedule: apiv1.HealthProbeSchedule{
+						Interval:     metav1.Duration{Duration: 500 * time.Millisecond},
+						InitialDelay: &metav1.Duration{Duration: 1 * time.Second},
+					},
+				},
+			},
+			Env: []apiv1.EnvVar{
+				{
+					Name:  "ADDRESS",
+					Value: fmt.Sprintf(`{{- addressForServing "%s" -}}`, svc.ObjectMeta.Name),
+				},
+				{
+					Name:  "PORT",
+					Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, svc.ObjectMeta.Name),
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
+	err = client.Create(ctx, &exe)
+	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+
+	t.Logf("Read port and address  for serving the service from Executable's '%s' effective environment...", exe.ObjectMeta.Name)
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		hasAddress := slices.Any(currentExe.Status.EffectiveEnv, func(env apiv1.EnvVar) bool { return env.Name == "ADDRESS" })
+		hasPort := slices.Any(currentExe.Status.EffectiveEnv, func(env apiv1.EnvVar) bool { return env.Name == "PORT" })
+		return hasAddress && hasPort, nil
+	})
+	i := slices.IndexFunc(updatedExe.Status.EffectiveEnv, func(env apiv1.EnvVar) bool { return env.Name == "ADDRESS" })
+	servingAddress := updatedExe.Status.EffectiveEnv[i].Value
+	i = slices.IndexFunc(updatedExe.Status.EffectiveEnv, func(env apiv1.EnvVar) bool { return env.Name == "PORT" })
+	servingPort, servingPortErr := strconv.Atoi(updatedExe.Status.EffectiveEnv[i].Value)
+	require.NoError(t, servingPortErr)
+
+	t.Logf("Settinug up HTTP server for health probe responses...")
+	healthEndpoint := internal_testutil.NewTestHttpEndpointWithAddressAndPort(ctx, servingAddress, int32(servingPort))
+	healthEndpoint.SetOutcome(apiv1.HealthProbeOutcomeSuccess)
+
+	probeCalled := make(chan struct{})
+	closeOnce := sync.OnceFunc(func() { close(probeCalled) })
+
+	healthEndpoint.SetHealthyResponseObserver(func(r *http.Request) {
+		headerValue := r.Header.Get(dcpTestDataHeader)
+		require.NotEmpty(t, headerValue, "Expected header '%s' not found in health probe request", dcpTestDataHeader)
+		require.Equal(t, fmt.Sprintf("%s:%d", servingAddress, servingPort), headerValue)
+		closeOnce()
+	})
+
+	t.Logf("Waiting for the health probe for '%s' to be called...", exe.ObjectMeta.Name)
+	select {
+	case <-probeCalled:
+		t.Logf("Health probe for '%s' was called successfully", exe.ObjectMeta.Name)
+	case <-ctx.Done():
+		t.Fatalf("Health probe for '%s' was not called in time", exe.ObjectMeta.Name)
+	}
+
+	t.Logf("Ensure Executable '%s' is running and healthy...", exe.ObjectMeta.Name)
+	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		running := currentExe.Status.State == apiv1.ExecutableStateRunning
+		healthy := currentExe.Status.HealthStatus == apiv1.HealthStatusHealthy
+		return running && healthy, nil
+	})
+
+	t.Logf("Deleting Executable '%s'...", exe.ObjectMeta.Name)
+	err = retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		return client.Delete(ctx, currentExe)
+	})
+	require.NoError(t, err, "Could not delete Executable '%s'", exe.ObjectMeta.Name)
+}
+
+// Verify that port and address information is injected into health probe URL and headers for an Executable
+// even if the relevant Service appears AFTER the Executable is created.
+func TestExecutableHttpHealthProbePortsInjectedAfterServiceCreated(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const baseName = "test-executable-http-health-probe-port-injected-after-service-created"
+	const dcpTestDataHeader = "DCP-TEST-DATA"
+	const serviceName = baseName + "-svc"
+
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      baseName + "-exe",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/" + baseName + "-exe",
+			HealthProbes: []apiv1.HealthProbe{
+				{
+					Name: "healthz",
+					Type: apiv1.HealthProbeTypeHttp,
+					HttpProbe: &apiv1.HttpProbe{
+						Url: fmt.Sprintf(`http://{{- addressFor "%s" -}}:{{- portFor "%s" -}}%s`, serviceName, serviceName, internal_testutil.TestHttpEndpointPath),
+						Headers: []apiv1.HttpHeader{
+							{
+								Name:  dcpTestDataHeader,
+								Value: fmt.Sprintf(`{{- addressFor "%s" -}}:{{- portFor "%s" -}}`, serviceName, serviceName),
+							},
+						},
+					},
+					Schedule: apiv1.HealthProbeSchedule{
+						Interval:     metav1.Duration{Duration: 500 * time.Millisecond},
+						InitialDelay: &metav1.Duration{Duration: 1 * time.Second},
+					},
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
+	err := client.Create(ctx, &exe)
+	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+
+	t.Logf("Ensure Executable '%s' is running, with 'Caution' health status...", exe.ObjectMeta.Name)
+	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		running := currentExe.Status.State == apiv1.ExecutableStateRunning
+		healthCaution := currentExe.Status.HealthStatus == apiv1.HealthStatusCaution
+		return running && healthCaution, nil
+	})
+
+	t.Logf("Setting up HTTP endpoint for health probe responses...")
+	healthEndpoint := internal_testutil.NewTestHttpEndpoint(ctx)
+	healthEndpoint.SetOutcome(apiv1.HealthProbeOutcomeSuccess)
+	healthEndpointAddr, healthEndpointPort, addrAndPortErr := healthEndpoint.AddressAndPort()
+	require.NoError(t, addrAndPortErr, "Could not get address and port for health endpoint")
+
+	probeCalled := make(chan struct{})
+	closeOnce := sync.OnceFunc(func() { close(probeCalled) })
+
+	healthEndpoint.SetHealthyResponseObserver(func(r *http.Request) {
+		headerValue := r.Header.Get(dcpTestDataHeader)
+		require.NotEmpty(t, headerValue, "Expected header '%s' not found in health probe request", dcpTestDataHeader)
+		require.Equal(t, fmt.Sprintf("%s:%d", healthEndpointAddr, healthEndpointPort), headerValue)
+		closeOnce()
+	})
+
+	svc := apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      baseName + "-svc",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ServiceSpec{
+			Protocol: apiv1.TCP,
+			Address:  healthEndpointAddr,
+			Port:     healthEndpointPort,
+		},
+	}
+
+	t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+	err = client.Create(ctx, &svc)
+	require.NoError(t, err, "Could not create Service '%s'", svc.ObjectMeta.Name)
+
+	t.Logf("Waiting for the health probe for '%s' to be called...", exe.ObjectMeta.Name)
+	select {
+	case <-probeCalled:
+		t.Logf("Health probe for '%s' was called successfully", exe.ObjectMeta.Name)
+	case <-ctx.Done():
+		t.Fatalf("Health probe for '%s' was not called in time", exe.ObjectMeta.Name)
+	}
+
+	t.Logf("Ensure Executable '%s' is running and healthy...", exe.ObjectMeta.Name)
+	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		running := currentExe.Status.State == apiv1.ExecutableStateRunning
+		healthy := currentExe.Status.HealthStatus == apiv1.HealthStatusHealthy
+		return running && healthy, nil
+	})
+
+	t.Logf("Deleting Executable '%s'...", exe.ObjectMeta.Name)
+	err = retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		return client.Delete(ctx, currentExe)
+	})
+	require.NoError(t, err, "Could not delete Executable '%s'", exe.ObjectMeta.Name)
 }
 
 func ensureProcessRunning(ctx context.Context, cmdPath string) (process.Pid_t, error) {

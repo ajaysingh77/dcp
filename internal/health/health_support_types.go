@@ -5,13 +5,14 @@ import (
 	"fmt"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 )
 
 // HealthProbeReport represents a result of a single health probe execution.
 type HealthProbeReport struct {
 	Probe  *apiv1.HealthProbe
 	Result apiv1.HealthProbeResult
-	Owner  apiv1.NamespacedNameWithKind
+	Owner  commonapi.NamespacedNameWithKind
 }
 
 // An identifier uniquely identifying a health probe within the system, comprising of the owner information and the probe name.
@@ -19,29 +20,50 @@ type HealthProbeReport struct {
 // (owner name/probe name/owner namespace/owner kind/owner version/owner group).
 type healthProbeIdentifier string
 
-func getIdentifier(probe *apiv1.HealthProbe, owner apiv1.NamespacedNameWithKind) healthProbeIdentifier {
+func getIdentifier(probe *apiv1.HealthProbe, owner commonapi.DcpModelObject) healthProbeIdentifier {
 	if probe == nil {
 		panic("cannot compute health probe identifier for nil probe")
 	}
-	if owner.Empty() {
-		panic("cannot compute health probe identifier for empty owner")
+	if owner == nil {
+		panic("cannot compute health probe identifier without an owner")
 	}
+
+	ownerName := owner.GetName()
+	ownerNamespace := owner.GetNamespace()
+	ownerGVK := owner.GetObjectKind().GroupVersionKind()
+
 	return healthProbeIdentifier(fmt.Sprintf(
 		"%s/%s/%s/%s/%s/%s",
-		owner.Name,
+		ownerName,
 		probe.Name,
-		owner.Namespace,
-		owner.Kind.Kind,
-		owner.Kind.Version,
-		owner.Kind.Group,
+		ownerNamespace,
+		ownerGVK.Kind,
+		ownerGVK.Version,
+		ownerGVK.Group,
 	))
 }
 
 type HealthProbeExecutor interface {
-	Execute(executionCtx context.Context, probe *apiv1.HealthProbe) (apiv1.HealthProbeResult, error)
+	Execute(
+		executionCtx context.Context,
+		probe *apiv1.HealthProbe,
+		probeOwner commonapi.DcpModelObject,
+		probeID healthProbeIdentifier,
+	) (apiv1.HealthProbeResult, error)
 }
-type HealthProbeExecutorFunc func(executionCtx context.Context, probe *apiv1.HealthProbe) (apiv1.HealthProbeResult, error)
 
-func (f HealthProbeExecutorFunc) Execute(executionCtx context.Context, probe *apiv1.HealthProbe) (apiv1.HealthProbeResult, error) {
-	return f(executionCtx, probe)
+type HealthProbeExecutorFunc func(
+	executionCtx context.Context,
+	probe *apiv1.HealthProbe,
+	probeOwner commonapi.DcpModelObject,
+	probeID healthProbeIdentifier,
+) (apiv1.HealthProbeResult, error)
+
+func (f HealthProbeExecutorFunc) Execute(
+	executionCtx context.Context,
+	probe *apiv1.HealthProbe,
+	probeOwner commonapi.DcpModelObject,
+	probeID healthProbeIdentifier,
+) (apiv1.HealthProbeResult, error) {
+	return f(executionCtx, probe, probeOwner, probeID)
 }

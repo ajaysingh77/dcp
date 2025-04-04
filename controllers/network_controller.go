@@ -34,6 +34,7 @@ import (
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
+	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
@@ -170,7 +171,7 @@ func (r *NetworkReconciler) SetupWithManager(mgr ctrl.Manager, name string) erro
 			return nil
 		}
 
-		namespacedName := asNamespacedName(cnc.Spec.ContainerNetworkName, cnc.Namespace)
+		namespacedName := commonapi.AsNamespacedName(cnc.Spec.ContainerNetworkName, cnc.Namespace)
 
 		return []string{namespacedName.Name}
 	}); err != nil {
@@ -607,7 +608,7 @@ func (r *NetworkReconciler) processNetworkEvent(em ct.EventMessage) {
 
 func (r *NetworkReconciler) requestReconcileForNetwork(ctx context.Context, obj ctrl_client.Object) []reconcile.Request {
 	cnc := obj.(*apiv1.ContainerNetworkConnection)
-	networkNamespacedName := asNamespacedName(cnc.Spec.ContainerNetworkName, cnc.Namespace)
+	networkNamespacedName := commonapi.AsNamespacedName(cnc.Spec.ContainerNetworkName, cnc.Namespace)
 
 	r.Log.V(1).Info("network connection updated, requesting network reconciliation", "NetworkConnection", cnc, "Network", networkNamespacedName)
 	return []reconcile.Request{

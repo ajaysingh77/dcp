@@ -1,6 +1,6 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 
-package controllers
+package templating
 
 import (
 	"context"
@@ -10,11 +10,13 @@ import (
 	"text/template"
 
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
+	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
@@ -43,27 +45,27 @@ func (e errServiceDoesNotExist) Error() string {
 	return fmt.Sprintf("service '%s' referenced by '%s' does not exist", e.Service.String(), e.ContextObject.String())
 }
 
-func isTransientTemplateError(err error) bool {
+func IsTransientTemplateError(err error) bool {
 	var ePort errServiceNotAssignedPort
 	var eAddress errServiceNotAssignedAddress
 	var eDoesNotExist errServiceDoesNotExist
 	return errors.As(err, &ePort) || errors.As(err, &eAddress) || errors.As(err, &eDoesNotExist)
 }
 
-// Creates a template for evaluating a value of a spec field.
+// Creates a template for evaluating a value of a spec field of a Container or Executable.
 // Our template functions may need to query the API server, this is what ctx and client parameters are for.
 // The contextObject parameter is the object that will be used as context during template evaluation (Executable, Container, etc.)
 // If a port needs to be reserved for a service production by the context object,
-// information about the reserved port will be added to reservedPorts map.
-func newSpecValueTemplate(
+// information about the reserved port will be added to reservedPorts map (currently only used for Executables).
+func NewSpecValueTemplate(
 	ctx context.Context,
 	client ctrl_client.Client,
-	contextObj dcpModelObject,
+	contextObj commonapi.DcpModelObject,
 	reservedPorts map[types.NamespacedName]int32,
 	log logr.Logger,
 ) (*template.Template, error) {
 
-	servicesProduced, err := getServiceProducersForObject(contextObj, log)
+	servicesProduced, err := commonapi.GetServiceProducersForObject(contextObj, log)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +76,7 @@ func newSpecValueTemplate(
 			case *apiv1.Executable:
 				return portForServingFromExecutable(serviceNamespacedName, contextObj, servicesProduced, reservedPorts, client, ctx, log)
 			case *apiv1.Container:
-				return portForServingFromContainer(serviceNamespacedName, contextObj, servicesProduced, client, ctx)
+				return portForServingFromContainer(serviceNamespacedName, contextObj, servicesProduced)
 			default:
 				// Should never happen
 				return 0, fmt.Errorf("do not know how to determine service ports for object '%s'", contextObj.NamespacedName().String())
@@ -82,19 +84,7 @@ func newSpecValueTemplate(
 		},
 
 		"portFor": func(serviceNamespacedName string) (int32, error) {
-			var serviceName = asNamespacedName(serviceNamespacedName, contextObj.GetObjectMeta().Namespace)
-
-			// Need to take a peek at the Service to find out what port it is assigned.
-			var svc apiv1.Service
-			if svcQueryErr := client.Get(ctx, serviceName, &svc); svcQueryErr != nil {
-				return 0, errServiceDoesNotExist{Service: serviceName, ContextObject: contextObj.NamespacedName()}
-			}
-
-			if svc.Status.EffectivePort == 0 {
-				return 0, errServiceNotAssignedPort{Service: serviceName}
-			}
-
-			return svc.Status.EffectivePort, nil
+			return portFor(serviceNamespacedName, contextObj, client, ctx)
 		},
 
 		"addressForServing": func(serviceNamespacedName string) (string, error) {
@@ -102,22 +92,50 @@ func newSpecValueTemplate(
 		},
 
 		"addressFor": func(serviceNamespacedName string) (string, error) {
-			var serviceName = asNamespacedName(serviceNamespacedName, contextObj.GetObjectMeta().Namespace)
+			return addressFor(serviceNamespacedName, contextObj, client, ctx)
+		},
+	})
 
-			// Need to take a peek at the Service to find out what address it is assigned.
-			var svc apiv1.Service
-			if svcQueryErr := client.Get(ctx, serviceName, &svc); svcQueryErr != nil {
-				// CONSIDER in future we could be smarter and delay the startup of the Executable until
-				// the service appears in the system, leaving the Executable in "pending" state.
-				// This would necessitate watching over Services (specifically, Service creation).
-				return "", fmt.Errorf("service '%s' referenced by an environment variable does not exist", serviceName)
+	return tmpl, nil
+}
+
+// Create a template for evaluating a value of a health probe belonging to a Container or Executable.
+func NewHealthProbeSpecValueTemplate(
+	ctx context.Context,
+	client ctrl_client.Client,
+	contextObj commonapi.DcpModelObject,
+	log logr.Logger,
+) (*template.Template, error) {
+
+	servicesProduced, err := commonapi.GetServiceProducersForObject(contextObj, log)
+	if err != nil {
+		return nil, err
+	}
+
+	tmpl := template.New("healthProbeVal").Funcs(template.FuncMap{
+		"portForServing": func(serviceNamespacedName string) (int32, error) {
+			switch contextObj := contextObj.(type) {
+			case *apiv1.Executable:
+				return portForServingFromExecutableEndpoints(serviceNamespacedName, contextObj, servicesProduced, client, ctx, log)
+			case *apiv1.Container:
+				return portForServingFromContainer(serviceNamespacedName, contextObj, servicesProduced)
+			default:
+				// Should never happen
+				fullName := commonapi.GetNamespacedNameWithKind(contextObj).String()
+				return 0, fmt.Errorf("do not know how to determine service ports for object '%s'", fullName)
 			}
+		},
 
-			if svc.Status.EffectiveAddress == "" {
-				return "", errServiceNotAssignedPort{Service: serviceName}
-			}
+		"portFor": func(serviceNamespacedName string) (int32, error) {
+			return portFor(serviceNamespacedName, contextObj, client, ctx)
+		},
 
-			return svc.Status.EffectiveAddress, nil
+		"addressForServing": func(serviceNamespacedName string) (string, error) {
+			return addressForServing(serviceNamespacedName, contextObj, servicesProduced)
+		},
+
+		"addressFor": func(serviceNamespacedName string) (string, error) {
+			return addressFor(serviceNamespacedName, contextObj, client, ctx)
 		},
 	})
 
@@ -127,9 +145,9 @@ func newSpecValueTemplate(
 // Executes a template with the given input and substitution context (contextObj parameter).
 // The 'substitutionContext' parameter provides additional information for logging if an issue occurs
 // (e.g. "environment variable 'FOO' of object 'my-executable'").
-func executeTemplate(
+func ExecuteTemplate(
 	tmpl *template.Template,
-	contextObj dcpModelObject,
+	contextObj commonapi.DcpModelObject,
 	input string,
 	substitutionContext string,
 	log logr.Logger,
@@ -153,7 +171,7 @@ func executeTemplate(
 
 	var sb strings.Builder
 	err = inputTmpl.Execute(&sb, contextObj)
-	if isTransientTemplateError(err) {
+	if IsTransientTemplateError(err) {
 		// Report the error to the caller and let them retry templating or fail, as necessary.
 		return "", err
 	} else if err != nil {
@@ -170,16 +188,21 @@ func executeTemplate(
 	}
 }
 
+// This function is called in the context of starting an Executable.
+// It will return the port for serving a service if the port is specified by the service producer annotation.
+// If the port is not specified, it will "reserve" the port and return in via the reservedPorts map.
+// The map is cached by Executable controller, so calling this function multiple times
+// will return the same port for the same Executable + Service pair
 func portForServingFromExecutable(
 	serviceNamespacedName string,
 	exe *apiv1.Executable,
-	servicesProduced []ServiceProducer,
+	servicesProduced []commonapi.ServiceProducer,
 	reservedPorts map[types.NamespacedName]int32,
 	client ctrl_client.Client,
 	ctx context.Context,
 	log logr.Logger,
 ) (int32, error) {
-	var serviceName = asNamespacedName(serviceNamespacedName, exe.GetObjectMeta().Namespace)
+	var serviceName = commonapi.AsNamespacedName(serviceNamespacedName, exe.GetObjectMeta().Namespace)
 
 	for _, sp := range servicesProduced {
 		if serviceName != sp.ServiceNamespacedName() {
@@ -189,16 +212,12 @@ func portForServingFromExecutable(
 		if sp.Port != 0 {
 			// The service producer annotation specifies the desired port, so we do not have to reserve anything,
 			// and we do not need to report it via reservedPorts.
-			if networking.IsValidPort(int(sp.Port)) {
-				return sp.Port, nil
-			} else {
-				return 0, fmt.Errorf(
-					"port %d specified in service producer annotation for service '%s' on object '%s' is invalid",
-					sp.Port,
-					serviceName,
-					exe.NamespacedName().String(),
-				)
-			}
+			return validateServiceProducerPort(sp, serviceName.String(), exe.NamespacedName().String())
+		}
+
+		if reservedPorts == nil {
+			// This is a bug in the code, reservedPorts should never be nil for Executables.
+			return 0, fmt.Errorf("reservedPorts map is nil for Executable '%s'", exe.NamespacedName().String())
 		}
 
 		if port, found := reservedPorts[serviceName]; found {
@@ -230,11 +249,9 @@ func portForServingFromExecutable(
 func portForServingFromContainer(
 	serviceNamespacedName string,
 	ctr *apiv1.Container,
-	servicesProduced []ServiceProducer,
-	_ ctrl_client.Client,
-	_ context.Context,
+	servicesProduced []commonapi.ServiceProducer,
 ) (int32, error) {
-	var serviceName = asNamespacedName(serviceNamespacedName, ctr.GetObjectMeta().Namespace)
+	var serviceName = commonapi.AsNamespacedName(serviceNamespacedName, ctr.GetObjectMeta().Namespace)
 
 	for _, sp := range servicesProduced {
 		if serviceName != sp.ServiceNamespacedName() {
@@ -283,8 +300,55 @@ func portForServingFromContainer(
 	return 0, serviceNotProducedErr(serviceName, ctr)
 }
 
-func addressForServing(serviceNamespacedName string, obj dcpModelObject, servicesProduced []ServiceProducer) (string, error) {
-	var serviceName = asNamespacedName(serviceNamespacedName, obj.GetObjectMeta().Namespace)
+// Called in the context of resolving health probe data for the Executable.
+// The port is read from the service producer annotation.
+// If dynamic port assignment is used (service producer annotation does not specify a port),
+// the function will look for existing Endpoints for the Executable and Service pair and return the port from there.
+func portForServingFromExecutableEndpoints(
+	serviceNamespacedName string,
+	exe *apiv1.Executable,
+	servicesProduced []commonapi.ServiceProducer,
+	client ctrl_client.Client,
+	ctx context.Context,
+	log logr.Logger,
+) (int32, error) {
+	var serviceName = commonapi.AsNamespacedName(serviceNamespacedName, exe.GetObjectMeta().Namespace)
+
+	var childEndpoints apiv1.EndpointList
+	listErr := client.List(ctx, &childEndpoints, ctrl_client.InNamespace(exe.GetNamespace()), ctrl_client.MatchingFields{commonapi.WorkloadOwnerKey: string(exe.GetUID())})
+	if listErr != nil {
+		log.Error(listErr, "failed to list child Endpoint objects for Executable", "Executable", exe.NamespacedName().String())
+	}
+
+	for _, sp := range servicesProduced {
+		if serviceName != sp.ServiceNamespacedName() {
+			continue
+		}
+
+		if sp.Port != 0 {
+			// The service producer annotation specifies the desired port, so we do not have to reserve anything,
+			// and we do not need to report it via reservedPorts.
+			return validateServiceProducerPort(sp, serviceName.String(), exe.NamespacedName().String())
+		}
+
+		// Need to take a peek at existing Endpoints for the Service to find out what port was assigned.
+		existingEndpoints := slices.Select(childEndpoints.Items, func(e apiv1.Endpoint) bool {
+			return e.Spec.ServiceName == sp.ServiceName && e.Spec.ServiceNamespace == sp.ServiceNamespace
+		})
+
+		// There will be at most one Endpoint for the Executable and Service pair.
+		if len(existingEndpoints) == 0 || !networking.IsValidPort(int(existingEndpoints[0].Spec.Port)) {
+			return 0, errServiceNotAssignedPort{Service: serviceName}
+		} else {
+			return existingEndpoints[0].Spec.Port, nil
+		}
+	}
+
+	return 0, serviceNotProducedErr(serviceName, exe)
+}
+
+func addressForServing(serviceNamespacedName string, obj commonapi.DcpModelObject, servicesProduced []commonapi.ServiceProducer) (string, error) {
+	var serviceName = commonapi.AsNamespacedName(serviceNamespacedName, obj.GetObjectMeta().Namespace)
 
 	for _, sp := range servicesProduced {
 		if serviceName != sp.ServiceNamespacedName() {
@@ -301,7 +365,57 @@ func addressForServing(serviceNamespacedName string, obj dcpModelObject, service
 	return "", serviceNotProducedErr(serviceName, obj)
 }
 
-func serviceNotProducedErr(serviceName types.NamespacedName, obj dcpModelObject) error {
+func portFor(
+	serviceNamespacedName string,
+	obj commonapi.DcpModelObject,
+	client ctrl_client.Client,
+	ctx context.Context,
+) (int32, error) {
+	var serviceName = commonapi.AsNamespacedName(serviceNamespacedName, obj.GetObjectMeta().Namespace)
+
+	// Need to take a peek at the Service to find out what port it is assigned.
+	var svc apiv1.Service
+	if svcQueryErr := client.Get(ctx, serviceName, &svc); svcQueryErr != nil {
+		if apierrors.IsNotFound(svcQueryErr) {
+			return 0, errServiceDoesNotExist{Service: serviceName, ContextObject: obj.NamespacedName()}
+		} else {
+			return 0, fmt.Errorf("could not deterimine the port for service '%s': %w", serviceName, svcQueryErr)
+		}
+	}
+
+	if svc.Status.EffectivePort == 0 {
+		return 0, errServiceNotAssignedPort{Service: serviceName}
+	}
+
+	return svc.Status.EffectivePort, nil
+}
+
+func addressFor(
+	serviceNamespacedName string,
+	obj commonapi.DcpModelObject,
+	client ctrl_client.Client,
+	ctx context.Context,
+) (string, error) {
+	var serviceName = commonapi.AsNamespacedName(serviceNamespacedName, obj.GetObjectMeta().Namespace)
+
+	// Need to take a peek at the Service to find out what address it is assigned.
+	var svc apiv1.Service
+	if svcQueryErr := client.Get(ctx, serviceName, &svc); svcQueryErr != nil {
+		if apierrors.IsNotFound(svcQueryErr) {
+			return "", errServiceDoesNotExist{Service: serviceName, ContextObject: obj.NamespacedName()}
+		} else {
+			return "", fmt.Errorf("could not deterimine the address for service '%s': %w", serviceName, svcQueryErr)
+		}
+	}
+
+	if svc.Status.EffectiveAddress == "" {
+		return "", errServiceNotAssignedAddress{Service: serviceName}
+	}
+
+	return svc.Status.EffectiveAddress, nil
+}
+
+func serviceNotProducedErr(serviceName types.NamespacedName, obj commonapi.DcpModelObject) error {
 	return fmt.Errorf(
 		"service '%s' referenced by %s '%s' specification is not produced by this %s",
 		serviceName,
@@ -309,4 +423,19 @@ func serviceNotProducedErr(serviceName types.NamespacedName, obj dcpModelObject)
 		obj.NamespacedName().String(),
 		obj.GetObjectKind().GroupVersionKind().Kind,
 	)
+}
+
+func validateServiceProducerPort(
+	sp commonapi.ServiceProducer,
+	serviceName string,
+	objectName string,
+) (int32, error) {
+	if networking.IsValidPort(int(sp.Port)) {
+		return sp.Port, nil
+	} else {
+		return 0, fmt.Errorf(
+			"port %d specified in service producer annotation for service '%s' on object '%s' is invalid",
+			sp.Port, serviceName, objectName,
+		)
+	}
 }

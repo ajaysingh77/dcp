@@ -461,17 +461,16 @@ func (r *ServiceReconciler) getProxyData(svc *apiv1.Service, requestedServiceAdd
 	}
 
 	// We will try to use the same port for all addresses if possible.
-	const invalidPort int32 = 0
-	var lastPort int32 = invalidPort
+	var lastPort int32 = networking.InvalidPort
 	usingSamePort := true
 
 	for _, ip := range ips {
 		proxyInstanceAddress := networking.IpToString(ip)
 
-		if lastPort == invalidPort {
+		if lastPort == networking.InvalidPort {
 			lastPort, err = getProxyPort(proxyInstanceAddress)
 			if err != nil {
-				lastPort = invalidPort
+				lastPort = networking.InvalidPort
 				portAllocationErr = errors.Join(portAllocationErr, err)
 				continue
 			}

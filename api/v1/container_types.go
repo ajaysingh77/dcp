@@ -387,7 +387,7 @@ type ContainerSpec struct {
 	// +kubebuilder:default:=false
 	Stop bool `json:"stop,omitempty"`
 
-	// ContaineNetworks resources the container should be attached to. If omitted or nil, the container will
+	// ContainerNetworks resources the container should be attached to. If omitted or nil, the container will
 	// be attached to the default network and the controller will not manage network connections.
 	// +listType=atomic
 	Networks *[]ContainerNetworkConnectionConfig `json:"networks,omitempty"`

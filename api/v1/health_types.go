@@ -3,7 +3,6 @@ package v1
 import (
 	"fmt"
 	stdmaps "maps"
-	"net/url"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -129,7 +128,7 @@ type HealthProbe struct {
 
 // Validate checks the health probe for correctness.
 // The probePath argument is used to construct the field path for any validation errors.
-// Returs a list of errors, or nil if the probe is valid.
+// Returns a list of errors, or nil if the probe is valid.
 func (hp *HealthProbe) Validate(probePath *field.Path) field.ErrorList {
 	errorList := field.ErrorList{}
 
@@ -222,14 +221,7 @@ func (hhp *HttpProbe) Validate(probePath *field.Path) field.ErrorList {
 		return field.ErrorList{field.Invalid(probePath.Child("url"), "", "URL is required for HTTP probe")}
 	}
 
-	url, err := url.Parse(hhp.Url)
-	if err != nil {
-		return field.ErrorList{field.Invalid(probePath.Child("url"), hhp.Url, err.Error())}
-	}
-
-	if !url.IsAbs() {
-		return field.ErrorList{field.Invalid(probePath.Child("url"), hhp.Url, "HTTP probe URL must be absolute")}
-	}
+	// Url value can use template functions so it cannot be statically validated.
 
 	return nil
 }
