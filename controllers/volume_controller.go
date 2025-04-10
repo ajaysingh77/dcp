@@ -143,7 +143,7 @@ func (r *VolumeReconciler) handleDeletionRequest(ctx context.Context, vol *apiv1
 	_, volData := r.volumeData.BorrowByNamespacedName(vol.NamespacedName())
 	if volData == nil || volData.state != apiv1.ContainerVolumeStateReady || pointers.TrueValue(vol.Spec.Persistent) {
 		// No actual volume to delete, or it is persistent and needs to be preserved.
-		// We can just silently continue with finalizer removal and deletion of the objecontainers.
+		// We can just silently continue with finalizer removal and deletion of the object.
 		r.volumeData.DeleteByNamespacedName(vol.NamespacedName())
 		return deleteFinalizer(vol, volumeFinalizer, log)
 	}

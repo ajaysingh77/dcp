@@ -486,7 +486,10 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 	}
 
 	if found < len(networkConnections.Items) {
+		log.Info("not all expected containers are connected to the network, retrying...", "Network", network.Status.NetworkName, "Expected", len(networkConnections.Items), "Found", found)
 		change |= additionalReconciliationNeeded
+	} else {
+		log.Info("all expected containers are connected to the network", "Network", network.Status.NetworkName, "Expected", len(networkConnections.Items), "Found", found)
 	}
 
 	return change
