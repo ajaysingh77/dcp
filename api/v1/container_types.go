@@ -202,6 +202,7 @@ type FileSystemEntry struct {
 	Contents string `json:"contents,omitempty"`
 
 	// For directory type entries, the child entries (files or directories). Optional.
+	// +listType=atomic
 	Entries []FileSystemEntry `json:"entries,omitempty"`
 }
 
@@ -313,6 +314,7 @@ type CreateFileSystem struct {
 	Umask *fs.FileMode `json:"umask,omitempty"`
 
 	// The specific entries to create in the container (must have at least one item)
+	// +listType=atomic
 	Entries []FileSystemEntry `json:"entries,omitempty"`
 }
 
