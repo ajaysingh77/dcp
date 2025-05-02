@@ -16,7 +16,6 @@ func defaultExponentialBackoff() *backoff.ExponentialBackOff {
 	)
 }
 
-// Try calling factory function with exponential back-off until a value is successfully created or timeout is reached.
 // Try calling factory function with exponential back-off until either:
 // - a value is successfully created, or
 // - a permanent error occurs, or
@@ -25,7 +24,6 @@ func RetryGetExponential[T any](ctx context.Context, factory func() (T, error)) 
 	return RetryGet(ctx, defaultExponentialBackoff(), factory)
 }
 
-// Try calling factory function with given backoff policy until a value is successfully created or timeout is reached.
 // Try calling factory function with given backoff policy until a value is successfully created,
 // or a permanent error occurs, or the passed context is cancelled.
 func RetryGet[T any](ctx context.Context, b backoff.BackOff, factory func() (T, error)) (T, error) {
@@ -50,7 +48,6 @@ func RetryGet[T any](ctx context.Context, b backoff.BackOff, factory func() (T, 
 	}
 }
 
-// Try calling operation function with exponential back-off until it succeeds or timeout is reached.
 // Try calling operation function with exponential back-off until either:
 // - the operation succeeds, or
 // - a permanent error occurs, or
@@ -59,7 +56,6 @@ func RetryExponential(ctx context.Context, operation func() error) error {
 	return Retry(ctx, defaultExponentialBackoff(), operation)
 }
 
-// Try calling operation function with exponential back-off until it succeeds or timeout is reached.
 // Try calling operation function with exponential back-off until either:
 // - the operation succeeds, or
 // - a permanent error occurs, or
