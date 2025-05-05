@@ -9,11 +9,24 @@ import (
 
 // Use separate process group so this process exit will not affect the children.
 func DecoupleFromParent(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	sysProcAttr := cmd.SysProcAttr
+	if sysProcAttr == nil {
+		sysProcAttr = &syscall.SysProcAttr{}
+	}
+	sysProcAttr.Setpgid = true
+
+	cmd.SysProcAttr = sysProcAttr
 }
 
 // Use separate process group so this process exit will not affect the children.
 // This is the same as DecoupleFromParent on Unix systems.
 func ForkFromParent(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: 0}
+	sysProcAttr := cmd.SysProcAttr
+	if sysProcAttr == nil {
+		sysProcAttr = &syscall.SysProcAttr{}
+	}
+	sysProcAttr.Setpgid = true
+	sysProcAttr.Pgid = 0
+
+	cmd.SysProcAttr = sysProcAttr
 }

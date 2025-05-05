@@ -4,8 +4,19 @@ package process
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
+	"strings"
+	"syscall"
 	"time"
+
+	"golang.org/x/sys/windows"
+)
+
+const (
+	// The timeout for sending a signal and waiting for the process to exit.
+	signalAndWaitTimeout = 6 * time.Second
 )
 
 func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, opts processStoppingOpts) (<-chan struct{}, error) {
@@ -26,23 +37,72 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 		}
 	}
 
-	// Windows has no signals, and there is no universal way to "ask a process to stop",
-	// so we just kill the process, but before that, we need to check if we are not already waiting for the process.
-
 	waitable := makeWaitable(pid, proc)
 	ws, shouldStopProcess := e.tryStartWaiting(pid, waitable, waitReasonStopping)
+
 	waitEndedCh := ws.waitEndedCh
 	if opts&optWaitForStdio == 0 {
 		waitEndedCh = makeClosedChan()
 	}
 
-	if shouldStopProcess || (opts&optIsResponsibleForStopping) != 0 {
-		e.log.V(1).Info("sending SIGKILL to process", "pid", pid)
-		err = proc.Kill()
-		if err != nil && !errors.Is(err, os.ErrProcessDone) {
+	if !shouldStopProcess && (opts&optIsResponsibleForStopping) == 0 {
+		return waitEndedCh, nil
+	}
+
+	if (opts & optTrySignal) == optTrySignal {
+		// Give the process a chance to gracefully exit.
+		// The only signal we can send on Windows is CTRL_BREAK_EVENT.
+		err = e.signalAndWaitForExit(proc, windows.CTRL_BREAK_EVENT, ws)
+		switch {
+		case err == nil:
+			e.log.V(1).Info("process stopped by CTRL_BREAK_EVENT", "pid", pid)
+			return waitEndedCh, nil
+		case !errors.Is(err, ErrTimedOutWaitingForProcessToStop):
 			return nil, err
+		default:
+			e.log.V(1).Info("process did not stop upon CTRL_BREAK_EVENT", "pid", pid)
 		}
 	}
 
+	e.log.V(1).Info("sending SIGKILL to process...", "pid", pid)
+	err = proc.Kill()
+	if err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return nil, err
+	}
+
+	e.log.V(1).Info("process stopped by SIGKILL", "pid", pid)
 	return waitEndedCh, nil
+}
+
+// Sends a given signal to a process and waits for it to exit.
+// If the process does not exit within 6 seconds, the function returns context.DeadlineExceeded.
+func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig uint32, ws *waitState) error {
+	err := windows.GenerateConsoleCtrlEvent(sig, uint32(proc.Pid))
+	if err != nil {
+		return fmt.Errorf("could not send signal to process %d: %w", proc.Pid, err)
+	}
+
+	select {
+
+	case <-ws.waitEndedCh:
+		err = ws.waitErr
+		var ee *exec.ExitError
+		if err == nil || errors.Is(err, os.ErrProcessDone) || errors.As(err, &ee) {
+			// These are all expected errors, the process exited successfully.
+			return nil
+		}
+
+		// Receiving ECHILD when calling wait() on the child process is expected,
+		// (the parent process might have terminated them).
+		var sysErr *os.SyscallError
+		isEChildErr := errors.As(err, &sysErr) && strings.Index(sysErr.Syscall, "wait") == 0 && errors.Is(sysErr.Err, syscall.ECHILD)
+		if isEChildErr {
+			return nil
+		}
+
+		return fmt.Errorf("could not wait for process %d to exit: %w", proc.Pid, err)
+
+	case <-time.After(signalAndWaitTimeout):
+		return ErrTimedOutWaitingForProcessToStop
+	}
 }

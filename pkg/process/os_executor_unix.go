@@ -74,7 +74,7 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 }
 
 // Sends a given signal to a process and waits for it to exit.
-// If the process does not exit within 10 seconds, the function returns context.DeadlineExceeded.
+// If the process does not exit within 6 seconds, the function returns context.DeadlineExceeded.
 func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig syscall.Signal, ws *waitState) error {
 	err := proc.Signal(sig)
 	switch {

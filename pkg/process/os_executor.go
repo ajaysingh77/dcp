@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"sync"
 	"time"
 
@@ -133,6 +134,12 @@ func (e *OSExecutor) StartAndForget(cmd *exec.Cmd) (Pid_t, time.Time, error) {
 }
 
 func (e *OSExecutor) startProcess(cmd *exec.Cmd) (Pid_t, time.Time, error) {
+	if runtime.GOOS == "windows" {
+		// On Windows, we need to decouple the process from the parent to ensure we can
+		// send CTRL_BREAK_EVENT to the child without impacting the parent.
+		DecoupleFromParent(cmd)
+	}
+
 	if err := cmd.Start(); err != nil {
 		return UnknownPID, time.Time{}, err
 	}

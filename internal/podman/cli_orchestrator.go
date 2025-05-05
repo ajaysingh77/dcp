@@ -109,7 +109,7 @@ func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context, cacheUsage co
 	// A cached status is already available, return it
 	updateStatus.RLock()
 	if cachedStatus != nil && cacheUsage == containers.CachedRuntimeStatusAllowed {
-		updateStatus.RUnlock()
+		defer updateStatus.RUnlock()
 		return *cachedStatus
 	}
 	updateStatus.RUnlock()
@@ -131,7 +131,7 @@ func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context, cacheUsage co
 	updateStatus.RLock()
 	// Check again if the status is available in the cache
 	if cachedStatus != nil && cacheUsage == containers.CachedRuntimeStatusAllowed {
-		updateStatus.RUnlock()
+		defer updateStatus.RUnlock()
 		return *cachedStatus
 	}
 	updateStatus.RUnlock()
