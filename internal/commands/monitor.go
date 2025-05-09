@@ -38,7 +38,7 @@ func MonitorPid(
 
 	monitorProc, monitorProcErr := process.FindWaitableProcess(pid, expectedProcessStartTime)
 	if monitorProcErr != nil {
-		logger.Error(monitorProcErr, "error finding process", "pid", pid)
+		logger.Info("error finding process", "pid", pid)
 		monitorCtxCancel()
 		return monitorCtx, monitorCtxCancel, monitorProcErr
 	}

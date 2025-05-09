@@ -504,7 +504,7 @@ func TestMonitorProcessNotMonitoredIfStartTimeDoesNotMatch(t *testing.T) {
 	require.NoError(t, dcpProcCmdErr, "command should start without error")
 
 	dcpWaitErr = dcpProcCmd.Wait()
-	require.Error(t, dcpWaitErr, "dcpproc should have exited with an error")
+	require.NoError(t, dcpWaitErr, "dcpproc should have exited without an error")
 	require.True(t,
 		strings.Contains(stderrBuf.String(), "process start time mismatch") && strings.Contains(stderrBuf.String(), "child service process could not be monitored"),
 		"dcpproc should have reported invalid child process start time")

@@ -86,8 +86,8 @@ func monitorProcess(log logger.Logger) func(cmd *cobra.Command, args []string) e
 		childProcessCtx, childProcessCtxCancel, childMonitorErr := cmds.MonitorPid(cmd.Context(), childMonitorPid, childProcessStartTime, monitorInterval, log)
 		defer childProcessCtxCancel()
 		if childMonitorErr != nil {
-			log.Error(childMonitorErr, "child service process could not be monitored", "PID", childMonitorPid)
-			return childMonitorErr
+			log.Info("child service process could not be monitored", "PID", childMonitorPid, "Error", childMonitorErr)
+			return nil
 		}
 
 		select {
