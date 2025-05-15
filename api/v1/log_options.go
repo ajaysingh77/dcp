@@ -73,6 +73,10 @@ type LogOptions struct {
 	// Skips the first N log lines in the result set. Not compatible with Tail option.
 	// +optional
 	Skip *int64 `json:"skip,omitempty"`
+
+	// If true, include line numbers in the logs.
+	// +optional
+	LineNumbers bool `json:"line_numbers,omitempty"`
 }
 
 func (lo *LogOptions) GetGroupVersionResource() schema.GroupVersionResource {
@@ -108,13 +112,14 @@ func (lo *LogOptions) NewList() runtime.Object {
 }
 
 func (lo *LogOptions) String() string {
-	return fmt.Sprintf("{Follow: %t, Source: %s, Timestamps: %t, Limit: %s, Skip: %s, Tail: %s}",
-		lo.Follow,
+	return fmt.Sprintf("{Source: %s, Follow: %t, Timestamps: %t, Limit: %s, Skip: %s, Tail: %s, LineNumbers: %t}",
 		lo.Source,
+		lo.Follow,
 		lo.Timestamps,
 		logger.IntPtrValToString(lo.Limit),
 		logger.IntPtrValToString(lo.Skip),
 		logger.IntPtrValToString(lo.Tail),
+		lo.LineNumbers,
 	)
 }
 
@@ -237,6 +242,15 @@ func UrlValuesToLogOptions(in *url.Values, out *LogOptions, cscope conversion.Sc
 		}
 	} else {
 		out.Skip = nil
+	}
+
+	lineNumbersValues := (*in)["line_numbers"]
+	if len(lineNumbersValues) > 0 {
+		if err := runtime.Convert_Slice_string_To_bool(&lineNumbersValues, &out.LineNumbers, cscope); err != nil {
+			return fmt.Errorf("failed to convert LogOptions 'line_numbers' parameter: %w", err)
+		}
+	} else {
+		out.LineNumbers = false
 	}
 
 	return nil

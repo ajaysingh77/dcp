@@ -285,12 +285,13 @@ func verifyIndex(t *testing.T, dataWriter, indexWriter *testutil.BufferWriter, s
 		il, err := parseIndexLine(indexLine)
 		require.NoError(t, err, "Failed to parse index line: %s", string(indexLine))
 
-		expectedLineNum := uint32(i) * stride
-		require.Equal(t, expectedLineNum, il.Line, "Unexpected line number in index line")
+		expectedLineIndex := uint32(i) * stride
+		require.Equal(t, expectedLineIndex+io.FirstLogLineNumber, il.Line, "Unexpected line number in index line")
 
-		require.Equal(t, dataLineOffsets[expectedLineNum], il.Offset, "Data line offset does not match expected value")
+		require.Equal(t, dataLineOffsets[expectedLineIndex], il.Offset, "Data line offset does not match expected value")
 
-		dataTimestamp, parseErr := time.Parse(time.RFC3339, string(bytes.Split(dataLines[expectedLineNum], []byte(" "))[0]))
+		const timestampPart = 1 // The timestamp comes after line number, so it is the second part after splitting
+		dataTimestamp, parseErr := time.Parse(time.RFC3339, string(bytes.Split(dataLines[expectedLineIndex], []byte(" "))[timestampPart]))
 		require.NoError(t, parseErr, "Failed to parse timestamp from data line")
 		require.WithinDuration(t, il.Timestamp, dataTimestamp, time.Millisecond, "Index and data timestamps do not match")
 	}

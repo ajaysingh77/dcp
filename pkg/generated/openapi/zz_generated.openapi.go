@@ -3054,6 +3054,13 @@ func schema_microsoft_usvc_apiserver_api_v1_LogOptions(ref common.ReferenceCallb
 							Format:      "int64",
 						},
 					},
+					"line_numbers": {
+						SchemaProps: spec.SchemaProps{
+							Description: "If true, include line numbers in the logs.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 				},
 			},
 		},

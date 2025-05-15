@@ -503,7 +503,7 @@ func waitForObjectLogs[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](
 func generateLogLines(prefix []byte, count int) [][]byte {
 	lines := make([][]byte, count)
 	for i := 0; i < count; i++ {
-		lines[i] = append(prefix, []byte(fmt.Sprintf(" line %d", i))...)
+		lines[i] = append(prefix, []byte(fmt.Sprintf(" line %d", i+1))...)
 	}
 	return lines
 }
@@ -511,5 +511,15 @@ func generateLogLines(prefix []byte, count int) [][]byte {
 func withTimestampRegexes(lines [][]byte) [][]byte {
 	return slices.Map[[]byte, []byte](lines, func(line []byte) []byte {
 		return bytes.Join([][]byte{[]byte(osutil.RFC3339MiliTimestampRegex), []byte(" "), line}, nil)
+	})
+}
+
+func withLineNumberRegexes(lines [][]byte) [][]byte {
+	var lineNo uint64 = 1
+
+	return slices.Map[[]byte, []byte](lines, func(line []byte) []byte {
+		updated := bytes.Join([][]byte{[]byte(fmt.Sprintf("%d", lineNo)), []byte(" "), line}, nil)
+		lineNo++
+		return updated
 	})
 }

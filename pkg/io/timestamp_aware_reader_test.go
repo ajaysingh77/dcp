@@ -468,3 +468,355 @@ func TestTimestampAwareReaderSkipAndLimitOptions(t *testing.T) {
 		})
 	}
 }
+
+func TestTimestampAwareReaderLineNumberOption(t *testing.T) {
+	t.Parallel()
+
+	type testcase struct {
+		input        string
+		options      usvc_io.TimestampAwareReaderOptions
+		expectedText string
+		description  string
+	}
+
+	timestamp := time.Now().UTC().Format(osutil.RFC3339MiliTimestampFormat)
+	testCases := []testcase{
+		{
+			input: "1 " + timestamp + " line1\n2 " + timestamp + " line2\n3 " + timestamp + " line3\n",
+			options: usvc_io.TimestampAwareReaderOptions{
+				Timestamps:  false,
+				LineNumbers: false,
+			},
+			expectedText: "line1\nline2\nline3\n",
+			description:  "line numbers and timestamps stripped",
+		},
+		{
+			input: "1 " + timestamp + " line1\n2 " + timestamp + " line2\n3 " + timestamp + " line3\n",
+			options: usvc_io.TimestampAwareReaderOptions{
+				Timestamps:  true,
+				LineNumbers: false,
+			},
+			expectedText: timestamp + " line1\n" + timestamp + " line2\n" + timestamp + " line3\n",
+			description:  "line numbers stripped, timestamps included",
+		},
+		{
+			input: "1 " + timestamp + " line1\n2 " + timestamp + " line2\n3 " + timestamp + " line3\n",
+			options: usvc_io.TimestampAwareReaderOptions{
+				Timestamps:  false,
+				LineNumbers: true,
+			},
+			expectedText: "1 line1\n2 line2\n3 line3\n",
+			description:  "line numbers included, timestamps stripped",
+		},
+		{
+			input: "1 " + timestamp + " line1\n2 " + timestamp + " line2\n3 " + timestamp + " line3\n",
+			options: usvc_io.TimestampAwareReaderOptions{
+				Timestamps:  true,
+				LineNumbers: true,
+			},
+			expectedText: "1 " + timestamp + " line1\n2 " + timestamp + " line2\n3 " + timestamp + " line3\n",
+			description:  "line numbers and timestamps included",
+		},
+		{
+			input: "1 line1\n2 line2\n3 line3\n",
+			options: usvc_io.TimestampAwareReaderOptions{
+				Timestamps:  false,
+				LineNumbers: false,
+			},
+			expectedText: "line1\nline2\nline3\n",
+			description:  "only line numbers stripped (no timestamps)",
+		},
+		{
+			input: "1 line1\n2 line2\n3 line3\n",
+			options: usvc_io.TimestampAwareReaderOptions{
+				Timestamps:  false,
+				LineNumbers: true,
+			},
+			expectedText: "1 line1\n2 line2\n3 line3\n",
+			description:  "only line numbers included (no timestamps)",
+		},
+		{
+			input: "1 \n2 \n3 \n",
+			options: usvc_io.TimestampAwareReaderOptions{
+				Timestamps:  false,
+				LineNumbers: false,
+			},
+			expectedText: "\n\n\n",
+			description:  "line numbers stripped with empty content",
+		},
+		{
+			input: "",
+			options: usvc_io.TimestampAwareReaderOptions{
+				Timestamps:  false,
+				LineNumbers: false,
+			},
+			expectedText: "",
+			description:  "empty input",
+		},
+		{
+			input: "not a number\n" + timestamp + " line1\n",
+			options: usvc_io.TimestampAwareReaderOptions{
+				Timestamps:  false,
+				LineNumbers: false,
+			},
+			expectedText: "not a number\nline1\n",
+			description:  "some lines have timestamps",
+		},
+		{
+			input: "1234567890 " + timestamp + " line1\n",
+			options: usvc_io.TimestampAwareReaderOptions{
+				Timestamps:  false,
+				LineNumbers: false,
+			},
+			expectedText: "line1\n",
+			description:  "large line number with timestamp",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.description, func(t *testing.T) {
+			testReader := testutil.NewTestReader()
+			testReader.AddEntry(testutil.AsByteTimelineEntries([]byte(tc.input)...)...)
+
+			timestampReader := usvc_io.NewTimestampAwareReader(testReader, tc.options)
+
+			var result bytes.Buffer
+			buf := make([]byte, 1024)
+
+			for {
+				n, err := timestampReader.Read(buf)
+				if n > 0 {
+					result.Write(buf[:n])
+				}
+				if err != nil {
+					if err != io.EOF {
+						require.Fail(t, fmt.Sprintf("unexpected error: %s", err))
+					}
+					break
+				}
+			}
+
+			require.Equal(t, tc.expectedText, result.String(), "test case: '%s' resulted in unexpected output", tc.description)
+		})
+	}
+}
+
+func TestTimestampAwareReaderLineNumberWithSkipAndLimitOptions(t *testing.T) {
+	t.Parallel()
+
+	type testcase struct {
+		input        string
+		options      usvc_io.TimestampAwareReaderOptions
+		expectedText string
+		description  string
+	}
+
+	timestamp := time.Now().UTC().Format(osutil.RFC3339MiliTimestampFormat)
+	testCases := []testcase{
+		{
+			input: "1 " + timestamp + " line1\n2 " + timestamp + " line2\n3 " + timestamp + " line3\n4 " + timestamp + " line4\n",
+			options: usvc_io.TimestampAwareReaderOptions{
+				Timestamps:  false,
+				LineNumbers: false,
+				Skip:        1,
+				Limit:       2,
+			},
+			expectedText: "line2\nline3\n",
+			description:  "skip and limit with line numbers and timestamps stripped",
+		},
+		{
+			input: "1 " + timestamp + " line1\n2 " + timestamp + " line2\n3 " + timestamp + " line3\n4 " + timestamp + " line4\n",
+			options: usvc_io.TimestampAwareReaderOptions{
+				Timestamps:  true,
+				LineNumbers: false,
+				Skip:        1,
+				Limit:       2,
+			},
+			expectedText: timestamp + " line2\n" + timestamp + " line3\n",
+			description:  "skip and limit with line numbers stripped, timestamps included",
+		},
+		{
+			input: "1 " + timestamp + " line1\n2 " + timestamp + " line2\n3 " + timestamp + " line3\n4 " + timestamp + " line4\n",
+			options: usvc_io.TimestampAwareReaderOptions{
+				Timestamps:  false,
+				LineNumbers: true,
+				Skip:        1,
+				Limit:       2,
+			},
+			expectedText: "2 line2\n3 line3\n",
+			description:  "skip and limit with line numbers included, timestamps stripped",
+		},
+		{
+			input: "1 " + timestamp + " line1\n2 " + timestamp + " line2\n3 " + timestamp + " line3\n4 " + timestamp + " line4\n",
+			options: usvc_io.TimestampAwareReaderOptions{
+				Timestamps:  true,
+				LineNumbers: true,
+				Skip:        1,
+				Limit:       2,
+			},
+			expectedText: "2 " + timestamp + " line2\n3 " + timestamp + " line3\n",
+			description:  "skip and limit with line numbers and timestamps included",
+		},
+		{
+			input: "1 line1\n2 line2\n3 line3\n4 line4\n",
+			options: usvc_io.TimestampAwareReaderOptions{
+				Timestamps:  false,
+				LineNumbers: false,
+				Skip:        1,
+				Limit:       2,
+			},
+			expectedText: "line2\nline3\n",
+			description:  "skip and limit with only line numbers (no timestamps)",
+		},
+		{
+			input: "1 \n2 \n3 \n4 \n",
+			options: usvc_io.TimestampAwareReaderOptions{
+				Timestamps:  false,
+				LineNumbers: false,
+				Skip:        1,
+				Limit:       2,
+			},
+			expectedText: "\n\n",
+			description:  "skip and limit with empty content after line numbers",
+		},
+		{
+			input: "",
+			options: usvc_io.TimestampAwareReaderOptions{
+				Timestamps:  false,
+				LineNumbers: false,
+				Skip:        1,
+				Limit:       2,
+			},
+			expectedText: "",
+			description:  "skip and limit with empty input",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.description, func(t *testing.T) {
+			testReader := testutil.NewTestReader()
+			testReader.AddEntry(testutil.AsByteTimelineEntries([]byte(tc.input)...)...)
+
+			timestampReader := usvc_io.NewTimestampAwareReader(testReader, tc.options)
+
+			var result bytes.Buffer
+			buf := make([]byte, 1024)
+
+			for {
+				n, err := timestampReader.Read(buf)
+				if n > 0 {
+					result.Write(buf[:n])
+				}
+				if err != nil {
+					if err != io.EOF {
+						require.Fail(t, fmt.Sprintf("unexpected error: %s", err))
+					}
+					break
+				}
+			}
+
+			require.Equal(t, tc.expectedText, result.String(), "test case: '%s' resulted in unexpected output", tc.description)
+		})
+	}
+}
+
+func TestTimestampAwareReaderEofHandlingWithLineNumbers(t *testing.T) {
+	t.Parallel()
+
+	type testcase struct {
+		firstRead    string
+		secondRead   string
+		expectedText string
+		description  string
+		options      usvc_io.TimestampAwareReaderOptions
+	}
+
+	timestamp := time.Now().UTC().Format(osutil.RFC3339MiliTimestampFormat)
+	testCases := []testcase{
+		{
+			firstRead:    "1 ",
+			secondRead:   timestamp + " data",
+			expectedText: "data",
+			description:  "EOF between line number and timestamp",
+			options:      usvc_io.TimestampAwareReaderOptions{Timestamps: false, LineNumbers: false},
+		},
+		{
+			firstRead:    "1",
+			secondRead:   " " + timestamp + " data",
+			expectedText: "data",
+			description:  "EOF in the middle of line number",
+			options:      usvc_io.TimestampAwareReaderOptions{Timestamps: false, LineNumbers: false},
+		},
+		{
+			firstRead:    "1 " + timestamp,
+			secondRead:   " data",
+			expectedText: "data",
+			description:  "EOF after timestamp",
+			options:      usvc_io.TimestampAwareReaderOptions{Timestamps: false, LineNumbers: false},
+		},
+		{
+			firstRead:    "1 " + timestamp + " data",
+			secondRead:   "\n2 " + timestamp + " data2",
+			expectedText: "data\ndata2",
+			description:  "EOF before newline",
+			options:      usvc_io.TimestampAwareReaderOptions{Timestamps: false, LineNumbers: false},
+		},
+		{
+			firstRead:    "1 " + timestamp + " data\n",
+			secondRead:   "2 " + timestamp + " data2",
+			expectedText: "1 data\n2 data2",
+			description:  "EOF after newline, line number included",
+			options:      usvc_io.TimestampAwareReaderOptions{Timestamps: false, LineNumbers: true},
+		},
+		{
+			firstRead:    "1 " + timestamp + " data\n",
+			secondRead:   "2 " + timestamp + " data2",
+			expectedText: "data\ndata2",
+			description:  "EOF after newline, line number filtered",
+			options:      usvc_io.TimestampAwareReaderOptions{Timestamps: false, LineNumbers: false},
+		},
+		{
+			firstRead:    "1 " + timestamp + " data\r",
+			secondRead:   "\n2 " + timestamp + " data2",
+			expectedText: "data\r\ndata2",
+			description:  "EOF after CR before LF",
+			options:      usvc_io.TimestampAwareReaderOptions{Timestamps: false, LineNumbers: false},
+		},
+		{
+			firstRead:    "1 " + timestamp + " data\r\n",
+			secondRead:   "2 " + timestamp + " data2",
+			expectedText: "1 data\r\n2 data2",
+			description:  "EOF after CRLF, line number included",
+			options:      usvc_io.TimestampAwareReaderOptions{Timestamps: false, LineNumbers: true},
+		},
+		{
+			firstRead:    "1 " + timestamp + " data\r\n",
+			secondRead:   "2 " + timestamp + " data2",
+			expectedText: "data\r\ndata2",
+			description:  "EOF after CRLF, line number filtered",
+			options:      usvc_io.TimestampAwareReaderOptions{Timestamps: false, LineNumbers: false},
+		},
+	}
+
+	for _, tc := range testCases {
+
+		t.Run(tc.description, func(t *testing.T) {
+			testReader := testutil.NewTestReader()
+			testReader.AddEntry(testutil.AsByteTimelineEntries([]byte(tc.firstRead)...)...)
+			testReader.AddEntry(testutil.AsErrorTimelineEntry(io.EOF))
+			testReader.AddEntry(testutil.AsByteTimelineEntries([]byte(tc.secondRead)...)...)
+
+			timestampReader := usvc_io.NewTimestampAwareReader(testReader, tc.options)
+			readBytes := make([]byte, len(tc.firstRead)+len(tc.secondRead)+1)
+			n, err := timestampReader.Read(readBytes)
+			if err != nil && err != io.EOF {
+				require.Fail(t, fmt.Sprintf("unexpected error on first read: %s", err))
+			}
+			n2, err2 := timestampReader.Read(readBytes[n:])
+			if err2 != nil && err2 != io.EOF {
+				require.Fail(t, fmt.Sprintf("unexpected error on second read: %s", err2))
+			}
+			require.Equal(t, tc.expectedText, string(readBytes[:(n+n2)]), "test case: '%s' resulted in unexpected output from the reader", tc.description)
+		})
+	}
+}

@@ -38,7 +38,8 @@ func RemoveWithRetry(ctx context.Context, path string) error {
 
 func ToTimestampReaderOptions(opts *apiv1.LogOptions) usvc_io.TimestampAwareReaderOptions {
 	retval := usvc_io.TimestampAwareReaderOptions{
-		Timestamps: opts.Timestamps,
+		Timestamps:  opts.Timestamps,
+		LineNumbers: opts.LineNumbers,
 	}
 	if opts.Limit != nil {
 		retval.Limit = *opts.Limit

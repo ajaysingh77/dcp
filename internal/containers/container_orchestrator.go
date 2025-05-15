@@ -212,15 +212,6 @@ type StreamContainerLogsOptions struct {
 	// Follow the logs vs. just returning the current logs at the time the command was run
 	Follow bool
 
-	// If greater than 0, include only last N lines of the log
-	Tail int
-
-	// Only include log entries since a given timestomp
-	Since time.Time
-
-	// Only include log entries before a given timestamp
-	Until time.Time
-
 	// Request the container orchestrator to add timestamps to the log entries
 	Timestamps bool
 }

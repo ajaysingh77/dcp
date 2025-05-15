@@ -261,9 +261,7 @@ func (to *TestContainerOrchestrator) handleLogRequest(resp http.ResponseWriter, 
 	requestLog := to.log.WithValues(
 		"containerId", containerId,
 		"traceId", traceId,
-		"source", logOptions.Source,
-		"timestamps", logOptions.Timestamps,
-		"follow", logOptions.Follow,
+		"options", logOptions.String(),
 	)
 	requestLog.V(1).Info("serving container logs")
 	innerWriter := NewLoggingWriteCloser(requestLog, resp)
@@ -1719,15 +1717,6 @@ func (to *TestContainerOrchestrator) CaptureContainerLogs(ctx context.Context, c
 		return errRuntimeUnhealthy
 	}
 
-	if options.Tail != 0 {
-		return fmt.Errorf("tail option is not implemented")
-	}
-	if !options.Since.IsZero() {
-		return fmt.Errorf("since option is not implemented")
-	}
-	if !options.Until.IsZero() {
-		return fmt.Errorf("until option is not implemented")
-	}
 	if stdout == nil && stderr == nil {
 		return fmt.Errorf("at least one of stdout or stderr must be provided")
 	}

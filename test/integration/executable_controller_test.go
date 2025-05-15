@@ -2320,65 +2320,100 @@ func TestExecutableLogsFollowTail(t *testing.T) {
 	}
 }
 
-// Verify that stdout and stderr logs can be timestamped.
-func TestExecutableLogsTimestamped(t *testing.T) {
+// Verify that stdout and stderr logs can be timestamped and numbered.
+func TestExecutableLogsTimestampedNumbered(t *testing.T) {
+	type testcase struct {
+		description    string
+		opts           apiv1.LogOptions
+		stdoutExpected [][]byte
+		stderrExpected [][]byte
+	}
+
+	const testName = "test-executable-logs-options"
+	const LINE_COUNT = 5
+	stdoutLines := generateLogLines([]byte("stdout"), LINE_COUNT)
+	stderrLines := generateLogLines([]byte("stderr"), LINE_COUNT)
+
+	testcases := []testcase{
+		{
+			description:    "timestamped",
+			opts:           apiv1.LogOptions{Follow: true, Timestamps: true},
+			stdoutExpected: withTimestampRegexes(stdoutLines),
+			stderrExpected: withTimestampRegexes(stderrLines),
+		},
+		{
+			description:    "numbered",
+			opts:           apiv1.LogOptions{Follow: true, LineNumbers: true},
+			stdoutExpected: withLineNumberRegexes(stdoutLines),
+			stderrExpected: withLineNumberRegexes(stderrLines),
+		},
+		{
+			description:    "timestamped-numbered",
+			opts:           apiv1.LogOptions{Follow: true, Timestamps: true, LineNumbers: true},
+			stdoutExpected: withLineNumberRegexes(withTimestampRegexes(stdoutLines)),
+			stderrExpected: withLineNumberRegexes(withTimestampRegexes(stderrLines)),
+		},
+	}
+
 	t.Parallel()
 
-	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	defer cancel()
+	for _, tc := range testcases {
+		t.Run(tc.description, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
 
-	const exeName = "test-executable-logs-timestamped"
+			exeName := testName + "-" + tc.description
+			exe := apiv1.Executable{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: apiv1.GroupVersion.Version,
+					Kind:       reflect.TypeOf(apiv1.Executable{}).Name(),
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      exeName,
+					Namespace: metav1.NamespaceNone,
+				},
+				Spec: apiv1.ExecutableSpec{
+					ExecutablePath: "/path/to/" + exeName,
+				},
+			}
 
-	exe := apiv1.Executable{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: apiv1.GroupVersion.Version,
-			Kind:       reflect.TypeOf(apiv1.Executable{}).Name(),
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      exeName,
-			Namespace: metav1.NamespaceNone,
-		},
-		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "/path/to/" + exeName,
-		},
+			testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+				Condition: internal_testutil.ProcessSearchCriteria{
+					Command: []string{exe.Spec.ExecutablePath},
+				},
+				RunCommand: func(pe *internal_testutil.ProcessExecution) int32 {
+					for _, line := range stdoutLines {
+						_, stdoutErr := pe.Cmd.Stdout.Write(osutil.WithNewline(line))
+						require.NoError(t, stdoutErr, "Could not write to stdout of Executable '%s'", exeName)
+					}
+					for _, line := range stderrLines {
+						_, stderrErr := pe.Cmd.Stderr.Write(osutil.WithNewline(line))
+						require.NoError(t, stderrErr, "Could not write to stderr of Executable '%s'", exeName)
+					}
+					return 0
+				},
+			})
+			defer testProcessExecutor.RemoveAutoExecution(internal_testutil.ProcessSearchCriteria{
+				Command: []string{exe.Spec.ExecutablePath},
+			})
+
+			t.Logf("Creating Executable '%s'...", exeName)
+			err := client.Create(ctx, &exe)
+			require.NoError(t, err, "Could not create Executable '%s'", exeName)
+
+			t.Logf("Ensure logs for Executable '%s' can be captured...", exeName)
+			opts := tc.opts
+			opts.Source = "stdout"
+			err = waitForObjectLogs(ctx, &exe, opts, tc.stdoutExpected, nil)
+			require.NoError(t, err)
+
+			opts = tc.opts
+			opts.Source = "stderr"
+			err = waitForObjectLogs(ctx, &exe, opts, tc.stderrExpected, nil)
+			require.NoError(t, err)
+		})
 	}
-
-	testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
-		Condition: internal_testutil.ProcessSearchCriteria{
-			Command: []string{exe.Spec.ExecutablePath},
-		},
-		RunCommand: func(pe *internal_testutil.ProcessExecution) int32 {
-			_, stdoutErr := pe.Cmd.Stdout.Write(osutil.WithNewline([]byte("Standard output log line 1")))
-			require.NoError(t, stdoutErr, "Could not write to stdout of Executable '%s'", exeName)
-			_, stderrErr := pe.Cmd.Stderr.Write(osutil.WithNewline([]byte("Standard error log line 1")))
-			require.NoError(t, stderrErr, "Could not write to stderr of Executable '%s'", exeName)
-			return 0
-		},
-	})
-	defer testProcessExecutor.RemoveAutoExecution(internal_testutil.ProcessSearchCriteria{
-		Command: []string{exe.Spec.ExecutablePath},
-	})
-
-	t.Logf("Creating Executable '%s'...", exeName)
-	err := client.Create(ctx, &exe)
-	require.NoError(t, err, "Could not create Executable '%s'", exeName)
-
-	t.Logf("Ensure logs for Executable '%s' can be captured...", exeName)
-	opts := apiv1.LogOptions{
-		Follow:     true,
-		Source:     "stdout",
-		Timestamps: true,
-	}
-	err = waitForObjectLogs(ctx, &exe, opts, [][]byte{[]byte(osutil.RFC3339MiliTimestampRegex + " " + "Standard output log line 1")}, nil)
-	require.NoError(t, err)
-
-	opts = apiv1.LogOptions{
-		Follow:     true,
-		Source:     "stderr",
-		Timestamps: true,
-	}
-	err = waitForObjectLogs(ctx, &exe, opts, [][]byte{[]byte(osutil.RFC3339MiliTimestampRegex + " " + "Standard error log line 1")}, nil)
-	require.NoError(t, err)
 }
 
 // Verify that logs in follow mode end when Executable is deleted

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -18,8 +19,8 @@ const (
 
 var (
 	// Each index line contains a timestamp, line number, and the offset of the corresponding data line in the data stream.
-	// Line numbers are 0-based, so the first line is 0.
-	// The first line of the index corresponds to the line number 0. It is not super useful (the offset and the line number are both 0, obviously),
+	// Line numbers are 1-based, so the first line is 1.
+	// The first line of the index corresponds to the line number 1. It is not super useful (the offset is 0, obviously),
 	// but it allows for easy determination of the earliest timestamp in the file.
 	// The offset points to the first byte of a line, or more precisely, the first byte of the timestamp preceding the line content.
 	indexLineFormat = "%s %d %d" + string(osutil.LineSep())
@@ -71,7 +72,7 @@ func NewIndexingWriter(data, index WriteSyncerCloser) *IndexingWriter {
 		dataW:          data,
 		indexW:         index,
 		needsTimestamp: true,
-		line:           0,
+		line:           FirstLogLineNumber,
 		offset:         0,
 		dataBuf:        new(bytes.Buffer),
 		indexBuf:       new(bytes.Buffer),
@@ -103,13 +104,18 @@ func (iw *IndexingWriter) Write(p []byte) (int, error) {
 	for _, b := range p {
 		if iw.needsTimestamp {
 			timestamp := time.Now().UTC().Format(osutil.RFC3339MiliTimestampFormat)
-			if !indexInvalid && iw.line%iw.indexStride == 0 {
+			lineBytes := strconv.AppendUint(nil, uint64(iw.line), 10)
+			if !indexInvalid && iw.line%iw.indexStride == FirstLogLineNumber {
 				indexLine := fmt.Sprintf(indexLineFormat, timestamp, iw.line, iw.offset)
 				_, _ = iw.indexBuf.WriteString(indexLine)
 			}
 			iw.line++
-			timestampLen, _ := iw.dataBuf.WriteString(timestamp + " ")
-			iw.offset += uint64(timestampLen)
+			_, _ = iw.dataBuf.Write(lineBytes)
+			_, _ = iw.dataBuf.WriteString(" ")
+			iw.offset += uint64(len(lineBytes) + 1) // +1 for the space
+			timestampLen, _ := iw.dataBuf.WriteString(timestamp)
+			_, _ = iw.dataBuf.WriteString(" ")
+			iw.offset += uint64(timestampLen + 1)
 			iw.needsTimestamp = false
 		}
 
