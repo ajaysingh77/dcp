@@ -10,6 +10,7 @@
   - [Run all tests](#run-all-tests)
   - [Running subsets of tests from command line](#running-subsets-of-tests-from-command-line)
   - [Debugging tests](#debugging-tests)
+  - [Running Aspire tests](#running-aspire-tests)
 - [Troubleshooting and debugging tips](#troubleshooting-and-debugging-tips)
   - [`make lint` times out (or ends with an error that says "Killed")](#make-lint-times-out-or-ends-with-an-error-that-says-killed)
   - [Make it easier to use `kubectl` with DCP](#make-it-easier-to-use-kubectl-with-dcp)
@@ -110,6 +111,8 @@ If the test is killed while running under the debugger, may leave orphaned `dcp`
 
 `pslist` and `pskill` Windows tools are part of [Sysinternals tool suite](https://learn.microsoft.com/sysinternals/).
 
+## Running Aspire tests
+You can run the Aspire tests against a local DCP instance using the `DcpPublisher__CliPath` environment variable. Set it with the absolute path to a local DCP executable, e.g. `DcpPublisher__CliPath=<dcprepo>/bin/dcp` and when you run Aspire tests, they'll use your local build instead of the current version inserted into the Aspire repo.
 
 ## Troubleshooting and debugging tips
 
