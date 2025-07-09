@@ -136,6 +136,29 @@ func Values[K comparable, V any, M ~map[K]V](m M) []V {
 	return res
 }
 
+// Takes a "map of maps", extracts all the values from the inner maps,
+// and then flattens them into a single slice.
+func FlattenValues[KO comparable, KI comparable, V any, M ~map[KO]map[KI]V](m M) []V {
+	if len(m) == 0 {
+		return nil
+	}
+
+	// Calculate the total number of elements in all inner maps
+	total := 0
+	for _, innerMap := range m {
+		total += len(innerMap)
+	}
+
+	// Preallocate the slice with the calculated capacity
+	res := make([]V, 0, total)
+	for _, innerMap := range m {
+		for _, v := range innerMap {
+			res = append(res, v)
+		}
+	}
+	return res
+}
+
 func Apply[K comparable, V any, M ~map[K]V](m1 M, m2 M) M {
 	if len(m1) == 0 {
 		return m2

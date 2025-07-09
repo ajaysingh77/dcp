@@ -1145,6 +1145,11 @@ func (*Container) GenericSubResources() []apiserver_resource.GenericSubResource 
 	}
 }
 
+// True if the Container is in a terminal state.
+func (c *Container) Done() bool {
+	return c.Status.State == ContainerStateFailedToStart || c.Status.State == ContainerStateExited || c.Status.State == ContainerStateUnknown
+}
+
 // ContainerList contains a list of Executable instances
 // +k8s:openapi-gen=true
 // +kubebuilder:object:root=true

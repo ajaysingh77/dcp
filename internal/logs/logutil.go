@@ -17,7 +17,7 @@ const (
 	// A delay before we cancel a "follow" log stream (either completely, or stop the follow mode)
 	// in response to a change in the state of the object that is producing the logs.
 	// This delay allows us to capture the last lines of logs that were produced just before the object changed state.
-	FollowStreamCancellationDelay = 3 * time.Second
+	FollowStreamCancellationDelay = 5 * time.Second
 )
 
 // RemoveWithRetry removes a file with exponential backoff retry.

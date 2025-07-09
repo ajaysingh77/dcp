@@ -12,24 +12,27 @@ import (
 	"github.com/go-logr/logr"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/logs"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
+	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
-	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 
-var stdIoStreamer = &stdIoLogStreamer{
-	lock:          &sync.Mutex{},
-	activeStreams: &syncmap.Map[types.UID, []*usvc_io.FollowWriter]{},
-}
+var (
+	lastLogStreamID logs.LogStreamID // Used to generate unique log stream IDs for each log stream
+
+	stdIoStreamer = &stdIoLogStreamer{
+		lock:          &sync.Mutex{},
+		activeStreams: make(logs.LogStreamMop),
+	}
+)
 
 type stdIoLogStreamer struct {
 	lock          *sync.Mutex
-	activeStreams *syncmap.Map[types.UID, []*usvc_io.FollowWriter]
+	activeStreams logs.LogStreamMop
 }
 
 func LogStreamer() *stdIoLogStreamer {
@@ -87,7 +90,7 @@ func (sls stdIoLogStreamer) StreamLogs(
 	}
 	src = usvc_io.NewTimestampAwareReader(src, logs.ToTimestampReaderOptions(opts))
 
-	if !opts.Follow {
+	if !opts.Follow || resource.Done() {
 		defer logFile.Close()
 
 		_, copyErr := io.Copy(dest, src)
@@ -98,14 +101,21 @@ func (sls stdIoLogStreamer) StreamLogs(
 		return apiv1.ResourceStreamStatusDone, nil, nil
 	}
 
+	followWriter := usvc_io.NewFollowWriter(requestCtx, src, dest)
+	resourceID := resource.GetUID()
+
 	sls.lock.Lock()
 	defer sls.lock.Unlock()
 
-	// Track this writer instance
-	followWriter := usvc_io.NewFollowWriter(requestCtx, src, dest)
-	followWriters, _ := sls.activeStreams.LoadOrStore(resource.GetUID(), []*usvc_io.FollowWriter{})
-	followWriters = append(followWriters, followWriter)
-	sls.activeStreams.Store(resource.GetUID(), followWriters)
+	streamID := lastLogStreamID + 1
+	lastLogStreamID = streamID
+
+	followWriters, found := sls.activeStreams[resourceID]
+	if !found {
+		followWriters = make(map[logs.LogStreamID]*usvc_io.FollowWriter)
+		sls.activeStreams[resourceID] = followWriters
+	}
+	followWriters[streamID] = followWriter
 
 	go func() {
 		<-followWriter.Done()
@@ -114,6 +124,16 @@ func (sls stdIoLogStreamer) StreamLogs(
 
 		if followWriter.Err() != nil {
 			log.Error(followWriter.Err(), "failed to stream logs for Resource", "Kind", obj.GetObjectKind().GroupVersionKind().String(), "Name", resource.NamespacedName().String())
+		}
+
+		sls.lock.Lock()
+		defer sls.lock.Unlock()
+
+		if writers, haveWriters := sls.activeStreams[resourceID]; haveWriters {
+			delete(writers, streamID)
+			if len(writers) == 0 {
+				delete(sls.activeStreams, resourceID)
+			}
 		}
 	}()
 
@@ -131,52 +151,49 @@ func (sls *stdIoLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent, l
 	sls.lock.Lock()
 	defer sls.lock.Unlock()
 
-	stopResourceStreams := func(
-		logMessage string,
-		getResourceStreams func(*syncmap.Map[types.UID, []*usvc_io.FollowWriter], types.UID) ([]*usvc_io.FollowWriter, bool),
-		stopStream func(*usvc_io.FollowWriter),
-	) {
-		if fwStreams, found := getResourceStreams(sls.activeStreams, resource.GetUID()); found {
+	stopResourceStreams := func(logMessage string) {
+		resourceID := resource.GetUID()
+
+		if fwStreams, found := sls.activeStreams[resourceID]; found {
+			delete(sls.activeStreams, resourceID)
+
 			if log.V(1).Enabled() {
 				log.V(1).Info(logMessage, "Kind", evt.Object.GetObjectKind().GroupVersionKind().String(),
 					"Name", resource.NamespacedName().String(),
 					"StreamCount", len(fwStreams),
 				)
 			}
-			logs.DelayCancelFollowStreams(fwStreams, stopStream)
+
+			logs.DelayCancelFollowStreams(maps.Values(fwStreams), (*usvc_io.FollowWriter).StopFollow)
 		}
 	}
 
-	if evt.Type == watch.Modified {
+	switch evt.Type {
+
+	case watch.Added, watch.Modified:
+		// "watch.Added" does not necessarily mean that the resource was just created.
+		// It really means that the resource was added to the watch stream (has been observed for the first time).
+
 		if !resource.GetDeletionTimestamp().IsZero() {
-			stopResourceStreams("cancelling log stream for resource that is being deleted",
-				(*syncmap.Map[types.UID, []*usvc_io.FollowWriter]).LoadAndDelete, (*usvc_io.FollowWriter).Cancel,
-			)
+			stopResourceStreams("stopping log streams for resource that is being deleted")
 		} else if resource.Done() {
 			// If the resource isn't running, ensure logs stop streaming once they reach EOF
-			stopResourceStreams("stopping log following for resource that reached its final state",
-				(*syncmap.Map[types.UID, []*usvc_io.FollowWriter]).Load, (*usvc_io.FollowWriter).StopFollow,
-			)
+			stopResourceStreams("stopping log following for resource that reached its final state")
 		}
-	} else if evt.Type == watch.Deleted {
-		stopResourceStreams("cancelling log stream for resource that was deleted",
-			(*syncmap.Map[types.UID, []*usvc_io.FollowWriter]).LoadAndDelete, (*usvc_io.FollowWriter).Cancel,
-		)
+
+	case watch.Deleted:
+		stopResourceStreams("stopping log streams for resource that was deleted")
 	}
 }
 
 func (sls *stdIoLogStreamer) Dispose() error {
-	stopWriters := func(_ types.UID, writers []*usvc_io.FollowWriter) bool {
-		for _, w := range writers {
-			w.StopFollow()
-		}
-		return true // Continue iteration
-	}
-
 	sls.lock.Lock()
 	defer sls.lock.Unlock()
 
-	sls.activeStreams.Range(stopWriters)
+	for _, w := range maps.FlattenValues(sls.activeStreams) {
+		w.StopFollow()
+	}
+	sls.activeStreams = make(logs.LogStreamMop)
 
 	return nil
 }
