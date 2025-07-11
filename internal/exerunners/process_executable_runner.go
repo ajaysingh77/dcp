@@ -114,7 +114,7 @@ func (r *ProcessExecutableRunner) StartRun(
 	})
 
 	runInfo.RunID = pidToRunID(pid)
-	pointers.SetValue(&runInfo.Pid, (*int64)(&pid))
+	pointers.SetValue(&runInfo.Pid, int64(pid))
 	runInfo.ExeState = apiv1.ExecutableStateRunning
 	runInfo.StartupTimestamp = metav1.NewMicroTime(startTime)
 

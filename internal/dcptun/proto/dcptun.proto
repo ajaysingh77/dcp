@@ -1,0 +1,125 @@
+edition = "2023";
+
+package dcptun;
+
+option go_package = "github.com/microsoft/usvc-apiserver/internal/dcptun/proto";
+
+import "google/protobuf/empty.proto";
+
+// Defines the API that host and container portions of the DCP reverse-tunnel proxy will implement.
+// The users of the proxy always call the server-side proxy, which coordinates with client-side proxy.
+service TunnelControl {
+  // Prepares the proxy pair for tunneling the traffic. Upon success, the client-side proxy is listening
+  // to client connections and ready to tunnel traffic.
+  rpc PrepareTunnel(TunnelReq) returns (TunnelSpec);
+
+  // Gracefully deletes the tunnel identified by tunnel ID. 
+  // Existing streams will be preserved, but no new streams will be allowed.
+  rpc DeleteTunnel(TunnelRef) returns (google.protobuf.Empty);
+
+  // Shuts down both sides of the tunneling proxy. Existing streams will be aborted.
+  rpc Shutdown(google.protobuf.Empty) returns (google.protobuf.Empty);
+
+  // A long-running, bi-directional streaming gRPC request to facilitate starting new tunnel streams.
+  // The call is implemented only by the client-side proxy.
+  // The server-side proxy makes the call to the client-side proxy during startup, 
+  // setting up the exchange of messages. From then on, the actual flow is reversed 
+  // (client side is initiating tunnel streams).
+  // That is, the new connection message exchange consist of the StreamRef message 
+  // (representing a request to start a new stream) is sent by the client-side proxy,
+  // and the NewStreamResult reply from the server-side proxy FOLLOWS.
+  rpc NewStreamsConnection(stream NewStreamResult) returns (stream StreamRef);
+
+  // Consider adding "list tunnels" request so that clients can discover existing tunnels.
+}
+
+// Describes a request to prepare new tunnel.
+message TunnelReq {
+  // The address of the server the clients will be tunneled to 
+  // (defaults to "localhost" evaluated in the context of the server proxy).
+  string server_address = 1;
+
+  // The port of the server the clients will be tunneled to.
+  int32 server_port = 2;
+
+  // The address that the client network proxy will bind to (on the client network)
+  // in order to listen to requests from clients.
+  // This is optional and defaults to "0.0.0.0" (all available network interfaces, IP v4 protocol).
+  string client_proxy_address = 4;
+
+  // The port that the client network proxy will use;
+  // This is optional and defaults to 0 (random port).
+  int32 client_proxy_port = 5;
+}
+
+// Describes a tunnel that allows clients connected to "client network" 
+// establish communication with a server connected to the "server network".
+// The set of 3 TCP connections that allow a client to communicate with the server
+// (the client to client proxy connection, the client proxy to server proxy connection,
+// and the server proxy to server connection) are referred together as "stream".
+// A tunnel allows clients to create multiple streams to- (and exchange data with) a server.
+message TunnelSpec {
+  // Tunnel reference/ID
+  TunnelRef tunnel_ref = 1;
+
+  // The address of the server the clients will be tunneled to.
+  string server_address = 2;
+
+  // The port of the server the clients will be tunneled to.
+  int32 server_port = 3;
+
+  // The addresses that the client network proxy is listening on for client connections.
+  repeated string client_proxy_addresses = 4;
+
+  // The port that the client network proxy will use;
+  int32 client_proxy_port = 5;
+}
+
+// Carries data that uniquely identifies a tunnel.
+message TunnelRef {
+  // The ID of the tunnel.
+  uint32 tunnel_id = 1;
+}
+
+// Carries the result of an attempt to establish a tunnel stream.
+message NewStreamResult {
+  // The reference data for the stream.
+  StreamRef stream_ref = 1;
+
+  // If a stream cannot be created, this sub-message will carry failure details.
+  StreamFailure failure = 2;
+}
+
+// A tuple that uniquely identifies a tunnel stream.
+message StreamRef {
+  // The ID for the stream.
+  uint64 stream_id = 1;
+
+  // The tunnel that the connection belongs to.
+  uint32 tunnel_id = 2;
+}
+
+// Specifies codes for errors that can occur during stream creation.
+enum StreamErr {
+  // Required by gRPC code generator/semantics.
+  STREAM_ERR_UNSPECIFIED = 0;
+
+  // Stream cannot be created because the server connection could not be established.
+  STREAM_ERR_SERVER_UNAVAILABLE = 1;
+
+  // Stream cannot be created because the tunnel ID specified in the request references nonexistent tunnel.
+  STREAM_ERR_NONEXISTENT_TUNNEL = 2;
+
+  // Stream could not be created because the server proxy could not open a data connection to the client proxy.
+  STREAM_ERR_DATA_CONNECTION_FAILED = 3;
+}
+
+// Carries data about the failure to establish a tunnel stream.
+message StreamFailure {
+  // Stable error code that allows the client to differentiate between 
+  // different kinds of errors that can happen during tunnel stream creation.
+  StreamErr error = 1;
+
+  // Human-readable message explaining why the tunnel stream could not be created.
+  string message = 2;
+}

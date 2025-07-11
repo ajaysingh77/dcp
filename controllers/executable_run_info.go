@@ -90,7 +90,7 @@ func (ri *ExecutableRunInfo) UpdateFrom(other *ExecutableRunInfo) bool {
 	}
 
 	if other.Pid != apiv1.UnknownPID && !pointers.EqualValue(ri.Pid, other.Pid) {
-		pointers.SetValue(&ri.Pid, other.Pid)
+		pointers.SetValueFrom(&ri.Pid, other.Pid)
 		updated = true
 	} else if other.ExeState.IsTerminal() && ri.Pid != apiv1.UnknownPID {
 		ri.Pid = apiv1.UnknownPID
@@ -106,7 +106,7 @@ func (ri *ExecutableRunInfo) UpdateFrom(other *ExecutableRunInfo) bool {
 	}
 
 	if other.ExitCode != apiv1.UnknownExitCode && !pointers.EqualValue(ri.ExitCode, other.ExitCode) {
-		pointers.SetValue(&ri.ExitCode, other.ExitCode)
+		pointers.SetValueFrom(&ri.ExitCode, other.ExitCode)
 		updated = true
 	}
 
@@ -132,7 +132,7 @@ func (ri *ExecutableRunInfo) UpdateFrom(other *ExecutableRunInfo) bool {
 	}
 
 	if other.healthProbesEnabled != nil && !pointers.EqualValue(ri.healthProbesEnabled, other.healthProbesEnabled) {
-		pointers.SetValue(&ri.healthProbesEnabled, other.healthProbesEnabled)
+		pointers.SetValueFrom(&ri.healthProbesEnabled, other.healthProbesEnabled)
 		updated = true
 	}
 
@@ -144,11 +144,11 @@ func (ri *ExecutableRunInfo) Clone() *ExecutableRunInfo {
 		ExeState: ri.ExeState,
 	}
 	if ri.Pid != apiv1.UnknownPID {
-		pointers.SetValue(&retval.Pid, ri.Pid)
+		pointers.SetValueFrom(&retval.Pid, ri.Pid)
 	}
 	retval.RunID = ri.RunID
 	if ri.ExitCode != apiv1.UnknownExitCode {
-		pointers.SetValue(&retval.ExitCode, ri.ExitCode)
+		pointers.SetValueFrom(&retval.ExitCode, ri.ExitCode)
 	}
 	if len(ri.ReservedPorts) > 0 {
 		retval.ReservedPorts = stdlib_maps.Clone(ri.ReservedPorts)
@@ -158,7 +158,7 @@ func (ri *ExecutableRunInfo) Clone() *ExecutableRunInfo {
 	retval.StdOutFile = ri.StdOutFile
 	retval.StdErrFile = ri.StdErrFile
 	retval.healthProbeResults = stdlib_maps.Clone(ri.healthProbeResults)
-	pointers.SetValue(&retval.healthProbesEnabled, ri.healthProbesEnabled)
+	pointers.SetValueFrom(&retval.healthProbesEnabled, ri.healthProbesEnabled)
 	retval.stopAttemptInitiated = ri.stopAttemptInitiated
 	return &retval
 }
@@ -173,7 +173,7 @@ func (ri *ExecutableRunInfo) ApplyTo(exe *apiv1.Executable, log logr.Logger) obj
 	}
 
 	if ri.Pid != apiv1.UnknownPID && (status.PID == apiv1.UnknownPID || *status.PID != *ri.Pid) {
-		pointers.SetValue(&status.PID, ri.Pid)
+		pointers.SetValueFrom(&status.PID, ri.Pid)
 		changed = statusChanged
 	}
 
@@ -183,7 +183,7 @@ func (ri *ExecutableRunInfo) ApplyTo(exe *apiv1.Executable, log logr.Logger) obj
 	}
 
 	if ri.ExitCode != apiv1.UnknownExitCode && (status.ExitCode == nil || *status.ExitCode != *ri.ExitCode) {
-		pointers.SetValue(&status.ExitCode, ri.ExitCode)
+		pointers.SetValueFrom(&status.ExitCode, ri.ExitCode)
 		changed = statusChanged
 	}
 

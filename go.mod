@@ -31,6 +31,8 @@ require (
 	golang.org/x/net v0.40.0
 	golang.org/x/sys v0.33.0
 	golang.org/x/text v0.25.0
+	google.golang.org/grpc v1.72.2
+	google.golang.org/protobuf v1.36.6
 	k8s.io/apimachinery v0.33.0
 	k8s.io/apiserver v0.33.0
 	k8s.io/client-go v0.33.0
@@ -40,7 +42,7 @@ require (
 )
 
 require (
-	cel.dev/expr v0.19.1 // indirect
+	cel.dev/expr v0.20.0 // indirect
 	github.com/NYTimes/gziphandler v1.1.1 // indirect
 	github.com/akavel/rsrc v0.10.2 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.0 // indirect
@@ -114,10 +116,9 @@ require (
 	golang.org/x/time v0.11.0 // indirect
 	golang.org/x/tools v0.29.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.4.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20241209162323-e6fa225c2576 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20241209162323-e6fa225c2576 // indirect
-	google.golang.org/grpc v1.68.1 // indirect
-	google.golang.org/protobuf v1.36.6 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20250218202821-56aae31c358a // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20250218202821-56aae31c358a // indirect
+	google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.5.1 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.12.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
@@ -138,6 +139,8 @@ require (
 tool (
 	github.com/google/go-licenses/v2
 	github.com/josephspurrier/goversioninfo/cmd/goversioninfo
+	google.golang.org/grpc/cmd/protoc-gen-go-grpc
+	google.golang.org/protobuf/cmd/protoc-gen-go
 	k8s.io/kube-openapi/cmd/openapi-gen
 	sigs.k8s.io/controller-tools/cmd/controller-gen
 )

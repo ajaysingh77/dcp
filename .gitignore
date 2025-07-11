@@ -24,6 +24,10 @@ __debug_*
 # Generated Go version info file
 *.syso
 
+# Generated protobuf files
+*.pb.go
+*_grpc.pb.go
+
 # Misc. extra exclusions
 .DS_Store
 .mono/

@@ -192,6 +192,8 @@ Not all tests are run by default. A small subset of tests aren't suitable for ru
 
 Run `make test-extended` to execute the full test suite including these advanced test scenarios.
 
+> You may need to install [Azure Artifacts Credentials Provider](https://github.com/microsoft/artifacts-credprovider#azure-artifacts-credential-provider) to be able to build some of the test artifacts for tests in this set.
+
 ### Taking performance traces
 
 See [performance investigations page](doc/performance-investigations.md).

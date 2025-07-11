@@ -2,12 +2,13 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"os"
 
 	cmdutil "github.com/microsoft/usvc-apiserver/internal/commands"
 	"github.com/microsoft/usvc-apiserver/internal/dcpproc/commands"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 )
 
 //go:generate goversioninfo
@@ -20,11 +21,14 @@ const (
 
 func main() {
 	log := logger.New("dcpproc")
-	defer log.BeforeExit(func(value interface{}) {
-		// Attempt to log the panic before exiting (we're already in a panic state, so the worst that can happen is that we panic again)
-		log.Error(fmt.Errorf("panic: %v", value), "exiting due to panic")
-		os.Exit(errPanic)
-	})
+	defer func() {
+		panicErr := resiliency.MakePanicError(recover(), log.Logger)
+		if panicErr != nil {
+			os.Stderr.WriteString(panicErr.Error() + string(osutil.LineSep()))
+			log.Flush()
+			os.Exit(errPanic)
+		}
+	}()
 
 	ctx := context.Background()
 

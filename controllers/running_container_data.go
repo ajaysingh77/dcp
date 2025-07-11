@@ -191,8 +191,8 @@ func (rcd *runningContainerData) Clone() *runningContainerData {
 		healthProbeResults:     stdmaps.Clone(rcd.healthProbeResults),
 	}
 
-	pointers.SetValue(&clone.exitCode, rcd.exitCode)
-	pointers.SetValue(&clone.healthProbesEnabled, rcd.healthProbesEnabled)
+	pointers.SetValueFrom(&clone.exitCode, rcd.exitCode)
+	pointers.SetValueFrom(&clone.healthProbesEnabled, rcd.healthProbesEnabled)
 
 	return &clone
 }
@@ -233,7 +233,7 @@ func (rcd *runningContainerData) UpdateFrom(other *runningContainerData) bool {
 	}
 
 	if !pointers.EqualValue(rcd.exitCode, other.exitCode) {
-		pointers.SetValue(&rcd.exitCode, other.exitCode)
+		pointers.SetValueFrom(&rcd.exitCode, other.exitCode)
 		updated = true
 	}
 
@@ -277,7 +277,7 @@ func (rcd *runningContainerData) UpdateFrom(other *runningContainerData) bool {
 	}
 
 	if other.healthProbesEnabled != nil && !pointers.EqualValue(rcd.healthProbesEnabled, other.healthProbesEnabled) {
-		pointers.SetValue(&rcd.healthProbesEnabled, other.healthProbesEnabled)
+		pointers.SetValueFrom(&rcd.healthProbesEnabled, other.healthProbesEnabled)
 		updated = true
 	}
 
@@ -417,7 +417,7 @@ func (rcd *runningContainerData) updateFromInspectedContainer(inspected *ct.Insp
 
 	rcd.finishTimestamp = metav1.NewMicroTime(inspected.FinishedAt)
 	if !rcd.finishTimestamp.IsZero() {
-		pointers.SetValue(&rcd.exitCode, &inspected.ExitCode)
+		pointers.SetValue(&rcd.exitCode, inspected.ExitCode)
 	}
 }
 
@@ -440,7 +440,7 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container, log logr.Logger) 
 	}
 
 	if !pointers.EqualValue(rcd.exitCode, ctr.Status.ExitCode) {
-		pointers.SetValue(&ctr.Status.ExitCode, rcd.exitCode)
+		pointers.SetValueFrom(&ctr.Status.ExitCode, rcd.exitCode)
 		change |= statusChanged
 	}
 

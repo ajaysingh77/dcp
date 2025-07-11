@@ -63,6 +63,7 @@ func (wq *WorkQueue) doWork() {
 					return
 				}
 
+				// CONSIDER using a goroutine pool instead of starting a new goroutine for each work item.
 				go func() {
 					defer func() { <-wq.limiter }()
 					work(wq.lifetimeCtx)

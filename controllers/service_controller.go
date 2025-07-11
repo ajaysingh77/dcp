@@ -330,7 +330,7 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 
 		if len(serviceEndpoints.Items) > 0 {
 			myPid := int64(os.Getpid())
-			pointers.SetValue(&svc.Status.ProxyProcessPid, &myPid)
+			pointers.SetValue(&svc.Status.ProxyProcessPid, myPid)
 			svc.Status.State = apiv1.ServiceStateReady
 		}
 

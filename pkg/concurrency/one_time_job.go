@@ -76,3 +76,11 @@ func (otj *OneTimeJob[T]) WaitResult() T {
 	<-otj.done // Channel read establishes happens-before relationship for result read.
 	return otj.result
 }
+
+// Returns true if the job is done, otherwise false.
+func (otj *OneTimeJob[T]) IsDone() bool {
+	otj.lock.Lock()
+	defer otj.lock.Unlock()
+
+	return otj.state == oneTimeJobStateDone
+}

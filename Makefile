@@ -23,7 +23,6 @@ ifeq ($(OS),Windows_NT)
 else
 	# -o pipefail will treat a pipeline as failed if one of the elements fail.
 	SHELL := /usr/bin/env bash -o pipefail
-
 	detected_OS := $(shell uname -s | awk '{print tolower($$0)}')
 	detected_arch := $(shell uname -m)
 	repo_dir := $(shell pwd)
@@ -55,6 +54,26 @@ else
 	build_os := $(GOOS)
 endif
 
+ifeq ($(detected_arch),x86_64)
+	PROTOC_ARCH := -x86_64
+else ifeq ($(detected_arch),arm64)
+	PROTOC_ARCH := -aarch_64
+else ifeq ($(detected_arch),aarch64)
+	PROTOC_ARCH := -aarch_64
+endif
+
+ifeq ($(detected_OS),windows)
+	PROTOC_OS := win64
+else ifeq ($(detected_OS),linux)
+	PROTOC_OS := linux
+else ifeq ($(detected_OS),darwin)
+	PROTOC_OS := osx
+else
+	PROTOC_OS := $(detected_OS)
+endif
+
+PROTOC_ZIP = protoc-$(PROTOC_VERSION)-$(PROTOC_OS)$(PROTOC_ARCH).zip
+
 ifeq ($(GOARCH).$(detected_arch),.x86_64)
 	build_arch := amd64
 	detected_arch := amd64
@@ -85,6 +104,7 @@ BIN_DIR ?= $(home_dir)/.dcp/ext/bin
 DCP_BINARY ?= ${OUTPUT_BIN}/dcp$(bin_exe_suffix)
 DCPCTRL_BINARY ?= $(OUTPUT_BIN)/ext/dcpctrl$(bin_exe_suffix)
 DCPPROC_BINARY ?= $(OUTPUT_BIN)/ext/bin/dcpproc$(bin_exe_suffix)
+DCPTUN_BINARY ?= $(OUTPUT_BIN)/ext/bin/dcptun$(bin_exe_suffix)
 
 # Locations and definitions for tool binaries
 GO_BIN ?= go
@@ -97,9 +117,11 @@ GOVERSIONINFO_GEN ?= $(GOTOOL_BIN) github.com/josephspurrier/goversioninfo/cmd/g
 DELAY_TOOL ?= $(TOOL_BIN)/delay$(exe_suffix)
 LFWRITER_TOOL ?= $(TOOL_BIN)/lfwriter$(exe_suffix)
 GO_LICENSES ?= $(GOTOOL_BIN) github.com/google/go-licenses/v2
+PROTOC ?= $(TOOL_BIN)/protoc/bin/protoc$(exe_suffix)
 
 # Tool Versions
 GOLANGCI_LINT_VERSION ?= v2.1.6
+PROTOC_VERSION ?= 31.1
 
 # DCP Version information
 VERSION ?= dev
@@ -116,10 +138,16 @@ export CGO_ENABLED ?= 0
 ifeq ($(detected_OS),windows)
 	GO_SOURCES := $(shell Get-ChildItem -Include '*.go' -Exclude 'zz_generated*' -Recurse -File | Select-Object -ExpandProperty FullName)
 	TYPE_SOURCES := $(shell Get-ChildItem -Path './api/v1/*' -Include '*.go' -Exclude 'zz_generated*' -File | Select-Object -ExpandProperty FullName)
+	PROTO_SOURCES := $(shell Get-ChildItem -Path './internal/*' -Include '*.proto' -Recurse -File | Select-Object -ExpandProperty FullName | % { [System.IO.Path]::GetRelativePath("$(repo_dir)", $$_) } )
 else
 	GO_SOURCES := $(shell find . -name '*.go' -not -name 'zz_generated*' -type f)
 	TYPE_SOURCES := $(shell find ./api/v1 -name '*.go' -not -name 'zz_generated*' -type f)
+	PROTO_SOURCES := $(shell find ./internal/*/proto -name '*.proto' -type f 2>/dev/null)
 endif
+
+PROTO_DEFINITIONS := $(PROTO_SOURCES:.proto=.pb.go)
+PROTO_INTERFACES := $(PROTO_SOURCES:.proto=_grpc.pb.go)
+
 
 ##@ General
 
@@ -142,10 +170,10 @@ help: ## Display this help.
 ##@ Code generation
 
 .PHONY: generate
-generate: generate-object-methods generate-openapi generate-goversioninfo ## Generate object copy methods, OpenAPI definitions, and binary version info.
+generate: generate-object-methods generate-openapi generate-goversioninfo generate-grpc ## Generate artifacts needed for DCP binary build: object copy methods, OpenAPI definitions, binary version info, and gRPC files.
 
 .PHONY: generate-ci
-generate-ci: generate generate-licenses ## Generate all codegen artifacts and licenses/notice files.
+generate-ci: generate generate-licenses ## Generate all codegen artifacts including licenses/notice files.
 
 .PHONY: generate-object-methods
 generate-object-methods: $(repo_dir)/api/v1/zz_generated.deepcopy.go ## Generates object copy methods for resourced defined in this repo
@@ -186,6 +214,63 @@ else
 	-$(rm_f) $(repo_dir)/cmd/dcpproc/resource.syso
 endif
 
+.PHONY: generate-grpc
+generate-grpc: generate-grpc-proto generate-grpc-interfaces ## Generates Go code for communication via gRPC protocol
+
+# Unfortunately "go tool -n <sometool>" (as of Go 1.24.3) does not resolve the path correctly if the tool is not already installed.
+# Instead, upon first invocation, the command returns some random temporary build path 
+# that is supposed to be the tool binary, but actually isn't :-(
+# As a temporary workaround, we will invoke the gRPC codegen commands several times, with some dealy.
+# Relevant issue: https://github.com/golang/go/issues/72824
+
+ifeq ($(detected_OS),windows)
+define do-grpc-gen
+	$$attempt = 0; \
+	while ($$attempt -lt 5) { \
+		$$attempt++; \
+		$$grpc_plugin_path = & $(GOTOOL_BIN) -n $(grpc_plugin_url); \
+		& $(PROTOC) $(protoc_args) "--plugin=$(grpc_plugin_name)=$$grpc_plugin_path" $< ; \
+		if ($$LASTEXITCODE -eq 0) { \
+			exit 0; \
+		} \
+		Start-Sleep -Seconds 5; \
+	}; \
+	Write-Host "Failed to generate Go code for $< after 5 attempts"; \
+	exit 1
+endef
+else
+define do-grpc-gen
+	attempt=0; \
+	while [[ $$attempt -lt 5 ]]; do \
+		attempt=$$((attempt + 1)); \
+		grpc_plugin_path=$$( $(GOTOOL_BIN) -n $(grpc_plugin_url) ); \
+		$(PROTOC) $(protoc_args) "--plugin=$(grpc_plugin_name)=$${grpc_plugin_path}" $< ; \
+		if [[ $$? -eq 0 ]]; then \
+			exit 0; \
+		fi; \
+		sleep 5; \
+	done; \
+	echo "Failed to generate Go code for $< after 5 attempts"; \
+	exit 1;
+endef
+endif
+
+.PHONY: generate-grpc-proto
+generate-grpc-proto: $(PROTO_DEFINITIONS)
+generate-grpc-proto: grpc_plugin_url = google.golang.org/protobuf/cmd/protoc-gen-go
+generate-grpc-proto: grpc_plugin_name = protoc-gen-go
+generate-grpc-proto: protoc_args = --go_out=. --go_opt=paths=source_relative
+$(PROTO_DEFINITIONS): %.pb.go: %.proto | $(PROTOC)
+	@$(do-grpc-gen)
+
+.PHONY: generate-grpc-interfaces
+generate-grpc-interfaces: $(PROTO_INTERFACES)
+generate-grpc-interfaces: grpc_plugin_url = google.golang.org/grpc/cmd/protoc-gen-go-grpc
+generate-grpc-interfaces: grpc_plugin_name = protoc-gen-go-grpc
+generate-grpc-interfaces: protoc_args = --go-grpc_out=. --go-grpc_opt=paths=source_relative
+$(PROTO_INTERFACES): %_grpc.pb.go: %.proto | $(PROTOC)
+	@$(do-grpc-gen)
+
 .PHONY: generate-licenses
 generate-licenses: generate-dependency-notices ## Generates license/notice files for all dependencies
 
@@ -215,17 +300,17 @@ httpcontent-stream-repro:
 
 # Note: Go runtime is incompatible with C/C++ stack protection feature https://github.com/golang/go/blob/master/src/runtime/cgo/cgo.go#L28 More info/rationale https://github.com/golang/go/issues/21871#issuecomment-329330371
 release: BUILD_ARGS := $(BUILD_ARGS) -buildmode=pie -ldflags "-bindnow -s -w $(version_values)"
-release: build-dcpproc build-dcpctrl build-dcp ## Builds all binaries with flags to reduce binary size
+release: build-dcpproc build-dcpctrl build-dcp build-dcptun ## Builds all binaries with flags to reduce binary size
 
 compile: BUILD_ARGS := $(BUILD_ARGS) -ldflags "$(version_values)"
-compile: build-dcpproc build-dcpctrl build-dcp ## Builds DCP CLI and controller host (skips codegen)
+compile: build-dcpproc build-dcpctrl build-dcp build-dcptun ## Builds all binaries (skips codegen)
 
 compile-debug: BUILD_ARGS := $(BUILD_ARGS) -gcflags="all=-N -l" -ldflags "$(version_values)"
-compile-debug: build-dcpproc build-dcpctrl build-dcp ## Builds DCP CLI and controller host with debug symbols (good for debugging; skips codegen)
+compile-debug: build-dcpproc build-dcpctrl build-dcp build-dcptun ## Builds all binaries with debug symbols (good for debugging; skips codegen)
 
-build: generate compile ## Runs codegen and builds DCP CLI and controller host
+build: generate compile ## Runs codegen and builds all DCP binaries
 
-build-ci: generate-ci release ## Runs codegen, including license/notice files, then builds DCP CLI and controller host with flags to reduce binary size
+build-ci: generate-ci release ## Runs codegen, including license/notice files, then builds all DCP binaries with flags to reduce binary size
 
 .PHONY: build-dcp
 build-dcp: $(DCP_BINARY) ## Builds DCP CLI binary
@@ -242,13 +327,18 @@ build-dcpproc: $(DCPPROC_BINARY) ## Builds DCP process monitor (dcpproc)
 $(DCPPROC_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
 	$(GO_BIN) build -o $(DCPPROC_BINARY) $(BUILD_ARGS) ./cmd/dcpproc
 
+.PHONY: build-dcptun
+build-dcptun: $(DCPTUN_BINARY) ## Builds DCP reverse network tunnel binary (dcptun)
+$(DCPTUN_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
+	$(GO_BIN) build -o $(DCPTUN_BINARY) $(BUILD_ARGS) ./cmd/dcptun
+
 .PHONY: clean
 clean: | ${OUTPUT_BIN} ${TOOL_BIN} ## Deletes build output (all binaries), and all cached tool binaries.
 	$(rm_rf) $(OUTPUT_BIN)/*
 	$(rm_rf) $(TOOL_BIN)/*
 
 .PHONY: lint
-lint: golangci-lint ## Runs the linter
+lint: golangci-lint generate-grpc ## Runs the linter
 # On Windows we use the global golangci-lint binary.
 ifeq ($(detected_OS),windows)
 	golangci-lint run --timeout 10m
@@ -276,6 +366,7 @@ endif
 
 ##@ Test targets
 
+.PHONY: test-prereqs
 test-prereqs: BUILD_ARGS := $(BUILD_ARGS) -gcflags="all=-N -l" -ldflags "$(version_values)"
 test-prereqs: build-dcp build-dcpproc delay-tool lfwriter-tool ## Ensures all prerequisites for running tests are built (run this before running tests selectively)
 
@@ -308,7 +399,7 @@ endif
 .PHONY: test-extended
 test-extended: test-prereqs httpcontent-stream-repro ## Run all tests, including tests that require special environment setup
 ifeq ($(detected_OS),windows)
-	$$env:DCP_TEST_ENABLE_ADVANCED_NETWORKING = "true"; $(GO_BIN) test ./... -count 1; $$env:DCP_TEST_ENABLE_ALL_NETWORK_INTERFACES = $$null;
+	$$env:DCP_TEST_ENABLE_ADVANCED_NETWORKING = "true"; $(GO_BIN) test ./... -count 1; $$env:DCP_TEST_ENABLE_ADVANCED_NETWORKING = $$null;
 else ifeq ($(CGO_ENABLED),1)
 	DCP_TEST_ENABLE_ADVANCED_NETWORKING="true" $(GO_BIN) test ./... -count 1 -race
 else
@@ -345,4 +436,18 @@ else
 golangci-lint: $(GOLANGCI_LINT)
 $(GOLANGCI_LINT): | $(TOOL_BIN)
 	[[ -s $(GOLANGCI_LINT) ]] || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(TOOL_BIN) $(GOLANGCI_LINT_VERSION)
+endif
+
+.PHONY: protoc
+protoc: $(PROTOC)
+ifeq ($(detected_OS),windows)
+$(PROTOC): | $(TOOL_BIN)
+	@if (-not (Test-Path "$(PROTOC)")) { curl -sSfL --output-dir "$(TOOL_BIN)" --output "$(PROTOC_ZIP)" https://github.com/protocolbuffers/protobuf/releases/download/v$(PROTOC_VERSION)/$(PROTOC_ZIP) && Expand-Archive -Path "$(TOOL_BIN)/$(PROTOC_ZIP)" -DestinationPath "$(TOOL_BIN)/protoc" -Force }
+else
+$(PROTOC): | $(TOOL_BIN)
+	@[[ -s $(PROTOC) ]] || \
+	{ \
+		curl -sSfL --output-dir '$(TOOL_BIN)' --output '$(PROTOC_ZIP)' https://github.com/protocolbuffers/protobuf/releases/download/v$(PROTOC_VERSION)/$(PROTOC_ZIP) \
+		&& unzip -q -o -DD '$(TOOL_BIN)/$(PROTOC_ZIP)' -d '$(TOOL_BIN)/protoc'; \
+	}
 endif

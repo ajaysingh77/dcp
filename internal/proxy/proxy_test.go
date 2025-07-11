@@ -270,6 +270,10 @@ func TestRandomEndpointSelection(t *testing.T) {
 	require.Nil(t, endpoint)
 }
 
+// Run 100 simultaneous clients making requests to a single server behind the proxy
+// until the context is cancelled (after 30 seconds).
+// The test verifies that the proxy can handle at least 10 000 connections
+// (with single, successful request round-trip) during that time.
 func TestTCPProxyConnectionThroughput(t *testing.T) {
 	testutil.SkipIfNotEnableAdvancedNetworking(t)
 
@@ -410,6 +414,7 @@ func TestTCPProxyConnectionThroughput(t *testing.T) {
 
 	require.NoError(t, clientErr, "Error running client connections")
 
+	t.Logf("Successful requests: %d", successfulRequests.Load())
 	require.Greater(t, successfulRequests.Load(), int32(10_000), "Client throughput is less than expected")
 }
 
@@ -441,7 +446,7 @@ func TestTCPProxyContinuousStream(t *testing.T) {
 		serverCmd.Env = append(serverCmd.Env, fmt.Sprintf("ASPNETCORE_URLS=http://localhost:%d", serverPort))
 		serverErr := serverCmd.Run()
 		if ctx.Err() == nil {
-			// Cancel the context if the server exits
+			// If the context is not cancelled, make sure the server didn't return an error
 			require.NoError(t, serverErr, "Failed running server")
 		}
 	}()

@@ -64,14 +64,15 @@ func (ch *UnboundedChan[T]) process(ctx context.Context, in, out chan T) {
 		for {
 			v, found := ch.buf.Pop()
 			if !found {
-				break
+				return
 			}
 			ch.bufLen.Add(-1)
 
 			select {
 			case out <- v:
+				// Continue draining
 			case <-ctx.Done():
-				break
+				return
 			}
 		}
 	}

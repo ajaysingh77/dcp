@@ -332,7 +332,7 @@ func CheckPortAvailable(protocol apiv1.PortProtocol, address string, port int32,
 		return bestEffortCheck(usedPortsErr)
 	}
 
-	// Since we are not going to write anyting to the file, we can unlock it immediately
+	// Since we are not going to write anything to the file, we can unlock it immediately
 	unlockErr := packageMruPortFile.Unlock()
 	if unlockErr != nil {
 		log.Error(unlockErr, "could not unlock the most recently used ports file") // Should never happen
@@ -382,6 +382,10 @@ func IsValidPort(port int) bool {
 	return port >= 1 && port <= 65535
 }
 
+func IsBindablePort(port int) bool {
+	return port == 0 || IsValidPort(port)
+}
+
 func IsEphemeralPort(port int32) bool {
 	start, end, _ := GetEphemeralPortRange()
 	return int(port) >= start && int(port) <= end
@@ -401,7 +405,7 @@ func IsValidIPv4(ip net.IP) bool {
 }
 
 func IsValidIPv6(ip net.IP) bool {
-	// ip.To16() always works (it is always possible to convert IPv4 adress to IPv6)
+	// ip.To16() always works (it is always possible to convert IPv4 address to IPv6)
 	// But we are not interested in conversion; we want to know if the passed address is native IPv6 and not IPv4.
 	// This is why we check if IPv4 conversion fails.
 	return len(ip.To16()) == net.IPv6len && len(ip.To4()) == 0 && nettest.SupportsIPv6()

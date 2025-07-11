@@ -290,6 +290,7 @@ func (p *netProxy) runTCP(tcpListener net.Listener) {
 
 		case incoming := <-connectionChannel.Out:
 			if p.lifetimeCtx.Err() != nil {
+				_ = incoming.Close()
 				return
 			}
 
@@ -349,9 +350,9 @@ func (p *netProxy) startTCPStream(incoming net.Conn, config *ProxyConfig) error 
 	ap := networking.AddressAndPort(endpoint.Address, endpoint.Port)
 	outgoing, dialErr := d.DialContext(dialContext, "tcp", ap)
 	if dialErr != nil {
-		p.log.V(1).Info(fmt.Sprintf("Error establishing TCP connection to %s, will try another endpoint", ap))
+		p.log.V(1).Info(fmt.Sprintf("Error establishing TCP connection to %s (%s), will try another endpoint", ap, dialErr.Error()))
 		// Do not close incoming connection
-		return fmt.Errorf("%w: %w", errTcpDialFailed, dialErr)
+		return fmt.Errorf("%w: tried address %s but received the following error: %w", errTcpDialFailed, ap, dialErr)
 	}
 
 	streamCtx, streamCtxCancel := context.WithCancel(p.lifetimeCtx)
@@ -362,8 +363,11 @@ func (p *netProxy) startTCPStream(incoming net.Conn, config *ProxyConfig) error 
 	}
 
 	go func() {
+		defer streamCtxCancel()
+		defer func() { _ = outgoing.Close() }()
+		defer func() { _ = incoming.Close() }()
+
 		p.runTcpStream(streamID, streamCtx, incoming, outgoing)
-		streamCtxCancel()
 
 		if p.log.V(1).Enabled() {
 			p.log.V(1).Info(fmt.Sprintf("Closing connections associated with TCP stream %s from %s to %s",
@@ -372,9 +376,6 @@ func (p *netProxy) startTCPStream(incoming net.Conn, config *ProxyConfig) error 
 				outgoing.RemoteAddr().String()),
 			)
 		}
-
-		_ = incoming.Close()
-		_ = outgoing.Close()
 	}()
 
 	return nil
@@ -405,15 +406,13 @@ func (p *netProxy) runTcpStream(
 
 		if ir.ReadError != nil && !silenceErrors {
 			p.log.V(1).Error(
-				ir.ReadError,
-				"The incoming TCP connection encountered a read error",
+				ir.ReadError, "The incoming TCP connection encountered a read error",
 				"Stream", getStreamDescription(streamID, incoming, outgoing),
 				"Stats", ir.LogProperties(),
 			)
 		} else if ir.WriteError != nil && !silenceErrors {
 			p.log.V(1).Error(
-				ir.WriteError,
-				"The incoming TCP connection encountered a write error",
+				ir.WriteError, "The incoming TCP connection encountered a write error",
 				"Stream", getStreamDescription(streamID, incoming, outgoing),
 				"Stats", ir.LogProperties(),
 			)
@@ -427,15 +426,13 @@ func (p *netProxy) runTcpStream(
 
 		if or.WriteError != nil && !silenceErrors {
 			p.log.V(1).Error(
-				or.WriteError,
-				"The outgoing TCP connection encountered a write error",
+				or.WriteError, "The outgoing TCP connection encountered a write error",
 				"Stream", getStreamDescription(streamID, incoming, outgoing),
 				"Stats", or.LogProperties(),
 			)
 		} else if or.ReadError != nil && !silenceErrors {
 			p.log.V(1).Error(
-				or.ReadError,
-				"The outgoing TCP connection encountered a read error",
+				or.ReadError, "The outgoing TCP connection encountered a read error",
 				"Stream", getStreamDescription(streamID, incoming, outgoing),
 				"Stats", or.LogProperties(),
 			)

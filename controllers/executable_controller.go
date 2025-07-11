@@ -497,7 +497,7 @@ func (r *ExecutableReconciler) processRunChangeNotification(
 	// Memorize PID and (if applicable) exit code
 	runInfo.ExitCode = effectiveExitCode
 	if pid > 0 {
-		pointers.SetValue(&runInfo.Pid, (*int64)(&pid))
+		pointers.SetValue(&runInfo.Pid, int64(pid))
 	}
 
 	r.runs.QueueDeferredOp(name, func(types.NamespacedName, RunID) {

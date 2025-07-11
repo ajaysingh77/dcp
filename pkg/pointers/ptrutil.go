@@ -27,7 +27,20 @@ func GetValueOrDefault[T any, PT *T](p PT, defaultValue T) T {
 }
 
 // Sets the value pointed to by a pointer to the given value, allocating new memory if the pointer is nil.
-func SetValue[T any, PT *T](pp *PT, pVal PT) {
+func SetValue[T any, PT *T](pp *PT, val T) {
+	if pp == nil {
+		panic("nil pointer passed as target for pointers.SetValue()")
+	}
+
+	if *pp == nil {
+		*pp = new(T)
+	}
+
+	**pp = val
+}
+
+// Sets the value pointed to by a pointer to the value pointed to by another pointer, allocating new memory if the pointer is nil.
+func SetValueFrom[T any, PT *T](pp *PT, pVal PT) {
 	if pp == nil {
 		panic("nil pointer passed as target for pointers.SetValue()")
 	}

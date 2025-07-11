@@ -48,52 +48,96 @@ func TestEqualValueDurations(t *testing.T) {
 
 // Check if SetValue() works correctly for K8s timestamps.
 func TestSetValueTimestamps(t *testing.T) {
-	require.Panics(t, func() { SetValue[metav1.MicroTime](nil, nil) })
+	require.Panics(t, func() { SetValue(nil, metav1.MicroTime{}) })
 
-	var t1, t2 *metav1.MicroTime
-	require.Nil(t, t1)
-	require.Nil(t, t2)
-
-	SetValue(&t1, t2)
+	var t1 *metav1.MicroTime
 	require.Nil(t, t1)
 
 	now := metav1.NowMicro()
-	SetValue(&t1, &now)
+	SetValue(&t1, now)
 	require.NotNil(t, t1)
 	require.True(t, now.Equal(t1))
 	require.Equal(t, now, *t1)
 
 	later := metav1.NewMicroTime(now.Time.Add(1 * time.Second))
-	SetValue(&t1, &later)
+	SetValue(&t1, later)
 	require.NotNil(t, t1)
 	require.True(t, later.Equal(t1))
 	require.Equal(t, later, *t1)
 
-	SetValue(&t1, nil)
-	require.Nil(t, t1)
+	SetValue(&t1, metav1.MicroTime{})
+	require.True(t, t1.IsZero())
 }
 
 // Check if SetValue() works correctly for K8s durations.
 func TestSetValueDurations(t *testing.T) {
-	require.Panics(t, func() { SetValue[metav1.Duration](nil, nil) })
+	require.Panics(t, func() { SetValue(nil, metav1.Duration{}) })
+
+	var d1 *metav1.Duration
+	require.Nil(t, d1)
+
+	d2 := metav1.Duration{Duration: 5 * time.Second}
+	SetValue(&d1, d2)
+	require.NotNil(t, d1)
+	require.Equal(t, 5*time.Second, d1.Duration)
+
+	d3 := metav1.Duration{Duration: 6 * time.Second}
+	SetValue(&d1, d3)
+	require.NotNil(t, d1)
+	require.Equal(t, 6*time.Second, d1.Duration)
+
+	SetValue(&d1, metav1.Duration{})
+	require.True(t, d1.Duration == 0)
+}
+
+// Check if SetValueFrom() works correctly for K8s timestamps.
+func TestSetValueFromTimestamps(t *testing.T) {
+	require.Panics(t, func() { SetValueFrom[metav1.MicroTime](nil, nil) })
+
+	var t1, t2 *metav1.MicroTime
+	require.Nil(t, t1)
+	require.Nil(t, t2)
+
+	SetValueFrom(&t1, t2)
+	require.Nil(t, t1)
+
+	now := metav1.NowMicro()
+	SetValueFrom(&t1, &now)
+	require.NotNil(t, t1)
+	require.True(t, now.Equal(t1))
+	require.Equal(t, now, *t1)
+
+	later := metav1.NewMicroTime(now.Time.Add(1 * time.Second))
+	SetValueFrom(&t1, &later)
+	require.NotNil(t, t1)
+	require.True(t, later.Equal(t1))
+	require.Equal(t, later, *t1)
+
+	SetValueFrom(&t1, nil)
+	require.Nil(t, t1)
+}
+
+// Check if SetValueFrom() works correctly for K8s durations.
+func TestSetValueFromDurations(t *testing.T) {
+	require.Panics(t, func() { SetValueFrom[metav1.Duration](nil, nil) })
 
 	var d1, d2 *metav1.Duration
 	require.Nil(t, d1)
 	require.Nil(t, d2)
 
-	SetValue(&d1, d2)
+	SetValueFrom(&d1, d2)
 	require.Nil(t, d1)
 
 	d2 = &metav1.Duration{Duration: 5 * time.Second}
-	SetValue(&d1, d2)
+	SetValueFrom(&d1, d2)
 	require.NotNil(t, d1)
 	require.Equal(t, 5*time.Second, d1.Duration)
 
 	d3 := &metav1.Duration{Duration: 6 * time.Second}
-	SetValue(&d1, d3)
+	SetValueFrom(&d1, d3)
 	require.NotNil(t, d1)
 	require.Equal(t, 6*time.Second, d1.Duration)
 
-	SetValue(&d1, nil)
+	SetValueFrom(&d1, nil)
 	require.Nil(t, d1)
 }

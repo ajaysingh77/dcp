@@ -129,7 +129,7 @@ func (r *TestIdeRunner) SimulateSuccessfulRunStart(runID controllers.RunID, pid 
 	return r.SimulateRunStart(
 		func(_ types.NamespacedName, run *TestIdeRun) bool { return run.ID == runID },
 		func(run *TestIdeRun) {
-			pointers.SetValue(&run.RunInfo.Pid, (*int64)(&pid))
+			pointers.SetValue(&run.RunInfo.Pid, int64(pid))
 			run.RunInfo.RunID = runID
 			run.RunInfo.ExeState = apiv1.ExecutableStateRunning
 			run.RunInfo.StartupTimestamp = metav1.NowMicro()
@@ -200,7 +200,7 @@ func (r *TestIdeRunner) doStopRun(runID controllers.RunID, exitCode int32) error
 		func(_ types.NamespacedName, run *TestIdeRun) bool { return run.ID == runID },
 		func(run *TestIdeRun) {
 			run.RunInfo.FinishTimestamp = metav1.NowMicro()
-			pointers.SetValue(&run.RunInfo.ExitCode, (*int32)(&exitCode))
+			pointers.SetValue(&run.RunInfo.ExitCode, int32(exitCode))
 		},
 	)
 
