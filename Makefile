@@ -399,10 +399,18 @@ endif
 
 .PHONY: test-prereqs
 test-prereqs: BUILD_ARGS := $(BUILD_ARGS) -gcflags="all=-N -l" -ldflags "$(version_values)"
-test-prereqs: build-dcp build-dcpproc delay-tool lfwriter-tool ## Ensures all prerequisites for running tests are built (run this before running tests selectively)
+ifeq (4.4,$(firstword $(sort $(MAKE_VERSION) 4.4)))
+test-prereqs: generate-grpc .WAIT build-dcp build-dcpproc delay-tool lfwriter-tool ## Ensures all prerequisites for running tests are built (run this before running tests selectively)
+else
+test-prereqs: generate-grpc build-dcp build-dcpproc delay-tool lfwriter-tool
+endif
 
 .PHONY: test-ci-prereqs
+ifeq (4.4,$(firstword $(sort $(MAKE_VERSION) 4.4)))
+test-ci-prereqs: generate-grpc .WAIT build-dcp build-dcpproc delay-tool lfwriter-tool
+else
 test-ci-prereqs: generate-grpc build-dcp build-dcpproc delay-tool lfwriter-tool
+endif
 
 .PHONY: test
 ifeq ($(CGO_ENABLED),0)
@@ -411,7 +419,7 @@ test: test-prereqs ## Run all tests in the repository
 	$(GO_BIN) test ./... $(TEST_OPTS)
 else
 test: TEST_OPTS = -coverprofile cover.out -race -count 1
-test: test-prereqs ## Run all tests in the repository
+test: test-prereqs
 	$(GO_BIN) test ./... $(TEST_OPTS)
 endif
 
@@ -423,7 +431,7 @@ test-ci: test-ci-prereqs ## Runs tests in a way appropriate for CI pipeline, wit
 	$(GO_BIN) test ./... $(TEST_OPTS)
 else
 test-ci: TEST_OPTS = -coverprofile cover.out -race -count 1
-test-ci: test-ci-prereqs ## Runs tests in a way appropriate for CI pipeline, with linting etc.
+test-ci: test-ci-prereqs
 	$(GO_BIN) test ./... $(TEST_OPTS)
 endif
 
