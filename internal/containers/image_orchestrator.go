@@ -14,6 +14,12 @@ type InspectedImage struct {
 
 	// Labels applied to the image
 	Labels map[string]string `json:"Labels,omitempty"`
+
+	// Tags applied to the image
+	Tags []string `json:"Tags,omitempty"`
+
+	// Digest of the image
+	Digest string `json:"Digest,omitempty"`
 }
 
 type InspectImagesOptions struct {
@@ -48,9 +54,27 @@ type BuildImage interface {
 	BuildImage(ctx context.Context, options BuildImageOptions) error
 }
 
+// PullImage command types
+
+type PullImageOptions struct {
+	// ID of the image (name + tag)
+	Image string `json:"Image"`
+
+	// Digest of the image to pull (optional)
+	Digest string `json:"Digest,omitempty"`
+
+	TimeoutOption
+}
+
+type PullImage interface {
+	// PullImage pulls a container image from a registry. If successful, the ID of the image is returned.
+	PullImage(ctx context.Context, options PullImageOptions) (string, error)
+}
+
 type ImageOrchestrator interface {
 	InspectImages
 	BuildImage
+	PullImage
 
 	RuntimeStatusChecker
 }

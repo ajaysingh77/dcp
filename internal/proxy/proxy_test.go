@@ -23,6 +23,7 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
@@ -433,7 +434,7 @@ func TestTCPProxyContinuousStream(t *testing.T) {
 	defer cancelFunc()
 	proxy := setupTcpProxy(t, ctx)
 
-	rootDir, findRootErr := testutil.FindRootFor(testutil.DirTarget, "test")
+	rootDir, findRootErr := osutil.FindRootFor(osutil.DirTarget, "test")
 	require.NoError(t, findRootErr, "Failed to find root directory for ./test")
 
 	go func() {

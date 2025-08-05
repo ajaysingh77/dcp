@@ -219,7 +219,7 @@ stateDiagram-v2
 2. BuildingImage state
 
    Check if a image already exists. The image will use a well-known name e.g. dcptun_developer_ms, and a tag that corresponds to the version of the dcptun binary. If the version starts with "dev" (e.g. "dev_123456"), dcptun should compute its hash and compare it with the hash that comes after "dev"; if there is no match, a new image should be created.
-   The image is built from a temporary Dockerfile, using dcptun_c binary and base image specified in the Spec.
+   The image is built from a temporary Dockerfile, using dcptun_c binary and base image specified in the Spec. Assume that the dcptun_c binary is under `ext/bin` (`DcpBinDir`) subfolder of DCP installation.
    If the image build is successful, transition to Starting state. Otherwise transition to Failed state.
    There is no need to "clean up" old images.
 

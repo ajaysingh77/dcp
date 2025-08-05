@@ -19,7 +19,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
+	"github.com/microsoft/usvc-apiserver/internal/dcppaths"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 
@@ -559,7 +559,7 @@ func getDcpProcExecutablePath() (string, error) {
 	}
 
 	tail := []string{dcppaths.DcpBinDir, dcppaths.DcpExtensionsDir, dcppaths.DcpBinDir, dcpExeName}
-	rootFolder, err := testutil.FindRootFor(testutil.FileTarget, tail...)
+	rootFolder, err := osutil.FindRootFor(osutil.FileTarget, tail...)
 	if err != nil {
 		return "", err
 	}

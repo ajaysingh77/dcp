@@ -320,15 +320,18 @@ httpcontent-stream-repro:
 
 ##@ Development
 
+COMMON_BUILD_PREREQS := build-dcpproc build-dcpctrl build-dcp build-dcptun
+COMPILE_PREREQS := $(COMMON_BUILD_PREREQS) build-dcptun-containerexe
+
 # Note: Go runtime is incompatible with C/C++ stack protection feature https://github.com/golang/go/blob/master/src/runtime/cgo/cgo.go#L28 More info/rationale https://github.com/golang/go/issues/21871#issuecomment-329330371
 release: BUILD_ARGS := $(BUILD_ARGS) -buildmode=pie -ldflags "-bindnow -s -w $(version_values)"
-release: build-dcpproc build-dcpctrl build-dcp build-dcptun ## Builds all binaries with flags to reduce binary size
+release: $(COMMON_BUILD_PREREQS) ## Builds all binaries with flags to reduce binary size
 
 compile: BUILD_ARGS := $(BUILD_ARGS) -ldflags "$(version_values)"
-compile: build-dcpproc build-dcpctrl build-dcp build-dcptun build-dcptun-containerexe ## Builds all binaries (skips codegen)
+compile: $(COMPILE_PREREQS) ## Builds all binaries (skips codegen)
 
 compile-debug: BUILD_ARGS := $(BUILD_ARGS) -gcflags="all=-N -l" -ldflags "$(version_values)"
-compile-debug: build-dcpproc build-dcpctrl build-dcp build-dcptun build-dcptun-containerexe ## Builds all binaries with debug symbols (good for debugging; skips codegen)
+compile-debug: $(COMPILE_PREREQS) ## Builds all binaries with debug symbols (good for debugging; skips codegen)
 
 build: generate compile ## Runs codegen and builds all DCP binaries
 
@@ -397,20 +400,18 @@ endif
 
 ##@ Test targets
 
-.PHONY: test-prereqs
-test-prereqs: BUILD_ARGS := $(BUILD_ARGS) -gcflags="all=-N -l" -ldflags "$(version_values)"
 ifeq (4.4,$(firstword $(sort $(MAKE_VERSION) 4.4)))
-test-prereqs: generate-grpc .WAIT build-dcp build-dcpproc delay-tool lfwriter-tool ## Ensures all prerequisites for running tests are built (run this before running tests selectively)
+TEST_PREREQS := generate-grpc .WAIT build-dcp build-dcpproc build-dcptun-containerexe delay-tool lfwriter-tool
 else
-test-prereqs: generate-grpc build-dcp build-dcpproc delay-tool lfwriter-tool
+TEST_PREREQS := generate-grpc build-dcp build-dcpproc build-dcptun-containerexe delay-tool lfwriter-tool
 endif
 
+.PHONY: test-prereqs
+test-prereqs: BUILD_ARGS := $(BUILD_ARGS) -gcflags="all=-N -l" -ldflags "$(version_values)"
+test-prereqs: $(TEST_PREREQS) ## Ensures all prerequisites for running tests are built (run this before running tests selectively)
+
 .PHONY: test-ci-prereqs
-ifeq (4.4,$(firstword $(sort $(MAKE_VERSION) 4.4)))
-test-ci-prereqs: generate-grpc .WAIT build-dcp build-dcpproc delay-tool lfwriter-tool
-else
-test-ci-prereqs: generate-grpc build-dcp build-dcpproc delay-tool lfwriter-tool
-endif
+test-ci-prereqs: $(TEST_PREREQS)
 
 .PHONY: test
 ifeq ($(CGO_ENABLED),0)

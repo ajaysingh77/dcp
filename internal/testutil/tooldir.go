@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/microsoft/usvc-apiserver/pkg/testutil"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 )
 
 // Returns the folder containing desired test tool (executable).
@@ -19,7 +19,7 @@ func GetTestToolDir(exeName string) (string, error) {
 		exeName += ".exe"
 	}
 
-	rootDir, err := testutil.FindRootFor(testutil.FileTarget, ".toolbin", exeName)
+	rootDir, err := osutil.FindRootFor(osutil.FileTarget, ".toolbin", exeName)
 	if err == nil {
 		return filepath.Join(rootDir, ".toolbin"), nil
 	} else {

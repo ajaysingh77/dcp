@@ -42,6 +42,7 @@ var (
 	unableToConnectRegEx           = regexp.MustCompile(`(?i)unable to connect to Podman socket:`)
 	volumeInUseRegEx               = regexp.MustCompile(`(?i)volume is being used`)
 	volumeAlreadyExistsRegEx       = regexp.MustCompile(`(?i)volume already exists`)
+	imageNotFoundRegEx             = regexp.MustCompile(`(?i)is not found`)
 
 	newContainerNotFoundErrorMatch         = containers.NewCliErrorMatch(containerNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("container not found")))
 	newVolumeNotFoundErrorMatch            = containers.NewCliErrorMatch(volumeNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("volume not found")))
@@ -52,19 +53,21 @@ var (
 	newContainerAlreadyAttachedErrorMatch  = containers.NewCliErrorMatch(containerAlreadyAttachedRegEx, errors.Join(containers.ErrAlreadyExists, fmt.Errorf("container already attached")))
 	newNetworkIsAlreadyConnectedErrorMatch = containers.NewCliErrorMatch(networkIsAlreadyConnectedRegEx, errors.Join(containers.ErrAlreadyExists, fmt.Errorf("network is already connected to the container")))
 	newPodmanNotRunningErrorMatch          = containers.NewCliErrorMatch(unableToConnectRegEx, errors.Join(containers.ErrRuntimeNotHealthy, fmt.Errorf("podman runtime is not healthy")))
+	imageNotFoundErrorMatch                = containers.NewCliErrorMatch(imageNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("image not found")))
 
 	// We expect almost all Podman CLI invocations to finish within this time.
 	// Telemetry shows there is a very long tail for Podman command completion times, so we use a conservative default.
 	ordinaryPodmanCommandTimeout = 30 * time.Second
 
 	defaultBuildImageTimeout      = 10 * time.Minute
+	defaultPullImageTimeout       = 10 * time.Minute
 	defaultCreateContainerTimeout = 10 * time.Minute
 	defaultRunContainerTimeout    = 10 * time.Minute
 
 	// Cache and synchronization control for checking runtime cachedStatus
 	cachedStatus *containers.ContainerRuntimeStatus
 	// Ensure that only one goroutine is checking the status at a time
-	checkStatusSyncCh = concurrency.NewSyncChannel()
+	checkStatusLock = concurrency.NewContextAwareLock()
 	// Mutex to control read/write access to the cached status
 	updateStatus            = &sync.RWMutex{}
 	backgroundStatusUpdates atomic.Int32
@@ -118,7 +121,7 @@ func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context, cacheUsage co
 
 	if cacheUsage == containers.CachedRuntimeStatusAllowed {
 		// For cached results, only one goroutine should be checking the status at a time
-		if syncErr := checkStatusSyncCh.Lock(ctx); syncErr != nil {
+		if syncErr := checkStatusLock.Lock(ctx); syncErr != nil {
 			// Timed out, assume Podman is not responsive and unavailable
 			return containers.ContainerRuntimeStatus{
 				Installed: false,
@@ -127,7 +130,7 @@ func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context, cacheUsage co
 			}
 		}
 
-		defer checkStatusSyncCh.Unlock()
+		defer checkStatusLock.Unlock()
 	}
 
 	updateStatus.RLock()
@@ -158,7 +161,7 @@ func (pco *PodmanCliOrchestrator) EnsureBackgroundStatusUpdates(ctx context.Cont
 		timer.Stop()
 		for {
 			// Only one goroutine should be checking the status at a time
-			if checkStatusSyncCh.TryLock() {
+			if checkStatusLock.TryLock() {
 				newStatus := pco.getStatus(ctx)
 
 				updateStatus.Lock()
@@ -398,6 +401,31 @@ func (pco *PodmanCliOrchestrator) InspectImages(ctx context.Context, options con
 	}
 
 	return inspectedImages, err
+}
+
+func (dco *PodmanCliOrchestrator) PullImage(ctx context.Context, options containers.PullImageOptions) (string, error) {
+	if options.Image == "" {
+		return "", fmt.Errorf("must specify an image to pull")
+	}
+
+	args := []string{"image", "pull", "--quiet"}
+	if options.Digest != "" {
+		args = append(args, options.Image+"@"+options.Digest)
+	} else {
+		args = append(args, options.Image)
+	}
+
+	cmd := makePodmanCommand(args...)
+	// Pulling large images can take a long time, especially if the image is not available locally and the network is slow.
+	if options.Timeout == 0 {
+		options.Timeout = defaultPullImageTimeout
+	}
+	outBuf, errBuf, err := dco.runBufferedPodmanCommand(ctx, "PullImage", cmd, nil, nil, options.Timeout)
+	if err != nil {
+		return "", errors.Join(err, normalizeCliErrors(errBuf, imageNotFoundErrorMatch))
+	}
+
+	return asId(outBuf)
 }
 
 func applyCreateContainerOptions(args []string, options containers.CreateContainerOptions) []string {
@@ -1246,6 +1274,8 @@ func unmarshalVolume(pvi *podmanInspectedVolume, vol *containers.InspectedVolume
 func unmarshalImage(pii *podmanInspectedImage, ic *containers.InspectedImage) error {
 	ic.Id = pii.Id
 	ic.Labels = pii.Config.Labels
+	ic.Tags = pii.RepoTags
+	ic.Digest = pii.Digest
 
 	return nil
 }
@@ -1366,8 +1396,10 @@ type podmanInspectedVolume struct {
 // podmanInspectedImageXxx correspond to data returned by "podman image inspect" command.
 // The definition only includes data that we care about.
 type podmanInspectedImage struct {
-	Id     string                     `json:"Id"`
-	Config podmanInspectedImageConfig `json:"Config,omitempty"`
+	Id       string                     `json:"Id"`
+	Config   podmanInspectedImageConfig `json:"Config,omitempty"`
+	RepoTags []string                   `json:"RepoTags,omitempty"`
+	Digest   string                     `json:"Digest,omitempty"`
 }
 
 type podmanInspectedImageConfig struct {

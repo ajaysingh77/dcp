@@ -30,12 +30,13 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/apiserver"
-	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
 	"github.com/microsoft/usvc-apiserver/internal/dcpclient"
+	"github.com/microsoft/usvc-apiserver/internal/dcppaths"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
@@ -265,7 +266,7 @@ func getDcpExecutablePath() (string, error) {
 	}
 
 	tail := []string{dcppaths.DcpBinDir, dcpExeName}
-	rootFolder, err := testutil.FindRootFor(testutil.FileTarget, tail...)
+	rootFolder, err := osutil.FindRootFor(osutil.FileTarget, tail...)
 	if err != nil {
 		return "", err
 	}

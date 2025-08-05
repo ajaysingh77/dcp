@@ -3,12 +3,10 @@
 package networking
 
 import (
-	"bufio"
+	"bytes"
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	std_slices "slices"
 	"strings"
 	"time"
@@ -18,18 +16,9 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
-type mruPortFile struct {
-	lockfile.Lockfile
-	params mruPortFileUsageParameters
-}
-
 const (
 	// The format of the record in the MRU ports file.
 	mruPortFileRecordPattern = "%s %d %s %s" // address port timestamp instance
-)
-
-var (
-	errMruPortFileNotInitialized = errors.New("the most recently used ports file is not initialized")
 )
 
 // Parameters governing the most-recently-used ports file usage.
@@ -75,14 +64,50 @@ type mruPortFileRecord struct {
 	Instance       string
 }
 
-func NewMruPortFile(path string, params mruPortFileUsageParameters) (*mruPortFile, error) {
-	lockfile, err := lockfile.NewLockfile(path)
+type mruPortFileRecordMarshaller struct{}
+
+func (_ mruPortFileRecordMarshaller) Unmarshal(line []byte) (mruPortFileRecord, error) {
+	var address, timestampStr, instance string
+	var port int
+	n, scanErr := fmt.Fscanf(bytes.NewReader(line), mruPortFileRecordPattern, &address, &port, &timestampStr, &instance)
+	if scanErr != nil {
+		return mruPortFileRecord{}, fmt.Errorf("the most recently used ports file is corrupted (invalid record, the line read was '%s'): %w", line, scanErr)
+	}
+	if n != 4 {
+		return mruPortFileRecord{}, fmt.Errorf("the most recently used ports file is corrupted (invalid record, expected 4 fields but got %d, the line was '%s')", n, line)
+	}
+
+	timestamp, timestampParseErr := time.Parse(time.RFC3339Nano, timestampStr)
+	if timestampParseErr != nil {
+		return mruPortFileRecord{}, fmt.Errorf("the most recently used ports file is corrupted (invalid timestamp found, the timestamp string was '%s')", timestampStr)
+	}
+
+	return mruPortFileRecord{
+		Address:        strings.TrimSpace(address),
+		Port:           int32(port),
+		AddressAndPort: AddressAndPort(address, int32(port)),
+		Timestamp:      timestamp,
+		Instance:       strings.TrimSpace(instance),
+	}, nil
+}
+
+func (_ mruPortFileRecordMarshaller) Marshal(record mruPortFileRecord) []byte {
+	return fmt.Appendf(nil, mruPortFileRecordPattern, strings.TrimSpace(record.Address), record.Port, record.Timestamp.Format(time.RFC3339Nano), strings.TrimSpace(record.Instance))
+}
+
+type mruPortFile struct {
+	lockfile.RecordFile[mruPortFileRecord]
+	params mruPortFileUsageParameters
+}
+
+func newMruPortFile(path string, params mruPortFileUsageParameters) (*mruPortFile, error) {
+	recordFile, err := lockfile.NewRecordFile(path, mruPortFileRecordMarshaller{})
 	if err != nil {
 		return nil, err
 	}
 	return &mruPortFile{
-		Lockfile: *lockfile,
-		params:   params,
+		RecordFile: *recordFile,
+		params:     params,
 	}, nil
 }
 
@@ -91,64 +116,9 @@ func NewMruPortFile(path string, params mruPortFileUsageParameters) (*mruPortFil
 // The file is left locked if the operation is successful.
 // If an error occurs, the file is truncated and unlocked.
 func (l *mruPortFile) tryLockAndRead(ctx context.Context) ([]mruPortFileRecord, error) {
-	if l == nil {
-		return nil, errMruPortFileNotInitialized
-	}
-
-	lockErr := l.TryLock(ctx, lockfile.DefaultLockRetryInterval)
-	if lockErr != nil {
-		return nil, lockErr
-	}
-	// Unlock left to the caller, unless an error occurs
-
-	_, seekErr := l.Seek(0, io.SeekStart)
-	if seekErr != nil {
-		unlockErr := l.Unlock()
-		return nil, errors.Join(seekErr, unlockErr)
-	}
-
-	var records []mruPortFileRecord
-	scanner := bufio.NewScanner(l)
-
-	// When corrupted file is detected, truncate, unlock and return an error
-	cleanup := func(description error) error {
-		truncateErr := l.Truncate(0)
-		unlockErr := l.Unlock()
-		return errors.Join(description, truncateErr, unlockErr)
-	}
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if len(line) == 0 {
-			continue
-		}
-
-		var address, timestampStr, instance string
-		var port int
-		n, scanErr := fmt.Sscanf(line, mruPortFileRecordPattern, &address, &port, &timestampStr, &instance)
-		if scanErr != nil {
-			return nil, cleanup(fmt.Errorf("the most recently used ports file is corrupted (invalid record, the line read was '%s'): %w", line, scanErr))
-		}
-		if n != 4 {
-			return nil, cleanup(fmt.Errorf("the most recently used ports file is corrupted (invalid record, expected 4 fields but got %d, the line was '%s')", n, line))
-		}
-
-		timestamp, timestampParseErr := time.Parse(time.RFC3339Nano, timestampStr)
-		if timestampParseErr != nil {
-			return nil, cleanup(fmt.Errorf("the most recently used ports file is corrupted (invalid timestamp found, the timestamp string was '%s')", timestampStr))
-		}
-
-		records = append(records, mruPortFileRecord{
-			Address:        strings.TrimSpace(address),
-			Port:           int32(port),
-			AddressAndPort: AddressAndPort(address, int32(port)),
-			Timestamp:      timestamp,
-			Instance:       strings.TrimSpace(instance),
-		})
-	}
-
-	if scanner.Err() != nil {
-		return nil, cleanup(fmt.Errorf("could not read the most recently used ports file: %w", scanner.Err()))
+	records, readErr := l.TryLockAndRead(ctx)
+	if readErr != nil {
+		return nil, readErr
 	}
 
 	records = slices.Select(records, func(r mruPortFileRecord) bool {
@@ -160,42 +130,6 @@ func (l *mruPortFile) tryLockAndRead(ctx context.Context) ([]mruPortFileRecord, 
 	})
 
 	return records, nil
-}
-
-// Writes the provided records to the most recently used ports file, truncating the file first.
-// The file is unlocked no matter the outcome.
-func (l *mruPortFile) writeAndUnlock(ctx context.Context, records []mruPortFileRecord) error {
-	if l == nil {
-		return errMruPortFileNotInitialized
-	}
-
-	// Note: TryLock is a no-op if the file is already locked
-	lockErr := l.TryLock(ctx, lockfile.DefaultLockRetryInterval)
-	if lockErr != nil {
-		return lockErr
-	}
-
-	truncateErr := l.Truncate(0)
-	if truncateErr != nil {
-		return errors.Join(truncateErr, l.Unlock())
-	}
-
-	_, seekErr := l.Seek(0, io.SeekStart)
-	if seekErr != nil {
-		return errors.Join(seekErr, l.Unlock())
-	}
-
-	for _, record := range records {
-		line := fmt.Appendf(nil, mruPortFileRecordPattern, strings.TrimSpace(record.Address), record.Port, record.Timestamp.Format(time.RFC3339Nano), strings.TrimSpace(record.Instance))
-		_, writeErr := l.Write(osutil.WithNewline(line))
-		if writeErr != nil {
-			truncateErr = l.Truncate(0)
-			unlockErr := l.Unlock()
-			return errors.Join(writeErr, truncateErr, unlockErr)
-		}
-	}
-
-	return l.Unlock()
 }
 
 func matchAddressAndPort(a mruPortFileRecord, ap string) int {

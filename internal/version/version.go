@@ -7,11 +7,11 @@ import (
 )
 
 const (
-	defaultVersion = "dev"
+	DevelopmentVersion = "dev"
 )
 
 var (
-	ProductVersion = defaultVersion
+	ProductVersion = DevelopmentVersion
 	CommitHash     = ""
 	BuildTimestamp = ""
 )
@@ -61,7 +61,7 @@ func Version() VersionOutput {
 	}
 
 	if ProductVersion == "" {
-		ProductVersion = defaultVersion
+		ProductVersion = DevelopmentVersion
 	}
 
 	return VersionOutput{

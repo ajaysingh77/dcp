@@ -42,6 +42,7 @@ var (
 	networkSubnetPoolFullRegEx = regexp.MustCompile(`(?i)could not find an available, non-overlapping (.*) address pool`)
 	dockerNotRunningRegEx      = regexp.MustCompile(`(?i)error during connect:`)
 	volumeInUseRegEx           = regexp.MustCompile(`(?i)volume is in use`)
+	imageNotFoundRegEx         = regexp.MustCompile(`(?i)not found`)
 
 	newContainerNotFoundErrorMatch     = containers.NewCliErrorMatch(containerNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("container not found")))
 	newVolumeNotFoundErrorMatch        = containers.NewCliErrorMatch(volumeNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("volume not found")))
@@ -51,19 +52,21 @@ var (
 	newEndpointAlreadyExistsErrorMatch = containers.NewCliErrorMatch(endpointAlreadyExistsRegEx, errors.Join(containers.ErrAlreadyExists, fmt.Errorf("container already attached")))
 	newNetworkPoolNotAvailableError    = containers.NewCliErrorMatch(networkSubnetPoolFullRegEx, errors.Join(containers.ErrCouldNotAllocate, fmt.Errorf("network subnet pool full")))
 	newDockerNotRunningError           = containers.NewCliErrorMatch(dockerNotRunningRegEx, errors.Join(containers.ErrRuntimeNotHealthy, fmt.Errorf("docker runtime is not healthy")))
+	imageNotFoundErrorMatch            = containers.NewCliErrorMatch(imageNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("image not found")))
 
 	// We expect almost all Docker CLI invocations to finish within this time.
 	// Telemetry shows there is a very long tail for Docker command completion times, so we use a conservative default.
 	ordinaryDockerCommandTimeout = 30 * time.Second
 
 	defaultBuildImageTimeout      = 10 * time.Minute
+	defaultPullImageTimeout       = 10 * time.Minute
 	defaultCreateContainerTimeout = 10 * time.Minute
 	defaultRunContainerTimeout    = 10 * time.Minute
 
 	// Cache and synchronization control for checking runtime cachedStatus
 	cachedStatus *containers.ContainerRuntimeStatus
 	// Ensure that only one goroutine is checking the status at a time
-	checkStatusSyncCh = concurrency.NewSyncChannel()
+	checkStatusLock = concurrency.NewContextAwareLock()
 	// Mutex to control read/write access to the cached status
 	updateStatus            = &sync.RWMutex{}
 	backgroundStatusUpdates atomic.Int32
@@ -117,7 +120,7 @@ func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context, cacheUsage co
 
 	if cacheUsage == containers.CachedRuntimeStatusAllowed {
 		// For cached results, only one goroutine should be checking the status at a time
-		if syncErr := checkStatusSyncCh.Lock(ctx); syncErr != nil {
+		if syncErr := checkStatusLock.Lock(ctx); syncErr != nil {
 			// Timed out, assume Docker is not responsive and unavailable
 			return containers.ContainerRuntimeStatus{
 				Installed: false,
@@ -126,7 +129,7 @@ func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context, cacheUsage co
 			}
 		}
 
-		defer checkStatusSyncCh.Unlock()
+		defer checkStatusLock.Unlock()
 	}
 
 	updateStatus.RLock()
@@ -158,7 +161,7 @@ func (dco *DockerCliOrchestrator) EnsureBackgroundStatusUpdates(ctx context.Cont
 		timer.Stop()
 		for {
 			// Only one goroutine should be checking the status at a time
-			if checkStatusSyncCh.TryLock() {
+			if checkStatusLock.TryLock() {
 				newStatus := dco.getStatus(ctx)
 
 				updateStatus.Lock()
@@ -166,7 +169,7 @@ func (dco *DockerCliOrchestrator) EnsureBackgroundStatusUpdates(ctx context.Cont
 				cachedStatus = &newStatus
 				updateStatus.Unlock()
 
-				checkStatusSyncCh.Unlock()
+				checkStatusLock.Unlock()
 			}
 
 			// Wait for 5 seconds before checking again
@@ -472,6 +475,31 @@ func (dco *DockerCliOrchestrator) InspectImages(ctx context.Context, options con
 	}
 
 	return inspectedImages, err
+}
+
+func (dco *DockerCliOrchestrator) PullImage(ctx context.Context, options containers.PullImageOptions) (string, error) {
+	if options.Image == "" {
+		return "", fmt.Errorf("must specify an image to pull")
+	}
+
+	args := []string{"image", "pull", "--quiet"}
+	if options.Digest != "" {
+		args = append(args, options.Image+"@"+options.Digest)
+	} else {
+		args = append(args, options.Image)
+	}
+
+	cmd := makeDockerCommand(args...)
+	// Pulling large images can take a long time, especially if the image is not available locally and the network is slow.
+	if options.Timeout == 0 {
+		options.Timeout = defaultPullImageTimeout
+	}
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "PullImage", cmd, nil, nil, options.Timeout)
+	if err != nil {
+		return "", errors.Join(err, normalizeCliErrors(errBuf, imageNotFoundErrorMatch))
+	}
+
+	return asId(outBuf)
 }
 
 func applyCreateContainerOptions(args []string, options containers.CreateContainerOptions) []string {
@@ -1302,6 +1330,8 @@ func unmarshalImage(data []byte, ic *containers.InspectedImage) error {
 
 	ic.Id = dii.Id
 	ic.Labels = dii.Config.Labels
+	ic.Tags = dii.RepoTags
+	ic.Digest = dii.Descriptor.Digest
 
 	return nil
 }
@@ -1461,12 +1491,18 @@ type dockerListedContainer struct {
 // The definition only includes data that we care about.
 // For reference see https://github.com/moby/moby/blob/master/api/swagger.yaml
 type dockerInspectedImage struct {
-	Id     string                     `json:"Id"`
-	Config dockerInspectedImageConfig `json:"Config,omitempty"`
+	Id         string                         `json:"Id"`
+	Config     dockerInspectedImageConfig     `json:"Config,omitempty"`
+	RepoTags   []string                       `json:"RepoTags,omitempty"`
+	Descriptor dockerInspectedImageDescriptor `json:"Descriptor,omitempty"`
 }
 
 type dockerInspectedImageConfig struct {
 	Labels map[string]string `json:"Labels,omitempty"`
+}
+
+type dockerInspectedImageDescriptor struct {
+	Digest string `json:"digest,omitempty"`
 }
 
 // dockerInspectedContainerXxx correspond to data returned by "docker container inspect" command.

@@ -23,7 +23,7 @@ func doLock(f *os.File) error {
 		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
 		0,              // reserved, must be zero
 		math.MaxUint32, // number of bytes to lock,
-		math.MaxUint32, // numer of bytes to lock, high-order DWORD
+		math.MaxUint32, // number of bytes to lock, high-order DWORD
 		&overlapped,
 	)
 }

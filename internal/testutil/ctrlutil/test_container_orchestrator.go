@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base32"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -58,9 +60,7 @@ type TestContainerOrchestrator struct {
 	runtimeHealthy          bool
 	volumes                 map[string]containerVolume
 	networks                map[string]*containerNetwork
-	images                  map[string]bool
-	imageIds                map[string]string
-	imageSecrets            map[string]map[string]string
+	images                  []*testImage
 	containers              map[string]*testContainer
 	startupLogs             map[string]containerStartupLogs
 	containersToFail        map[string]containerExit
@@ -162,9 +162,6 @@ func NewTestContainerOrchestrator(
 				created:   now,
 			},
 		},
-		images:                  map[string]bool{},
-		imageIds:                map[string]string{},
-		imageSecrets:            map[string]map[string]string{},
 		containers:              map[string]*testContainer{},
 		execs:                   map[string]*containerExec{},
 		startupLogs:             map[string]containerStartupLogs{},
@@ -451,6 +448,14 @@ type testContainer struct {
 	healthcheck containers.ContainerHealthcheck
 	stdoutLog   *testutil.BufferWriter
 	stderrLog   *testutil.BufferWriter
+}
+
+type testImage struct {
+	id      string
+	digest  string
+	tags    []string
+	secrets map[string]string
+	labels  map[string]string
 }
 
 func getID() string {
@@ -908,28 +913,29 @@ func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options con
 		return errRuntimeUnhealthy
 	}
 
-	if options.IidFile != "" {
-		guid := uuid.New().String()
-		err := usvc_io.WriteFile(options.IidFile, []byte(guid), osutil.PermissionOwnerReadWriteOthersRead)
-		if err != nil {
-			return err
-		}
-		to.images[guid] = true
+	guid := uuid.New().String()
+	image := &testImage{
+		id:      guid,
+		digest:  toDigest(sha256.Sum256([]byte(guid))),
+		tags:    options.Tags,
+		secrets: map[string]string{},
+		labels: maps.SliceToMap(options.Labels, func(label apiv1.ContainerLabel) (string, string) {
+			return label.Key, label.Value
+		}),
+	}
 
-		for _, imageTag := range options.Tags {
-			to.imageIds[imageTag] = guid
+	for _, secret := range options.Secrets {
+		if secret.Type == apiv1.EnvSecret && secret.Value != "" {
+			image.secrets[secret.ID] = secret.Value
 		}
 	}
 
-	for _, image := range options.Tags {
-		to.images[image] = true
+	to.images = append(to.images, image)
 
-		to.imageSecrets[image] = map[string]string{}
-
-		for _, secret := range options.Secrets {
-			if secret.Type == apiv1.EnvSecret && secret.Value != "" {
-				to.imageSecrets[image][secret.ID] = secret.Value
-			}
+	if options.IidFile != "" {
+		err := usvc_io.WriteFile(options.IidFile, []byte(guid), osutil.PermissionOwnerReadWriteOthersRead)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -950,16 +956,21 @@ func (to *TestContainerOrchestrator) InspectImages(ctx context.Context, options 
 
 	var err error
 	var result []containers.InspectedImage
-	for _, image := range options.Images {
-		if _, found := to.images[image]; !found {
+
+	for _, imageId := range options.Images {
+		image, found := to.findImage(imageId)
+		if !found {
 			err = errors.Join(err, containers.ErrNotFound)
 			continue
 		}
 
-		// TODO: Surface mock image build data via inspection
+		// CONSIDER: surface mock image build data via inspection
+
 		result = append(result, containers.InspectedImage{
-			Id:     to.imageIds[image],
-			Labels: map[string]string{},
+			Id:     image.id,
+			Labels: image.labels,
+			Tags:   image.tags,
+			Digest: image.digest,
 		})
 	}
 
@@ -970,28 +981,70 @@ func (to *TestContainerOrchestrator) InspectImages(ctx context.Context, options 
 	return result, err
 }
 
-func (to *TestContainerOrchestrator) GetImageId(tag string) (string, bool) {
+func (to *TestContainerOrchestrator) PullImage(ctx context.Context, options containers.PullImageOptions) (string, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
-	id, found := to.imageIds[tag]
-	return id, found
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		return "", errRuntimeUnhealthy
+	}
+
+	image, found := to.findImage(options.Image)
+	if found {
+		return image.id, nil
+	}
+
+	// For now we pretend that all pulls are successful.
+
+	guid := uuid.New().String()
+	image = &testImage{
+		id:      guid,
+		tags:    []string{options.Image},
+		secrets: map[string]string{},
+	}
+	if options.Digest != "" {
+		image.digest = options.Digest
+	} else {
+		image.digest = toDigest(sha256.Sum256([]byte(guid)))
+	}
+
+	to.images = append(to.images, image)
+
+	return image.id, nil
 }
 
-func (to *TestContainerOrchestrator) GetImageSecrets(tag string) (map[string]string, bool) {
+func (to *TestContainerOrchestrator) HasImage(id string) bool {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
-	secrets, found := to.imageSecrets[tag]
-	return secrets, found
-}
-
-func (to *TestContainerOrchestrator) HasImage(tag string) bool {
-	to.mutex.Lock()
-	defer to.mutex.Unlock()
-
-	_, found := to.images[tag]
+	_, found := to.findImage(id)
 	return found
+}
+
+func (to *TestContainerOrchestrator) findImage(id string) (*testImage, bool) {
+	i := slices.IndexFunc(to.images, func(img *testImage) bool {
+		return img.id == id || slices.Contains(img.tags, id)
+	})
+	if i >= 0 {
+		return to.images[i], true
+	} else {
+		return nil, false
+	}
+}
+
+func toDigest(sha [32]byte) string {
+	return fmt.Sprintf("sha256:%s", hex.EncodeToString(sha[:]))
+}
+
+func (to *TestContainerOrchestrator) ImageCount() int {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	return len(to.images)
 }
 
 func (to *TestContainerOrchestrator) WatchContainers(sink chan<- containers.EventMessage) (*pubsub.Subscription[containers.EventMessage], error) {

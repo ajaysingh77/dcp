@@ -13,6 +13,7 @@ func Contains[T comparable, S ~[]T](ss S, s T) bool {
 	return Index(ss, s) != -1
 }
 
+// Returns the index of the first occurrence of `s` in `ss`, or -1 if not found.
 func Index[T comparable, S ~[]T](ss S, s T) int {
 	for i, b := range ss {
 		if b == s {
@@ -22,6 +23,7 @@ func Index[T comparable, S ~[]T](ss S, s T) int {
 	return -1
 }
 
+// Returns the index of the first occurrence of `seq` in `ss`, or -1 if not found.
 // This is "naive" algorithm that works well for short sequences (less than 5 elements),
 // which is our main use case.
 // If a need arises, we could switch this to Knuth-Morris-Pratt algorithm.
@@ -168,7 +170,8 @@ func All[T any, SF SelectFunc[T], S ~[]T](ss S, selector SF) bool {
 	return LenIf(ss, selector) == len(ss)
 }
 
-// IndexFunc returns the index of the first element that matches the selector function.
+// IndexFunc returns the index of the first element that matches the selector function,
+// or -1 if no such element is found.
 // The name is not great, but it matches the Go standard library's `slices.IndexFunc` function.
 func IndexFunc[T any, SF SelectFunc[T], S ~[]T](ss S, selector SF) int {
 	sf := func(i int, s *T) bool {

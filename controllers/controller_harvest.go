@@ -25,7 +25,7 @@ type resourceHarvester struct {
 	protectedNetworks map[string]bool
 
 	// Synchronization for network harvesting.
-	networkHarvestSync *concurrency.SyncChannel
+	networkHarvestLock *concurrency.ContextAwareLock
 
 	// Has the harvester started? Ensures that we only run the harvester once.
 	started atomic.Bool
@@ -38,7 +38,7 @@ func NewResourceHarvester() *resourceHarvester {
 	return &resourceHarvester{
 		processes:          make(map[process.Pid_t]bool),
 		protectedNetworks:  make(map[string]bool),
-		networkHarvestSync: concurrency.NewSyncChannel(),
+		networkHarvestLock: concurrency.NewContextAwareLock(),
 		started:            atomic.Bool{},
 		done:               atomic.Bool{},
 	}
@@ -72,11 +72,11 @@ func (rh *resourceHarvester) TryProtectNetwork(
 		return true
 	}
 
-	if !rh.networkHarvestSync.TryLock() {
-		// If we cannot aquire the lock, the harvester is currently removing networks
+	if !rh.networkHarvestLock.TryLock() {
+		// If we cannot acquire the lock, the harvester is currently removing networks
 		return false
 	}
-	defer rh.networkHarvestSync.Unlock()
+	defer rh.networkHarvestLock.Unlock()
 
 	rh.protectedNetworks[networkName] = true
 	return true
@@ -225,12 +225,12 @@ func (rh *resourceHarvester) harvestAbandonedNetworks(
 		log.Info("could not inspect all running networks", "Error", inspectErr)
 	}
 
-	lockErr := rh.networkHarvestSync.Lock(ctx)
+	lockErr := rh.networkHarvestLock.Lock(ctx)
 	if lockErr != nil {
 		log.Info("could not acquire network harvest lock, skipping network harvesting", "Error", lockErr)
 		return lockErr // We could not acquire the lock, so we cannot harvest networks.
 	}
-	defer rh.networkHarvestSync.Unlock()
+	defer rh.networkHarvestLock.Unlock()
 
 	var networksToRemove []string
 	for _, network := range inspectedNetworks {

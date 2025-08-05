@@ -2,17 +2,19 @@ package concurrency
 
 import "context"
 
-type SyncChannel struct {
+// ContextAwareLock is a type of lock that can be locked only if the context passed to the Lock() operation is not done.
+// It also exposes a TryLock() operation that allows the caller to attempt to acquire the lock without blocking.
+type ContextAwareLock struct {
 	ch chan struct{}
 }
 
-func NewSyncChannel() *SyncChannel {
-	return &SyncChannel{
+func NewContextAwareLock() *ContextAwareLock {
+	return &ContextAwareLock{
 		ch: make(chan struct{}, 1),
 	}
 }
 
-func (sc *SyncChannel) Lock(ctx context.Context) error {
+func (sc *ContextAwareLock) Lock(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -28,7 +30,7 @@ func (sc *SyncChannel) Lock(ctx context.Context) error {
 	return nil
 }
 
-func (sc *SyncChannel) TryLock() bool {
+func (sc *ContextAwareLock) TryLock() bool {
 	select {
 	case sc.ch <- struct{}{}:
 		return true
@@ -37,7 +39,7 @@ func (sc *SyncChannel) TryLock() bool {
 	}
 }
 
-func (sc *SyncChannel) Unlock() {
+func (sc *ContextAwareLock) Unlock() {
 	// Non-blocking for caller
 	select {
 	case <-sc.ch:

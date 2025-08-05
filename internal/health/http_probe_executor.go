@@ -33,7 +33,7 @@ type httpHealthProbeDescriptor struct {
 	pprobe *atomic.Pointer[apiv1.HttpProbe]
 
 	// The lock for ensuring that only one goroutine is computing the resolved probe.
-	lock *concurrency.SyncChannel
+	lock *concurrency.ContextAwareLock
 }
 
 type HttpProbeExecutor struct {
@@ -159,7 +159,7 @@ func (hpe *HttpProbeExecutor) resolveHttpProbe(
 	hpd, _ := resolvedHttpProbes.LoadOrStoreNew(probeID, func() httpHealthProbeDescriptor {
 		return httpHealthProbeDescriptor{
 			pprobe: new(atomic.Pointer[apiv1.HttpProbe]),
-			lock:   concurrency.NewSyncChannel(),
+			lock:   concurrency.NewContextAwareLock(),
 		}
 	})
 

@@ -25,6 +25,7 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/dcptun/proto"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
@@ -179,7 +180,7 @@ func TestTunnelDataThroughput(t *testing.T) {
 	tunnelSpec, prepareTunnelErr := serverProxyClient.PrepareTunnel(testCtx, tunnelReq)
 	require.NoError(t, prepareTunnelErr)
 
-	rootDir, findRootErr := testutil.FindRootFor(testutil.DirTarget, "test")
+	rootDir, findRootErr := osutil.FindRootFor(osutil.DirTarget, "test")
 	require.NoError(t, findRootErr, "Failed to find root directory for ./test")
 
 	runCtx, runCtxCancel := context.WithTimeout(testCtx, runDuration)

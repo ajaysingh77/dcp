@@ -28,7 +28,7 @@ func TestMruFileReadWrite(t *testing.T) {
 
 	params := defaultMruPortFileUsageParameters()
 	params.failOnPortFileError = true
-	pf, err := NewMruPortFile(path, params)
+	pf, err := newMruPortFile(path, params)
 	require.NoError(t, err)
 
 	usedPorts, readErr := pf.tryLockAndRead(testCtx)
@@ -53,7 +53,7 @@ func TestMruFileReadWrite(t *testing.T) {
 		usedPorts = append(usedPorts, r)
 	}
 
-	writeErr := pf.writeAndUnlock(testCtx, usedPorts)
+	writeErr := pf.WriteAndUnlock(testCtx, usedPorts)
 	require.NoError(t, writeErr)
 
 	usedPorts, readErr = pf.tryLockAndRead(testCtx)
@@ -99,7 +99,7 @@ func TestOldPortEntriesRemoved(t *testing.T) {
 	params := defaultMruPortFileUsageParameters()
 	params.failOnPortFileError = true
 	params.recentPortLifetime = 2 * time.Second
-	pf, err := NewMruPortFile(path, params)
+	pf, err := newMruPortFile(path, params)
 	require.NoError(t, err)
 
 	usedPorts, readErr := pf.tryLockAndRead(testCtx)
@@ -126,7 +126,7 @@ func TestOldPortEntriesRemoved(t *testing.T) {
 		usedPorts = append(usedPorts, r)
 	}
 
-	writeErr := pf.writeAndUnlock(testCtx, usedPorts)
+	writeErr := pf.WriteAndUnlock(testCtx, usedPorts)
 	require.NoError(t, writeErr)
 
 	usedPorts, readErr = pf.tryLockAndRead(testCtx)

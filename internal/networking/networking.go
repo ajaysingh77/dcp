@@ -18,7 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
+	"github.com/microsoft/usvc-apiserver/internal/dcppaths"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
@@ -44,6 +44,8 @@ const (
 	// Use a relatively short timeout for network operations such as IP lookup or socket open
 	// because we are only interested in local addresses and ports, so the operation should be fast.
 	NetworkOpTimeout = 2 * time.Second
+
+	DCP_INSTANCE_ID_PREFIX = "DCP_INSTANCE_ID_PREFIX"
 )
 
 var (
@@ -73,7 +75,7 @@ func init() {
 		panic("failed to create DCP instance ID: " + err.Error())
 	}
 	programInstanceID = string(idBytes)
-	value, found := os.LookupEnv("DCP_INSTANCE_ID_PREFIX")
+	value, found := os.LookupEnv(DCP_INSTANCE_ID_PREFIX)
 	if found && strings.TrimSpace(value) != "" {
 		programInstanceID = value + programInstanceID
 	}
@@ -277,7 +279,7 @@ func GetFreePort(protocol apiv1.PortProtocol, address string, log logr.Logger) (
 					Timestamp:      time.Now(),
 					Instance:       programInstanceID,
 				})
-				if writeErr := packageMruPortFile.writeAndUnlock(ctx, usedPorts); writeErr != nil {
+				if writeErr := packageMruPortFile.WriteAndUnlock(ctx, usedPorts); writeErr != nil {
 					log.Error(writeErr, "could not write to the most recently used ports file")
 					if packageMruPortFile.params.failOnPortFileError {
 						return false, writeErr
@@ -504,7 +506,7 @@ func ensurePackageMruPortFile(log logr.Logger) error {
 	}
 
 	err := func() error {
-		dcpFolder, dcpFolderErr := dcppaths.EnsureDcpRootDir()
+		dcpFolder, dcpFolderErr := dcppaths.EnsureUserDcpDir()
 		if dcpFolderErr != nil {
 			return dcpFolderErr
 		}
@@ -522,7 +524,7 @@ func ensurePackageMruPortFile(log logr.Logger) error {
 		}
 
 		var creationErr error
-		packageMruPortFile, creationErr = NewMruPortFile(lockfilePath, defaultMruPortFileUsageParameters())
+		packageMruPortFile, creationErr = newMruPortFile(lockfilePath, defaultMruPortFileUsageParameters())
 		return creationErr
 	}()
 
