@@ -94,11 +94,7 @@ func probeForExtensionsDir() (string, error) {
 	}
 
 	if enableTestPathProbing.Load() {
-		dcpCtrlExeName := "dcpctrl"
-		if osutil.IsWindows() {
-			dcpCtrlExeName += ".exe"
-		}
-		tail := []string{DcpBinDir, DcpExtensionsDir, dcpCtrlExeName}
+		tail := []string{DcpBinDir, dcpExeName}
 		rootFolder, rootFindErr := osutil.FindRootFor(osutil.FileTarget, tail...)
 		if rootFindErr == nil {
 			return filepath.Join(rootFolder, DcpBinDir, DcpExtensionsDir), nil

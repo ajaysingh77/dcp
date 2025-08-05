@@ -413,28 +413,20 @@ test-prereqs: $(TEST_PREREQS) ## Ensures all prerequisites for running tests are
 .PHONY: test-ci-prereqs
 test-ci-prereqs: $(TEST_PREREQS)
 
-.PHONY: test
+COMMON_TEST_OPTS := -coverprofile cover.out -count 1
 ifeq ($(CGO_ENABLED),0)
-test: TEST_OPTS = -coverprofile cover.out -count 1 -parallel 32
-test: test-prereqs ## Run all tests in the repository
-	$(GO_BIN) test ./... $(TEST_OPTS)
+TEST_OPTS := $(COMMON_TEST_OPTS)
 else
-test: TEST_OPTS = -coverprofile cover.out -race -count 1
-test: test-prereqs
-	$(GO_BIN) test ./... $(TEST_OPTS)
+TEST_OPTS := $(COMMON_TEST_OPTS) -race
 endif
 
+.PHONY: test
+test: test-prereqs ## Run all tests in the repository
+	$(GO_BIN) test ./... $(TEST_OPTS) -parallel 32
+
 .PHONY: test-ci
-ifeq ($(CGO_ENABLED),0)
-# On Windows enabling -race requires additional components to be installed (gcc), so we do not support it at the moment.
-test-ci: TEST_OPTS = -coverprofile cover.out -count 1
 test-ci: test-ci-prereqs ## Runs tests in a way appropriate for CI pipeline, with linting etc.
 	$(GO_BIN) test ./... $(TEST_OPTS)
-else
-test-ci: TEST_OPTS = -coverprofile cover.out -race -count 1
-test-ci: test-ci-prereqs
-	$(GO_BIN) test ./... $(TEST_OPTS)
-endif
 
 .PHONY: test-extended
 test-extended: test-prereqs httpcontent-stream-repro ## Run all tests, including tests that require special environment setup
