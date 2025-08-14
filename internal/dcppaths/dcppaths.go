@@ -5,6 +5,7 @@ import (
 	"fmt"
 	iofs "io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -61,6 +62,15 @@ func GetDcpBinDir() (string, error) {
 	return filepath.Join(extensionsDir, DcpBinDir), nil
 }
 
+func WithDcpBinDir(cmd *exec.Cmd) {
+	binDir, err := GetDcpBinDir()
+	if err != nil {
+		return
+	}
+
+	cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", DcpBinPathEnv, binDir))
+}
+
 // Figure out the extensions directory based on current executable path, filesystem probing, and well-known environment variables.
 func probeForExtensionsDir() (string, error) {
 	// We assume the binaries can be found in 3 locations:
@@ -76,6 +86,7 @@ func probeForExtensionsDir() (string, error) {
 	exePath, err := osutil.ThisExecutablePath()
 	if err == nil {
 		exeDir, exeName := filepath.Split(exePath)
+		exeDir = filepath.Clean(exeDir)
 
 		switch {
 		case exeName == dcpExeName:
@@ -104,7 +115,7 @@ func probeForExtensionsDir() (string, error) {
 	// Fallback: return the default DCP extensions directory inside the user's home directory.
 	home, homeDirGetErr := os.UserHomeDir()
 	if homeDirGetErr != nil {
-		return "", fmt.Errorf("could not determine the path to DCP extensions directory: the program location is not within the standard DCP directory structure, and we could not determine the path to the user's home directory: %w", homeDirGetErr)
+		return "", fmt.Errorf("could not determine the path to DCP extensions directory: the program location is not within the standard DCP directory structure, and we could not determine the path to the user's home directory: %w", errors.Join(err, homeDirGetErr))
 	}
 
 	extensionsDir := filepath.Join(home, DcpUserDir, DcpExtensionsDir)

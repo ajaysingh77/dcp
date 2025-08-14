@@ -65,8 +65,7 @@ func ThisExecutablePath() (string, error) {
 		return "", fmt.Errorf(errFmt, err)
 	}
 
-	dir := filepath.Dir(ex)
-	return dir, nil
+	return ex, nil
 }
 
 type PathFindTarget int
