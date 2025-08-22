@@ -51,7 +51,7 @@ stateDiagram-v2
    Ensures that the object has the finalizer set.
    Verifies the preconditions for transitioning to BuildingImage state:
    - Verifies that the referenced ContainerNetwork exists and its state is "Running" (i.e. it was created with the orchestrator). If true, transition to BuildingImage state. If not, remain in Pending state and schedule additional reconciliation.
-   - The ContainerNetworkTunnelProxy also stays in Pending state if container runtime is unhealthy.
+   - The ContainerNetworkTunnelProxy also stays in Pending state if container runtime is unhealthy (although if that is the case, it is very unlikely that the ContainerNetwork will be in "Running" state).
 
 2. BuildingImage state
 

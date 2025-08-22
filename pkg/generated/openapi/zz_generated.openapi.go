@@ -1340,6 +1340,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxyStatus(re
 							Format:      "int32",
 						},
 					},
+					"clientProxyContainerImage": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The name and tag of the container image used for the client proxy container.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"clientProxyContainerId": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Container ID of the running client proxy container.",

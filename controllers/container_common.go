@@ -6,15 +6,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
+	std_slices "slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
 	"github.com/go-logr/logr"
 
+	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
 const (
@@ -236,7 +240,7 @@ func createContainer(createCtx context.Context, o containers.ContainerOrchestrat
 func startContainer(
 	startCtx context.Context,
 	o containers.ContainerOrchestrator,
-	containerObjectName string,
+	containerName string,
 	containerID string,
 	streamOptions containers.StreamCommandOptions,
 ) (*containers.InspectedContainer, error) {
@@ -255,7 +259,7 @@ func startContainer(
 				return nil
 
 			case containers.ContainerStatusDead:
-				return resiliency.Permanent(fmt.Errorf("container '%s' start failed (current state is 'dead')", containerObjectName))
+				return resiliency.Permanent(fmt.Errorf("container '%s' start failed (current state is 'dead')", containerName))
 
 			case containers.ContainerStatusExited:
 				// It is possible that the container starts and then exits very quickly afterwards.
@@ -263,11 +267,11 @@ func startContainer(
 				if i.ExitCode == 0 {
 					return nil
 				} else {
-					return resiliency.Permanent(fmt.Errorf("container '%s' start failed (exit code %d)", containerObjectName, i.ExitCode))
+					return resiliency.Permanent(fmt.Errorf("container '%s' start failed (exit code %d)", containerName, i.ExitCode))
 				}
 
 			default:
-				errMsg := fmt.Sprintf("status of container '%s' is '%s' (was expecting '%s')", containerObjectName, i.Status, containers.ContainerStatusRunning)
+				errMsg := fmt.Sprintf("status of container '%s' is '%s' (was expecting '%s')", containerName, i.Status, containers.ContainerStatusRunning)
 				if i.Error != "" {
 					errMsg += fmt.Sprintf(", error: %s", i.Error)
 				}
@@ -287,7 +291,7 @@ func disconnectNetwork(ctx context.Context, o containers.ContainerOrchestrator, 
 
 	verify := func(ctx context.Context) (*containers.InspectedNetwork, error) {
 		return verifyNetworkState(ctx, o, opts.Network, func(i *containers.InspectedNetwork) error {
-			if !slices.ContainsFunc(i.Containers, func(c containers.InspectedNetworkContainer) bool {
+			if !std_slices.ContainsFunc(i.Containers, func(c containers.InspectedNetworkContainer) bool {
 				return c.Name == opts.Container || strings.HasPrefix(c.Id, opts.Container)
 			}) {
 				return nil
@@ -461,4 +465,88 @@ func createVolume(ctx context.Context, o containers.VolumeOrchestrator, volumeNa
 
 	inspected, err := callWithRetryAndVerification(ctx, defaultContainerOrchestratorBackoff(), action, verify)
 	return inspected, err
+}
+
+// Returns the host address and port for the given service producer port.
+// The spec is checked for a matching apiv1.ContainerPort in the spec, first by matching on apiv1.ContainerPort.HostPort,
+// and if unsuccessful, by matching on apiv1.ContainerPort.ContainerPort.
+// If a matching ContainerPort is found in the spec, and that matching ContainerPort has a HostPort property set
+// (i.e. host port is not auto-assigned), the host address and port in the spec are returned.
+// Otherwise the function takes the inspected container and searches for port config that matches the service producer port
+// (on the container side). If found, corresponding host port and host IP are returned.
+func getHostAddressAndPortForContainerPort(
+	ctrSpec apiv1.ContainerSpec,
+	serviceProducerPort int32,
+	inspected *containers.InspectedContainer,
+	log logr.Logger,
+) (string, int32, error) {
+	var matchedPort apiv1.ContainerPort
+	found := false
+
+	matchedByHost := slices.Select(ctrSpec.Ports, func(p apiv1.ContainerPort) bool {
+		return p.HostPort == serviceProducerPort
+	})
+	if len(matchedByHost) > 0 {
+		matchedPort = matchedByHost[0]
+		found = true
+	} else {
+		matchedByContainer := slices.Select(ctrSpec.Ports, func(p apiv1.ContainerPort) bool {
+			return p.ContainerPort == serviceProducerPort
+		})
+		if len(matchedByContainer) > 0 {
+			matchedPort = matchedByContainer[0]
+			found = true
+		}
+	}
+
+	if found && matchedPort.HostPort != 0 {
+		hostAddress := normalizeHostAddress(matchedPort.HostIP)
+		// If the spec contains a port matching the desired container port, just use that
+		log.V(1).Info("found matching port in Container spec", "ServiceProducerPort", serviceProducerPort, "HostPort", matchedPort.HostPort, "HostIP", matchedPort.HostIP, "EffectiveHostAddress", hostAddress)
+		return hostAddress, matchedPort.HostPort, nil
+	}
+
+	if inspected.Status != containers.ContainerStatusRunning {
+		return "", 0, fmt.Errorf("container '%s' is not running: %s", inspected.Name, inspected.Status)
+	}
+
+	var matchedHostPort containers.InspectedContainerHostPortConfig
+	found = false
+	for k, v := range inspected.Ports {
+		ctrPort := strings.Split(k, "/")[0]
+
+		if ctrPort == fmt.Sprintf("%d", serviceProducerPort) {
+			matchedHostPort = v[0]
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return "", 0, fmt.Errorf("could not find host port for container port %d (no matching host port found)", serviceProducerPort)
+	}
+
+	hostPort, err := strconv.ParseInt(matchedHostPort.HostPort, 10, 32)
+	if err != nil {
+		return "", 0, fmt.Errorf("could not parse host port '%s' as integer", matchedHostPort.HostPort)
+	} else if hostPort <= 0 {
+		return "", 0, fmt.Errorf("could not find host port for container port %d (invalid host port value %d reported by container orchestrator)", serviceProducerPort, hostPort)
+	}
+
+	hostAddress := normalizeHostAddress(matchedHostPort.HostIp)
+	log.V(1).Info("matched service producer port to one of the container host ports", "ServiceProducerPort", serviceProducerPort, "HostPort", hostPort, "HostIP", matchedHostPort.HostIp, "EffectiveHostAddress", hostAddress)
+	return hostAddress, int32(hostPort), nil
+}
+
+func normalizeHostAddress(hostIP string) string {
+	hostAddress := hostIP
+
+	switch hostAddress {
+	case "", networking.IPv4AllInterfaceAddress:
+		hostAddress = networking.IPv4LocalhostDefaultAddress
+	case networking.IPv6AllInterfaceAddress:
+		hostAddress = networking.IPv6LocalhostDefaultAddress
+	}
+
+	return hostAddress
 }

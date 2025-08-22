@@ -256,7 +256,9 @@ func StartTestEnvironment(
 
 	if inclCtrl&ContainerNetworkTunnelProxyController != 0 {
 		tunnelProxyR := controllers.NewContainerNetworkTunnelProxyReconciler(
+			ctx,
 			mgr.GetClient(),
+			serverInfo.ContainerOrchestrator,
 			log.WithName("TunnelProxyReconciler"),
 		)
 		if err = tunnelProxyR.SetupWithManager(mgr, instanceTag+"-ContainerNetworkTunnelProxyReconciler"); err != nil {

@@ -9,6 +9,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/internal/dcppaths"
+	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
@@ -19,7 +21,7 @@ func TestTunnelProxyCreateDelete(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
-
+	dcppaths.EnableTestPathProbing()
 	const testName = "test-tunnel-proxy-create-delete"
 
 	// First create a ContainerNetwork that the tunnel proxy will reference
@@ -79,7 +81,7 @@ func TestTunnelProxyDelayedNetworkCreation(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
-
+	dcppaths.EnableTestPathProbing()
 	const testName = "test-tunnel-proxy-delayed-network-creation"
 
 	// Create the ContainerNetworkTunnelProxy object WITHOUT creating the ContainerNetwork first
@@ -122,7 +124,61 @@ func TestTunnelProxyDelayedNetworkCreation(t *testing.T) {
 	require.NoError(t, createNetworkErr, "Could not create a ContainerNetwork object")
 
 	t.Log("Waiting for ContainerNetworkTunnelProxy to transition to Running state...")
-	_ = waitObjectAssumesState(t, ctx, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+	updatedTunnelProxy := waitObjectAssumesState(t, ctx, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
 		return tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateRunning, nil
 	})
+
+	require.NotEmpty(t, updatedTunnelProxy.Status.ClientProxyContainerImage, "Tunnel proxy should publish the image for the client proxy container")
+}
+
+// Verifies that running ContainerNetworkTunnelProxy has the status updated with client proxy and server proxy information.
+func TestTunnelProxyRunningStatus(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	dcppaths.EnableTestPathProbing()
+	const testName = "test-tunnel-proxy-running-status"
+
+	// First create a ContainerNetwork that the tunnel proxy will reference
+	network := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-network",
+			Namespace: metav1.NamespaceNone,
+		},
+	}
+
+	t.Logf("Creating ContainerNetwork object '%s'", network.ObjectMeta.Name)
+	err := client.Create(ctx, &network)
+	require.NoError(t, err, "Could not create a ContainerNetwork object")
+
+	// Create the ContainerNetworkTunnelProxy object
+	tunnelProxy := apiv1.ContainerNetworkTunnelProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerNetworkTunnelProxySpec{
+			ContainerNetworkName: network.ObjectMeta.Name,
+			Tunnels: []apiv1.TunnelConfiguration{
+				{
+					Name:       "test-tunnel",
+					ServerPort: 8080,
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating ContainerNetworkTunnelProxy object '%s'...", tunnelProxy.ObjectMeta.Name)
+	err = client.Create(ctx, &tunnelProxy)
+	require.NoError(t, err, "Could not create a ContainerNetworkTunnelProxy object")
+
+	t.Log("Waiting for ContainerNetworkTunnelProxy to transition to Running state...")
+	updatedTunnelProxy := waitObjectAssumesState(t, ctx, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+		return tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateRunning, nil
+	})
+
+	require.NotEmpty(t, updatedTunnelProxy.Status.ClientProxyContainerImage, "Tunnel proxy should publish the image for the client proxy container")
+	require.NotEmpty(t, updatedTunnelProxy.Status.ClientProxyContainerID, "Tunnel proxy should have a client proxy container ID")
+	require.True(t, networking.IsValidPort(int(updatedTunnelProxy.Status.ClientProxyControlPort)), "Tunnel proxy should have a valid client proxy control port")
+	require.True(t, networking.IsValidPort(int(updatedTunnelProxy.Status.ClientProxyDataPort)), "Tunnel proxy should have a valid client proxy data port")
 }

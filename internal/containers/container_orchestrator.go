@@ -254,10 +254,20 @@ type RemoveContainers interface {
 // CreateContainer command types
 
 type CreateContainerOptions struct {
-	// Name of the container
+	// Name of the container. If empty, the container orchestrator will provide a default name for the new container.
+	//
+	// Note: There is also ContainerSpec.ContainerName, but we need to have the ability
+	//       to use specific container name even if ContainerSpec.ContainerName is not set,
+	//       so this is why this property exist.
+	//       Container orchestrator implementations should use only Name property at creation time
+	//       and not rely on ContainerSpec.ContainerName.
 	Name string
 
-	// Name or ID of a network to connect to
+	// Name or ID of a network to connect to _at creation time_.
+	// If not set, the container will be connected to default network.
+	//
+	// Note: ContainerSpec.Networks specifies which networks the container will be connected to eventually,
+	//       but that property should not be used at creation time.
 	Network string
 
 	// Healthcheck configuration for the container

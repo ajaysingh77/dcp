@@ -1280,7 +1280,14 @@ func (to *TestContainerOrchestrator) CreateContainer(ctx context.Context, option
 		effectiveNetwork = to.DefaultNetworkName()
 	}
 
-	if err = to.doConnectNetwork(ctx, to.networks[effectiveNetwork], container); err != nil {
+	allNetworks := maps.Values(to.networks)
+	i := slices.IndexFunc(allNetworks, func(n *containerNetwork) bool {
+		return n.matches(effectiveNetwork)
+	})
+	if i < 0 {
+		return "", errors.Join(containers.ErrNotFound, fmt.Errorf("network %s not found", effectiveNetwork))
+	}
+	if err = to.doConnectNetwork(ctx, allNetworks[i], container); err != nil {
 		return container.ID, err
 	}
 
@@ -1517,7 +1524,14 @@ func (to *TestContainerOrchestrator) RunContainer(ctx context.Context, options c
 		effectiveNetwork = to.DefaultNetworkName()
 	}
 
-	if err = to.doConnectNetwork(ctx, to.networks[effectiveNetwork], container); err != nil {
+	allNetworks := maps.Values(to.networks)
+	i := slices.IndexFunc(allNetworks, func(n *containerNetwork) bool {
+		return n.matches(effectiveNetwork)
+	})
+	if i < 0 {
+		return "", errors.Join(containers.ErrNotFound, fmt.Errorf("network %s not found", effectiveNetwork))
+	}
+	if err = to.doConnectNetwork(ctx, allNetworks[i], container); err != nil {
 		return container.ID, err
 	}
 

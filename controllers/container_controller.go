@@ -12,7 +12,6 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1402,7 +1401,7 @@ func (r *ContainerReconciler) cleanupDcpContainerResources(ctx context.Context, 
 
 func (r *ContainerReconciler) startContainerWithTimeout(
 	parentCtx context.Context,
-	containerObjectName string,
+	containerName string,
 	containerID containerID,
 	streamOptions containers.StreamCommandOptions,
 ) (*containers.InspectedContainer, error) {
@@ -1412,7 +1411,7 @@ func (r *ContainerReconciler) startContainerWithTimeout(
 		startContainerCallCtx, startContainerCallCtxCancel = context.WithTimeout(parentCtx, r.config.ContainerStartupTimeoutOverride)
 		defer startContainerCallCtxCancel()
 	}
-	inspected, err := startContainer(startContainerCallCtx, r.orchestrator, containerObjectName, string(containerID), streamOptions)
+	inspected, err := startContainer(startContainerCallCtx, r.orchestrator, containerName, string(containerID), streamOptions)
 	return inspected, err
 }
 
@@ -1753,7 +1752,7 @@ func (r *ContainerReconciler) createEndpoint(
 		return nil, err
 	}
 
-	hostAddress, hostPort, err := r.getHostAddressAndPortForContainerPort(owner.(*apiv1.Container), serviceProducer.Port, inspected, log)
+	hostAddress, hostPort, err := getHostAddressAndPortForContainerPort(owner.(*apiv1.Container).Spec, serviceProducer.Port, inspected, log)
 	if err != nil {
 		log.Error(err, "could not determine host address and port for container port")
 		return nil, err
@@ -1784,7 +1783,7 @@ func (r *ContainerReconciler) validateExistingEndpoint(
 	endpoint *apiv1.Endpoint,
 	log logr.Logger,
 ) error {
-	hostAddress, hostPort, err := r.getHostAddressAndPortForContainerPort(owner.(*apiv1.Container), serviceProducer.Port, inspected, log)
+	hostAddress, hostPort, err := getHostAddressAndPortForContainerPort(owner.(*apiv1.Container).Spec, serviceProducer.Port, inspected, log)
 	if err != nil {
 		log.Error(err, "could not determine host address and port for container port")
 		return err
@@ -1796,83 +1795,6 @@ func (r *ContainerReconciler) validateExistingEndpoint(
 	}
 
 	return nil
-}
-
-func (r *ContainerReconciler) getHostAddressAndPortForContainerPort(
-	ctr *apiv1.Container,
-	serviceProducerPort int32,
-	inspected *containers.InspectedContainer,
-	log logr.Logger,
-) (string, int32, error) {
-	var matchedPort apiv1.ContainerPort
-	found := false
-
-	matchedByHost := slices.Select(ctr.Spec.Ports, func(p apiv1.ContainerPort) bool {
-		return p.HostPort == serviceProducerPort
-	})
-	if len(matchedByHost) > 0 {
-		matchedPort = matchedByHost[0]
-		found = true
-	} else {
-		matchedByContainer := slices.Select(ctr.Spec.Ports, func(p apiv1.ContainerPort) bool {
-			return p.ContainerPort == serviceProducerPort
-		})
-		if len(matchedByContainer) > 0 {
-			matchedPort = matchedByContainer[0]
-			found = true
-		}
-	}
-
-	if found && matchedPort.HostPort != 0 {
-		hostAddress := normalizeHostAddress(matchedPort.HostIP)
-		// If the spec contains a port matching the desired container port, just use that
-		log.V(1).Info("found matching port in Container spec", "ServiceProducerPort", serviceProducerPort, "HostPort", matchedPort.HostPort, "HostIP", matchedPort.HostIP, "EffectiveHostAddress", hostAddress)
-		return hostAddress, matchedPort.HostPort, nil
-	}
-
-	if inspected.Status != containers.ContainerStatusRunning {
-		return "", 0, fmt.Errorf("container '%s' is not running: %s", inspected.Name, inspected.Status)
-	}
-
-	var matchedHostPort containers.InspectedContainerHostPortConfig
-	found = false
-	for k, v := range inspected.Ports {
-		ctrPort := strings.Split(k, "/")[0]
-
-		if ctrPort == fmt.Sprintf("%d", serviceProducerPort) {
-			matchedHostPort = v[0]
-			found = true
-			break
-		}
-	}
-
-	if !found {
-		return "", 0, fmt.Errorf("could not find host port for container port %d (no matching host port found)", serviceProducerPort)
-	}
-
-	hostPort, err := strconv.ParseInt(matchedHostPort.HostPort, 10, 32)
-	if err != nil {
-		return "", 0, fmt.Errorf("could not parse host port '%s' as integer", matchedHostPort.HostPort)
-	} else if hostPort <= 0 {
-		return "", 0, fmt.Errorf("could not find host port for container port %d (invalid host port value %d reported by container orchestrator)", serviceProducerPort, hostPort)
-	}
-
-	hostAddress := normalizeHostAddress(matchedHostPort.HostIp)
-	log.V(1).Info("matched service producer port to one of the container host ports", "ServiceProducerPort", serviceProducerPort, "HostPort", hostPort, "HostIP", matchedHostPort.HostIp, "EffectiveHostAddress", hostAddress)
-	return hostAddress, int32(hostPort), nil
-}
-
-func normalizeHostAddress(hostIP string) string {
-	hostAddress := hostIP
-
-	switch hostAddress {
-	case "", networking.IPv4AllInterfaceAddress:
-		hostAddress = networking.IPv4LocalhostDefaultAddress
-	case networking.IPv6AllInterfaceAddress:
-		hostAddress = networking.IPv6LocalhostDefaultAddress
-	}
-
-	return hostAddress
 }
 
 // CONTAINER RESOURCE MANAGEMENT METHODS

@@ -1,4 +1,4 @@
-package dcptun
+package dcptun_test
 
 import (
 	"os"
@@ -12,6 +12,7 @@ import (
 
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/dcppaths"
+	"github.com/microsoft/usvc-apiserver/internal/dcptun"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
@@ -33,11 +34,11 @@ func TestClientProxyImageBuild(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), t.Name()+".list")
 	defer func() { _ = os.Remove(path) }() // Best effort cleanup
-	opts := BuildClientProxyImageOptions{
+	opts := dcptun.BuildClientProxyImageOptions{
 		TimeoutOption:                 containers.TimeoutOption{Timeout: testTimeout / 2},
 		MostRecentImageBuildsFilePath: path,
 	}
-	imageName, buildErr := EnsureClientProxyImage(ctx, opts, co, log)
+	imageName, buildErr := dcptun.EnsureClientProxyImage(ctx, opts, co, log)
 	require.NoError(t, buildErr, "Failed to ensure client proxy image")
 
 	imgs, inspectErr := co.InspectImages(ctx, containers.InspectImagesOptions{
@@ -69,7 +70,7 @@ func TestConcurrentClientProxyImageBuild(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), t.Name()+".list")
 	defer func() { _ = os.Remove(path) }() // Best effort cleanup
-	opts := BuildClientProxyImageOptions{
+	opts := dcptun.BuildClientProxyImageOptions{
 		TimeoutOption:                 containers.TimeoutOption{Timeout: testTimeout / 2},
 		MostRecentImageBuildsFilePath: path,
 	}
@@ -87,7 +88,7 @@ func TestConcurrentClientProxyImageBuild(t *testing.T) {
 	for i := 0; i < numConcurrentBuilds; i++ {
 		go func() {
 			defer wg.Done()
-			imageName, buildErr := EnsureClientProxyImage(ctx, opts, co, log)
+			imageName, buildErr := dcptun.EnsureClientProxyImage(ctx, opts, co, log)
 			rchan <- imgBuildRes{imageName, buildErr}
 		}()
 	}

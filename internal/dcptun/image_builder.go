@@ -44,6 +44,17 @@ const (
 	baseImageDigestLabel = "com.microsoft.developer.usvc-dev.base-image-digest"
 )
 
+const (
+	// Default port for the control endpoint of the client-side tunnel proxy (container network side).
+	DefaultContainerProxyControlPort = 15049
+
+	// Default port for the data endpoint of the client-side tunnel proxy (container network side).
+	DefaultContainerProxyDataPort = 15050
+
+	// Full path to the client proxy binary inside the container image.
+	ClientProxyBinaryPath = "/usr/local/bin/" + clientBinaryName
+)
+
 var (
 	// Protects critical sections of code that handles proxy image builds.
 	imageBuildLock = concurrency.NewContextAwareLock()
@@ -346,14 +357,14 @@ func setupImageBuildContext(dcpTunClientPath string, opts BuildClientProxyImageO
 FROM %s
 
 # Copy the dcptun client binary
-COPY %[2]s /usr/local/bin/%[2]s
+COPY %s %[3]s
 
 # Set the binary as executable (redundant but explicit)
-RUN chmod +x /usr/local/bin/%[2]s
+RUN chmod +x %[3]s
 
 # Set the entrypoint to the dcptun client
-ENTRYPOINT ["/usr/local/bin/%[2]s"]
-`, opts.BaseImage, clientBinaryName)
+ENTRYPOINT ["%[3]s"]
+`, opts.BaseImage, clientBinaryName, ClientProxyBinaryPath)
 
 	// Write Dockerfile
 	dockerfilePath := filepath.Join(tempDir, "Dockerfile")

@@ -95,6 +95,18 @@ type TunnelStatus struct {
 	Timestamp metav1.MicroTime `json:"timestamp"`
 }
 
+func (ts TunnelStatus) Equal(other TunnelStatus) bool {
+	// Default comparison works today, but may not in future,
+	// depending on what data TunnelStatus contains.
+	return ts == other
+}
+
+func (ts TunnelStatus) Clone() TunnelStatus {
+	// Returns copy of the struct because Go is a pass-by-value language.
+	// May not be enough in future, depending on what data TunnelStatus contains.
+	return ts
+}
+
 // ContainerNetworkTunnelProxySpec defines the desired state of a ContainerNetworkTunnelProxy.
 // +k8s:openapi-gen=true
 type ContainerNetworkTunnelProxySpec struct {
@@ -127,6 +139,9 @@ type ContainerNetworkTunnelProxyStatus struct {
 	// Monotonically increasing version number of the tunnel configuration that was applied to the proxy pair.
 	// Can be used by clients changing tunnel configuration (Tunnels property) to learn that the new configuration has become effective.
 	TunnelConfigurationVersion int32 `json:"tunnelConfigurationVersion,omitempty"`
+
+	// The name and tag of the container image used for the client proxy container.
+	ClientProxyContainerImage string `json:"clientProxyContainerImage,omitempty"`
 
 	// Container ID of the running client proxy container.
 	ClientProxyContainerID string `json:"clientProxyContainerId,omitempty"`
