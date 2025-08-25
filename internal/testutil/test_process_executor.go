@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -33,6 +34,10 @@ type ProcessExecution struct {
 	ExitHandler        process.ProcessExitHandler
 	ExitCode           int32
 	ExecutionEnded     chan struct{}
+	Signal             chan syscall.Signal // Channel to send simulated signals to the process
+
+	// Set to true when the process stop is initiated, enabling proper resource cleanup.
+	stopInitiated bool
 }
 
 func (pe *ProcessExecution) Running() bool {
@@ -120,6 +125,8 @@ type AutoExecution struct {
 
 	// The RunCommand function is called after the process is "running".
 	// It can write to command stdout and stderr. The return value is an exit code for the command.
+	// The function should be checking pe.Signal channel to see if any signals were sent to the process.
+	// The test convention is that execution should stop when SIGTERM is received.
 	RunCommand func(pe *ProcessExecution) int32
 
 	// If not nil, this is the error that will be returned by the Executor from StartProcess() call.
@@ -132,7 +139,7 @@ type AutoExecution struct {
 
 type TestProcessExecutor struct {
 	nextPID        int64
-	Executions     []ProcessExecution
+	Executions     []*ProcessExecution
 	AutoExecutions []AutoExecution
 	m              *sync.RWMutex
 	lifetimeCtx    context.Context
@@ -212,7 +219,7 @@ func (e *TestProcessExecutor) StartProcess(
 		pe.startWaitingChan = make(chan struct{})
 	}
 
-	e.Executions = append(e.Executions, pe)
+	e.Executions = append(e.Executions, &pe)
 
 	startWaitingForExit := func() {
 		e.m.Lock()
@@ -264,7 +271,7 @@ func (e *TestProcessExecutor) StartAndForget(cmd *exec.Cmd, _ process.ProcessCre
 		cmd.Stderr = usvc_io.NopWriteCloser(new(bytes.Buffer))
 	}
 
-	e.Executions = append(e.Executions, pe)
+	e.Executions = append(e.Executions, &pe)
 
 	if autoExecutionErr := e.maybeAutoExecute(&pe); autoExecutionErr != nil {
 		return process.UnknownPID, time.Time{}, autoExecutionErr
@@ -281,14 +288,22 @@ func (e *TestProcessExecutor) maybeAutoExecute(pe *ProcessExecution) error {
 					return ae.StartupError
 				} else {
 					eeChan := make(chan struct{})
-					e.Executions[len(e.Executions)-1].ExecutionEnded = eeChan
+					pe.ExecutionEnded = eeChan
+					pe.Signal = make(chan syscall.Signal, 1)
 
 					go func() {
 						exitCode := ae.RunCommand(pe)
 						close(eeChan)
-						stopProcessErr := e.stopProcessImpl(pe.PID, pe.StartedAt, exitCode)
-						if stopProcessErr != nil && ae.StopError == nil {
-							panic(fmt.Errorf("we should have an execution with PID=%d: %w", pe.PID, stopProcessErr))
+						e.m.Lock()
+						stopInitiated := pe.stopInitiated
+						e.m.Unlock()
+						if !stopInitiated {
+							// RunCommand() "ended on its own" (as opposed to being triggered by StopProcess() or SimulateProcessExit()),
+							// so we need to do the resource cleanup.
+							stopProcessErr := e.stopProcessImpl(pe.PID, pe.StartedAt, exitCode)
+							if stopProcessErr != nil && ae.StopError == nil {
+								panic(fmt.Errorf("we should have an execution with PID=%d: %w", pe.PID, stopProcessErr))
+							}
 						}
 					}()
 					break
@@ -321,11 +336,11 @@ func (e *TestProcessExecutor) FindAll(
 	command []string,
 	lastArg string,
 	cond ProcessSearchCriteriaCond,
-) []ProcessExecution {
+) []*ProcessExecution {
 	e.m.RLock()
 	defer e.m.RUnlock()
 
-	retval := make([]ProcessExecution, 0)
+	retval := make([]*ProcessExecution, 0)
 	if len(command) == 0 {
 		return retval
 	}
@@ -337,7 +352,7 @@ func (e *TestProcessExecutor) FindAll(
 	}
 
 	for _, pe := range e.Executions {
-		if sc.Matches(&pe) {
+		if sc.Matches(pe) {
 			retval = append(retval, pe)
 		}
 	}
@@ -345,13 +360,13 @@ func (e *TestProcessExecutor) FindAll(
 	return retval
 }
 
-func (e *TestProcessExecutor) FindByPid(pid process.Pid_t) (ProcessExecution, bool) {
+func (e *TestProcessExecutor) FindByPid(pid process.Pid_t) (*ProcessExecution, bool) {
 	e.m.RLock()
 	defer e.m.RUnlock()
 
 	i := e.findByPid(pid)
 	if i == NotFound {
-		return ProcessExecution{}, false
+		return nil, false
 	}
 	return e.Executions[i], true
 }
@@ -417,12 +432,21 @@ func (e *TestProcessExecutor) stopProcessImpl(pid process.Pid_t, processStartTim
 	}
 
 	pe := e.Executions[i]
+	pe.stopInitiated = true
 
 	if len(e.AutoExecutions) > 0 {
 		for _, ae := range e.AutoExecutions {
-			if ae.Condition.Matches(&pe) && ae.StopError != nil {
+			if !ae.Condition.Matches(pe) {
+				continue
+			}
+
+			if ae.StopError != nil {
 				e.m.Unlock()
 				return ae.StopError
+			}
+
+			if pe.Signal != nil {
+				pe.Signal <- syscall.SIGTERM
 			}
 		}
 	}

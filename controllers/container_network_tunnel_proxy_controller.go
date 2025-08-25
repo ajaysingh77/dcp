@@ -231,8 +231,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) Reconcile(ctx context.Context, r
 
 	if tproxy.DeletionTimestamp != nil && !tproxy.DeletionTimestamp.IsZero() {
 		log.Info("ContainerNetworkTunnelProxy object is being deleted")
-		r.releaseProxyResources(ctx, &tproxy, log)
-		change = deleteFinalizer(&tproxy, tunnelProxyFinalizer, log)
+		change = r.handleDeletionRequest(ctx, &tproxy, log)
 	} else {
 		change = ensureFinalizer(&tproxy, tunnelProxyFinalizer, log)
 		if change == noChange {
@@ -244,9 +243,44 @@ func (r *ContainerNetworkTunnelProxyReconciler) Reconcile(ctx context.Context, r
 	return result, err
 }
 
-func (r *ContainerNetworkTunnelProxyReconciler) releaseProxyResources(_ context.Context, _ *apiv1.ContainerNetworkTunnelProxy, log logr.Logger) {
-	// TODO: for now, we just log the cleanup. Later phases will implement actual cleanup.
-	log.V(1).Info("Cleaning up ContainerNetworkTunnelProxy resources")
+func (r *ContainerNetworkTunnelProxyReconciler) handleDeletionRequest(ctx context.Context, tunnelProxy *apiv1.ContainerNetworkTunnelProxy, log logr.Logger) objectChange {
+	namespacedName := tunnelProxy.NamespacedName()
+	_, pd := r.proxyData.BorrowByNamespacedName(namespacedName)
+	var change objectChange = noChange
+
+	switch {
+	case pd == nil || pd.State == apiv1.ContainerNetworkTunnelProxyStateFailed || pd.State == apiv1.ContainerNetworkTunnelProxyStateEmpty || pd.State == apiv1.ContainerNetworkTunnelProxyStatePending:
+		log.V(1).Info("ContainerNetworkTunnelProxy is being deleted (no resources to clean up, deleting finalizer only)...")
+		change = deleteFinalizer(tunnelProxy, tunnelProxyFinalizer, log)
+
+	case pd.State == apiv1.ContainerNetworkTunnelProxyStateBuildingImage || pd.State == apiv1.ContainerNetworkTunnelProxyStateStarting:
+		log.V(1).Info("ContainerNetworkTunnelProxy is being deleted; waiting for it to exit transient state...")
+		change = r.manageTunnelProxy(ctx, tunnelProxy, log)
+
+	case pd.ServerProxyProcessID == nil && pd.ClientProxyContainerID == "":
+		log.V(1).Info("ContainerNetworkTunnelProxy is being deleted (resource cleanup finished, deleting finalizer)...")
+		change = deleteFinalizer(tunnelProxy, tunnelProxyFinalizer, log)
+
+	default:
+		if !pd.cleanupScheduled {
+			pd.cleanupScheduled = true
+			r.proxyData.Update(namespacedName, namespacedName, pd)
+
+			log.V(1).Info("ContainerNetworkTunnelProxy is being deleted (scheduling resource cleanup)...")
+			cleanupErr := r.workQueue.Enqueue(r.cleanupProxyPair(tunnelProxy, pd.Clone(), log))
+			if cleanupErr != nil {
+				// Should never happen. This means we (the reconciler) have been shut down via lifetime context
+				// with some tunnel proxy instances still running. Just give up on the cleanup here
+				// and rely on the dcpproc to do the cleanup instead.
+				log.Error(cleanupErr, "Failed to schedule tunnel proxy cleanup work, deleting instance without cleanup...")
+				change = deleteFinalizer(tunnelProxy, tunnelProxyFinalizer, log)
+			} else {
+				log.V(1).Info("Scheduled asynchronous cleanup for ContainerNetworkTunnelProxy proxy pair")
+			}
+		}
+	}
+
+	return change
 }
 
 func (r *ContainerNetworkTunnelProxyReconciler) manageTunnelProxy(ctx context.Context, tunnelProxy *apiv1.ContainerNetworkTunnelProxy, log logr.Logger) objectChange {
@@ -750,6 +784,80 @@ func readServerProxyConfig(ctx context.Context, path string) (dcptun.TunnelProxy
 
 	return config, err
 }
+
+// Removes the client proxy container and stops the server proxy process if they exist.
+// The method is called as part of the reconciliation loop, but the returned function is executed asynchronously.
+// The passed proxy data is a clone independent from what is stored in r.proxyData map.
+func (r *ContainerNetworkTunnelProxyReconciler) cleanupProxyPair(
+	tunnelProxy *apiv1.ContainerNetworkTunnelProxy,
+	pd *containerNetworkTunnelProxyData,
+	log logr.Logger,
+) func(context.Context) {
+	return func(ctx context.Context) {
+		if pd.ClientProxyContainerID != "" {
+			log.V(1).Info("Removing client proxy container...")
+
+			cleanupCtx, cleanupCancel := context.WithTimeout(ctx, clientProxyContainerCleanupTimeout)
+			defer cleanupCancel()
+
+			_, removeErr := r.config.Orchestrator.RemoveContainers(cleanupCtx, containers.RemoveContainersOptions{
+				Containers: []string{pd.ClientProxyContainerID},
+				Force:      true,
+			})
+
+			if removeErr != nil {
+				log.Error(removeErr, "Failed to remove client proxy container")
+			} else {
+				log.V(1).Info("Successfully removed client proxy container")
+			}
+
+			// Clear the container ID regardless of whether removal was successful or not
+			pd.ClientProxyContainerID = ""
+		}
+
+		if pd.ServerProxyProcessID != nil && *pd.ServerProxyProcessID > 0 {
+			pid := process.Pid_t(*pd.ServerProxyProcessID)
+			startTime := pd.ServerProxyStartupTimestamp.Time
+
+			log.V(1).Info("Stopping server proxy process...")
+
+			stopErr := r.config.ProcessExecutor.StopProcess(pid, startTime)
+			if stopErr != nil {
+				log.Error(stopErr, "Failed to stop server proxy process")
+			} else {
+				log.V(1).Info("Successfully stopped server proxy process")
+			}
+
+			pd.ServerProxyProcessID = nil
+			pd.ServerProxyStartupTimestamp = metav1.MicroTime{} // Zero value
+		}
+
+		if pd.serverStdout != nil {
+			if closeErr := pd.serverStdout.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+				log.V(1).Info("Error closing server stdout file", "error", closeErr)
+			}
+			pd.serverStdout = nil
+		}
+		if pd.serverStderr != nil {
+			if closeErr := pd.serverStderr.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+				log.V(1).Info("Error closing server stderr file", "error", closeErr)
+			}
+			pd.serverStderr = nil
+		}
+
+		log.V(1).Info("Completed cleanup of ContainerNetworkTunnelProxy proxy pair")
+		nn := tunnelProxy.NamespacedName()
+		pdMap := r.proxyData
+		pdMap.QueueDeferredOp(nn, func(_ types.NamespacedName, _ types.NamespacedName) {
+			pdMap.Update(nn, nn, pd)
+		})
+		r.scheduleReconciliation(nn)
+	}
+}
+
+//
+// MISCELLANEOUS HELPER METHODS
+//
 
 func (r ContainerNetworkTunnelProxyReconciler) scheduleReconciliation(tunnelProxyName types.NamespacedName) {
 	r.debouncer.ReconciliationNeeded(r.lifetimeCtx, tunnelProxyName, struct{}{}, func(rti reconcileTriggerInput[struct{}]) {

@@ -28,12 +28,12 @@ func WaitForCommand(
 	command []string,
 	lastArg string,
 	cond func(*ProcessExecution) bool,
-) (ProcessExecution, error) {
+) (*ProcessExecution, error) {
 	if len(command) == 0 {
-		return ProcessExecution{}, fmt.Errorf("command must not be empty") // Make compiler happy.
+		return nil, fmt.Errorf("command must not be empty") // Make compiler happy.
 	}
 
-	var retval ProcessExecution
+	var retval *ProcessExecution
 
 	haveExpectedCommand := func(_ context.Context) (bool, error) {
 		commands := executor.FindAll(command, lastArg, cond)
@@ -48,7 +48,7 @@ func WaitForCommand(
 
 	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, haveExpectedCommand)
 	if err != nil {
-		return ProcessExecution{}, fmt.Errorf("expected '%v' command (arg: '%s') was not issued: %v", command, lastArg, err)
+		return nil, fmt.Errorf("expected '%v' command (arg: '%s') was not issued: %v", command, lastArg, err)
 	}
 
 	return retval, nil

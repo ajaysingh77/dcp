@@ -1883,7 +1883,11 @@ func TestExecutableLogsNonFollow(t *testing.T) {
 					}
 					t.Logf("Finished writing logs for Executable '%s'", exeName)
 
-					<-tc.finishExecution.Wait()
+					select {
+					case <-tc.finishExecution.Wait():
+					case <-pe.Signal:
+					}
+
 					return 0
 				},
 			})
@@ -2038,7 +2042,10 @@ func TestExecutableLogsFollow(t *testing.T) {
 						require.NoError(t, stdoutErr, "Could not write line %d to stdout of Executable '%s'", i, exeName)
 					}
 
-					<-tc.finishExecution.Wait()
+					select {
+					case <-tc.finishExecution.Wait():
+					case <-pe.Signal:
+					}
 					return 0
 				},
 			})
@@ -2266,7 +2273,10 @@ func TestExecutableLogsFollowTail(t *testing.T) {
 					}
 
 					// Do not exit until we are done with the testcase, otherwise the client might miss some of the last log writes.
-					<-finishExecution.Wait()
+					select {
+					case <-finishExecution.Wait():
+					case <-pe.Signal:
+					}
 					return 0
 				},
 			})
@@ -2450,7 +2460,10 @@ func TestExecutableLogsFollowStreamEndsOnDelete(t *testing.T) {
 			_, stdoutErr = pe.Cmd.Stdout.Write(osutil.WithNewline([]byte("Standard output log line 2")))
 			require.NoError(t, stdoutErr, "Could not write second line to stdout of Executable '%s'", exeName)
 
-			<-finishExecution.Wait()
+			select {
+			case <-finishExecution.Wait():
+			case <-pe.Signal:
+			}
 			return 0
 		},
 	})
@@ -2905,6 +2918,9 @@ func TestExecutableDeleteParallel(t *testing.T) {
 	testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
 		Condition: psc,
 		RunCommand: func(pe *internal_testutil.ProcessExecution) int32 {
+			// Do NOT exit if a "signal" is received via pe.Signal. We only want to exit when the test tells us to,
+			// because we verify parallel deletion of running Executables by checking whether all of them reach "Stopping" state.
+			// (waiting for the underlying process to exit).
 			<-endExecution.Wait()
 			return 0
 		},

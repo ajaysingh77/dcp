@@ -71,20 +71,20 @@ func TestRunContainerWatcher(t *testing.T) {
 	require.Equal(t, dcpProc.Cmd.Args[5], strconv.FormatInt(int64(os.Getpid()), 10), "Should include current process PID as monitored PID")
 }
 
-func findRunningDcpProc(pe *internal_testutil.TestProcessExecutor) (internal_testutil.ProcessExecution, error) {
+func findRunningDcpProc(pe *internal_testutil.TestProcessExecutor) (*internal_testutil.ProcessExecution, error) {
 	dpProcPath, dcpProcPathErr := geDcpProcPath()
 	if dcpProcPathErr != nil {
-		return internal_testutil.ProcessExecution{}, dcpProcPathErr
+		return nil, dcpProcPathErr
 	}
 
 	candidates := pe.FindAll([]string{dpProcPath}, "", func(pe *internal_testutil.ProcessExecution) bool {
 		return pe.Running()
 	})
 	if len(candidates) == 0 {
-		return internal_testutil.ProcessExecution{}, errors.New("No running dcpproc process found")
+		return nil, errors.New("No running dcpproc process found")
 	}
 	if len(candidates) > 1 {
-		return internal_testutil.ProcessExecution{}, errors.New("Multiple running dcpproc processes found")
+		return nil, errors.New("Multiple running dcpproc processes found")
 	}
 	return candidates[0], nil
 }

@@ -42,6 +42,8 @@ func (q *ConcurrentBoundedQueue[T]) Dequeue() (T, bool) {
 	return q.buf.Pop()
 }
 
+// NewData returns a channel that exposes a new value whenever the queue goes from empty to having some data.
+// ONLY ONE CONSUMING GOROUTINE should use this channel.
 func (q *ConcurrentBoundedQueue[T]) NewData() <-chan struct{} {
 	return q.newData.Wait()
 }

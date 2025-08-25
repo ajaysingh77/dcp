@@ -17,6 +17,11 @@ type containerNetworkTunnelProxyData struct {
 	// This is checked and updated when we enter the starting state.
 	startupScheduled bool
 
+	// Whether the cleanup of the proxy pair has been scheduled.
+	// Graceful shutdown of the client proxy container and the server proxy process
+	// can take a while, so we do it asynchronously.
+	cleanupScheduled bool
+
 	// Standard output file for the server proxy process.
 	// Note: this is a file descriptor, and is not "cloned" when Clone() is called.
 	serverStdout *os.File
@@ -30,6 +35,7 @@ func (tpd *containerNetworkTunnelProxyData) Clone() *containerNetworkTunnelProxy
 	clone := containerNetworkTunnelProxyData{
 		ContainerNetworkTunnelProxyStatus: *tpd.ContainerNetworkTunnelProxyStatus.DeepCopy(),
 		startupScheduled:                  tpd.startupScheduled,
+		cleanupScheduled:                  tpd.cleanupScheduled,
 		serverStdout:                      tpd.serverStdout,
 		serverStderr:                      tpd.serverStderr,
 	}
@@ -105,6 +111,11 @@ func (tpd *containerNetworkTunnelProxyData) UpdateFrom(other *containerNetworkTu
 
 	if tpd.startupScheduled != other.startupScheduled {
 		tpd.startupScheduled = other.startupScheduled
+		updated = true
+	}
+
+	if tpd.cleanupScheduled != other.cleanupScheduled {
+		tpd.cleanupScheduled = other.cleanupScheduled
 		updated = true
 	}
 

@@ -312,7 +312,7 @@ func waitForDockerEventsExecution(
 	ctx context.Context,
 	executor *internal_testutil.TestProcessExecutor,
 	cond func(exec *internal_testutil.ProcessExecution) bool,
-) internal_testutil.ProcessExecution {
+) *internal_testutil.ProcessExecution {
 	pe, err := internal_testutil.WaitForCommand(executor, ctx, []string{"docker", "events"}, "", cond)
 	require.NoError(t, err)
 	return pe

@@ -63,9 +63,7 @@ func TestTunnelProxyCreateDelete(t *testing.T) {
 	require.NoError(t, err, "Could not create a ContainerNetwork object")
 
 	const serverControlPort int32 = 12393
-	finishExecution := make(chan struct{})
-	defer close(finishExecution)
-	simulateServerProxy(t, serverControlPort, tpe, finishExecution)
+	simulateServerProxy(t, serverControlPort, tpe)
 
 	tunnelProxy := apiv1.ContainerNetworkTunnelProxy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -155,9 +153,7 @@ func TestTunnelProxyDelayedNetworkCreation(t *testing.T) {
 	})
 
 	const serverControlPort int32 = 13299
-	finishExecution := make(chan struct{})
-	defer close(finishExecution)
-	simulateServerProxy(t, serverControlPort, tpe, finishExecution)
+	simulateServerProxy(t, serverControlPort, tpe)
 
 	// Now create the ContainerNetwork that the tunnel proxy references
 	network := apiv1.ContainerNetwork{
@@ -213,9 +209,7 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	require.NoError(t, err, "Could not create a ContainerNetwork object")
 
 	const serverControlPort int32 = 26444
-	finishExecution := make(chan struct{})
-	defer close(finishExecution)
-	simulateServerProxy(t, serverControlPort, tpe, finishExecution)
+	simulateServerProxy(t, serverControlPort, tpe)
 
 	tunnelProxy := apiv1.ContainerNetworkTunnelProxy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -285,6 +279,109 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	require.Equal(t, fmt.Sprintf("%d", updatedTunnelProxy.Status.ClientProxyDataPort), pe.Cmd.Args[5], "Fifth argument should be client data port")
 }
 
+// Verifies that ContainerNetworkTunnelProxy proxy pair cleanup works correctly during object deletion.
+func TestTunnelProxyCleanup(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	dcppaths.EnableTestPathProbing()
+	const testName = "test-tunnel-proxy-cleanup"
+	log := testutil.NewLogForTesting(t.Name())
+
+	controllers := NetworkController | ContainerNetworkTunnelProxyController
+	serverInfo, tpe, _, startupErr := StartTestEnvironment(ctx, controllers, t.Name(), t.TempDir(), log)
+	require.NoError(t, startupErr, "Failed to start the API server")
+
+	defer func() {
+		cancel()
+
+		// Wait for the API server cleanup to complete.
+		select {
+		case <-serverInfo.ApiServerDisposalComplete.Wait():
+		case <-time.After(5 * time.Second):
+		}
+	}()
+
+	network := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-network",
+			Namespace: metav1.NamespaceNone,
+		},
+	}
+
+	t.Logf("Creating ContainerNetwork object '%s'", network.ObjectMeta.Name)
+	err := serverInfo.Client.Create(ctx, &network)
+	require.NoError(t, err, "Could not create a ContainerNetwork object")
+
+	const serverControlPort int32 = 34567
+	simulateServerProxy(t, serverControlPort, tpe)
+
+	tunnelProxy := apiv1.ContainerNetworkTunnelProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerNetworkTunnelProxySpec{
+			ContainerNetworkName: network.ObjectMeta.Name,
+			Tunnels: []apiv1.TunnelConfiguration{
+				{
+					Name:       "test-tunnel",
+					ServerPort: 8080,
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating ContainerNetworkTunnelProxy object '%s'...", tunnelProxy.ObjectMeta.Name)
+	err = serverInfo.Client.Create(ctx, &tunnelProxy)
+	require.NoError(t, err, "Could not create a ContainerNetworkTunnelProxy object")
+
+	t.Log("Waiting for ContainerNetworkTunnelProxy to transition to Running state...")
+	updatedTunnelProxy := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+		return tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateRunning, nil
+	})
+
+	// Capture resource information before deletion
+	clientContainerID := updatedTunnelProxy.Status.ClientProxyContainerID
+	serverProcessID := updatedTunnelProxy.Status.ServerProxyProcessID
+
+	t.Log("Verifying resources exist before deletion...")
+	require.NotEmpty(t, clientContainerID, "Client proxy container ID should be set")
+	require.NotNil(t, serverProcessID, "Server proxy process ID should be set")
+	require.Greater(t, *serverProcessID, int64(0), "Server proxy process ID should be valid")
+
+	// Verify the client container exists
+	orchestrator := serverInfo.ContainerOrchestrator
+	containerInfoList, inspectErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{clientContainerID},
+	})
+	require.NoError(t, inspectErr, "Should be able to inspect client proxy container")
+	require.Len(t, containerInfoList, 1, "Client proxy container should exist")
+	require.Equal(t, clientContainerID, containerInfoList[0].Id, "Container ID should match")
+
+	t.Logf("Deleting ContainerNetworkTunnelProxy object '%s'", tunnelProxy.ObjectMeta.Name)
+	err = retryOnConflictEx(ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(ctx context.Context, tp *apiv1.ContainerNetworkTunnelProxy) error {
+		return serverInfo.Client.Delete(ctx, tp)
+	})
+	require.NoError(t, err, "Could not delete ContainerNetworkTunnelProxy object")
+
+	t.Log("Waiting for controller to remove finalizer and complete deletion...")
+	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, &tunnelProxy)
+
+	t.Log("Verifying proxy resources are cleaned up...")
+
+	// Verify the client container has been removed
+	_, inspectErrAfter := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{clientContainerID},
+	})
+	require.ErrorIs(t, inspectErrAfter, containers.ErrNotFound, "Client proxy container should have been removed")
+
+	// For the server process, verify that it was stopped by checking if it has finished in the test process executor
+	processExecution, processFound := tpe.FindByPid(process.Pid_t(*serverProcessID))
+	require.True(t, processFound, "Server proxy process should be found in test process executor")
+	require.True(t, processExecution.Finished(), "Server proxy process should have been stopped")
+}
+
 // The tunnel controller will try to create a server-side proxy
 // and read the network configuration (control port in particular) off of it,
 // so we need to simulate that.
@@ -292,7 +389,6 @@ func simulateServerProxy(
 	t *testing.T,
 	serverControlPort int32,
 	tpe *internal_testutil.TestProcessExecutor,
-	finishExecution <-chan struct{},
 ) {
 	binDir, binDirErr := dcppaths.GetDcpBinDir()
 	require.NoError(t, binDirErr)
@@ -311,7 +407,7 @@ func simulateServerProxy(
 			_, writeErr := pe.Cmd.Stdout.Write(osutil.WithNewline(tcBytes))
 			require.NoError(t, writeErr, "Could not write TunnelProxyConfig to stdout")
 
-			<-finishExecution
+			<-pe.Signal
 			return 0
 		},
 	})
