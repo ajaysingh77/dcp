@@ -1120,7 +1120,7 @@ func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 		return
 	}
 
-	dcpproc.RunWatcher(dco.executor, pid, startTime, dco.log)
+	dcpproc.RunProcessWatcher(dco.executor, pid, startTime, dco.log)
 
 	startWaitForProcessExit()
 
@@ -1179,7 +1179,7 @@ func (dco *DockerCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 		return
 	}
 
-	dcpproc.RunWatcher(dco.executor, pid, startTime, dco.log)
+	dcpproc.RunProcessWatcher(dco.executor, pid, startTime, dco.log)
 
 	startWaitForProcessExit()
 
@@ -1233,7 +1233,7 @@ func (dco *DockerCliOrchestrator) streamDockerCommand(
 	}
 
 	if opts&streamCommandOptionUseWatcher != 0 {
-		dcpproc.RunWatcher(dco.executor, pid, startTime, dco.log)
+		dcpproc.RunProcessWatcher(dco.executor, pid, startTime, dco.log)
 	}
 
 	startWaitForProcessExit()

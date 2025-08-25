@@ -186,7 +186,7 @@ func TestContainerVolumeCleanup(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	log := testutil.NewLogForTesting(t.Name())
 
-	serverInfo, _, _, startupErr := StartTestEnvironment(ctx, VolumeController, t.Name(), log)
+	serverInfo, _, _, startupErr := StartTestEnvironment(ctx, VolumeController, t.Name(), NoSeparateWorkingDir, log)
 	require.NoError(t, startupErr, "Failed to start the API server")
 
 	defer func() {
@@ -283,7 +283,7 @@ func TestContainerVolumeRuntimeUnhealthy(t *testing.T) {
 	// We are going to use a separate instance of the API server because we need to simulate container runtime being unhealthy,
 	// and that might interfere with other tests if we used the shared container orchestrator.
 
-	serverInfo, _, _, startupErr := StartTestEnvironment(ctx, VolumeController, t.Name(), log)
+	serverInfo, _, _, startupErr := StartTestEnvironment(ctx, VolumeController, t.Name(), NoSeparateWorkingDir, log)
 	require.NoError(t, startupErr, "Failed to start the API server")
 
 	defer func() {

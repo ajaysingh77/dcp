@@ -32,7 +32,7 @@ func TestClientProxyImageBuild(t *testing.T) {
 
 	dcppaths.EnableTestPathProbing()
 
-	path := filepath.Join(t.TempDir(), t.Name()+".list")
+	path := filepath.Join(t.TempDir(), t.Name()+".imglist")
 	defer func() { _ = os.Remove(path) }() // Best effort cleanup
 	opts := dcptun.BuildClientProxyImageOptions{
 		TimeoutOption:                 containers.TimeoutOption{Timeout: testTimeout / 2},
@@ -68,7 +68,7 @@ func TestConcurrentClientProxyImageBuild(t *testing.T) {
 
 	dcppaths.EnableTestPathProbing()
 
-	path := filepath.Join(t.TempDir(), t.Name()+".list")
+	path := filepath.Join(t.TempDir(), t.Name()+".imglist")
 	defer func() { _ = os.Remove(path) }() // Best effort cleanup
 	opts := dcptun.BuildClientProxyImageOptions{
 		TimeoutOption:                 containers.TimeoutOption{Timeout: testTimeout / 2},

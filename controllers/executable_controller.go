@@ -500,9 +500,10 @@ func (r *ExecutableReconciler) processRunChangeNotification(
 		pointers.SetValue(&runInfo.Pid, int64(pid))
 	}
 
+	runMap := r.runs
 	r.runs.QueueDeferredOp(name, func(types.NamespacedName, RunID) {
 		// The run may have been deleted by the time we get here, so we do not care if Update() returns false.
-		_ = r.runs.Update(name, runID, runInfo)
+		_ = runMap.Update(name, runID, runInfo)
 	})
 
 	r.debouncer.ReconciliationNeeded(r.lifetimeCtx, name, struct{}{}, r.scheduleExecutableReconciliation)
@@ -523,6 +524,7 @@ func (r *ExecutableReconciler) OnStartupCompleted(
 
 	// OnStartingCompleted might be invoked asynchronously. To avoid race conditions,
 	//  we always queue updates to the runs map and run them as part of reconciliation function.
+	runMap := r.runs
 	r.runs.QueueDeferredOp(exeName, func(types.NamespacedName, RunID) {
 		startingRunID, ri := r.runs.BorrowByNamespacedName(exeName)
 		if ri == nil {
@@ -544,7 +546,7 @@ func (r *ExecutableReconciler) OnStartupCompleted(
 		if startedRunInfo.RunID != UnknownRunID {
 			effectiveRunID = startedRunInfo.RunID
 		}
-		_ = r.runs.UpdateChangingStateKey(exeName, startingRunID, effectiveRunID, ri)
+		_ = runMap.UpdateChangingStateKey(exeName, startingRunID, effectiveRunID, ri)
 		if startedRunInfo.ExeState == apiv1.ExecutableStateRunning {
 			startWaitForRunCompletion()
 		}
@@ -577,9 +579,10 @@ func (r *ExecutableReconciler) stopExecutableFunc(exe *apiv1.Executable, runInfo
 			exeName := exe.NamespacedName()
 
 			runID := runInfo.RunID
+			runMap := r.runs
 			r.runs.QueueDeferredOp(exeName, func(types.NamespacedName, RunID) {
 				// The run may have been deleted by the time we get here, so we do not care if Update() returns false.
-				_ = r.runs.Update(exeName, runID, runInfo)
+				_ = runMap.Update(exeName, runID, runInfo)
 			})
 
 			r.debouncer.ReconciliationNeeded(r.lifetimeCtx, exe.NamespacedName(), struct{}{}, r.scheduleExecutableReconciliation)
@@ -877,9 +880,10 @@ func (r *ExecutableReconciler) handleHealthProbeResults() {
 
 			runInfo.healthProbeResults[report.Probe.Name] = report.Result
 
+			runMap := r.runs
 			r.runs.QueueDeferredOp(exeName, func(types.NamespacedName, RunID) {
 				// The run may have been deleted by the time we get here, so we do not care if Update() returns false.
-				_ = r.runs.Update(exeName, runID, runInfo)
+				_ = runMap.Update(exeName, runID, runInfo)
 			})
 
 			r.debouncer.ReconciliationNeeded(r.lifetimeCtx, exeName, struct{}{}, r.scheduleExecutableReconciliation)

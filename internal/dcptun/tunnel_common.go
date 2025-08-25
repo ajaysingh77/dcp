@@ -1,6 +1,7 @@
 package dcptun
 
 import (
+	"runtime"
 	"sync/atomic"
 
 	"google.golang.org/grpc/codes"
@@ -24,11 +25,17 @@ const (
 	invalidStreamID StreamID = 0
 
 	errMsgProxyDisposed = "tunnel proxy has been disposed, no further operations are allowed"
+
+	// Binary name for the client proxy (Linux executable)
+	ClientBinaryName = "dcptun_c"
 )
 
 var (
 	latestTunnelID TunnelID = invalidTunnelID
 	latestStreamID StreamID = invalidStreamID
+
+	// Binary name for the server proxy
+	ServerBinaryName string
 )
 
 // Holds tunnel data needed by a server-side or client-side proxy.
@@ -73,4 +80,12 @@ func ensureValidTunnelRequest(tr *proto.TunnelReq) error {
 	}
 
 	return nil
+}
+
+func init() {
+	bn := "dcptun"
+	if runtime.GOOS == "windows" {
+		bn += ".exe"
+	}
+	ServerBinaryName = bn
 }

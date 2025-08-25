@@ -163,14 +163,17 @@ func TestRunCancelled(t *testing.T) {
 			exitInfoChan <- startupNotification
 			return
 		} else {
-			exitInfoChan <- startupNotification
 			startWaitForExit()
+			exitInfoChan <- startupNotification
 		}
 	}()
 
 	// Wait for the process to start.
 	exitInfo := <-exitInfoChan
 	require.NoError(t, exitInfo.Err, "Process failed to start")
+
+	// Sleep for a bit to make sure the process is fully started and responsive to signals.
+	time.Sleep(2 * time.Second)
 
 	start := time.Now()
 	cancelFn()
@@ -195,8 +198,7 @@ func TestChildrenTerminated(t *testing.T) {
 		{"external start", func(t *testing.T, cmd *exec.Cmd, _ process.Executor) process.ProcessTreeItem {
 			err := cmd.Start()
 			require.NoError(t, err, "could not start the 'delay' test program")
-			pid, err := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
-			require.NoError(t, err)
+			pid := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
 			creationTime := process.StartTimeForProcess(pid)
 			require.False(t, creationTime.IsZero(), "process start time should not be zero")
 			return process.ProcessTreeItem{pid, creationTime}
@@ -311,9 +313,7 @@ func TestWatchCatchesProcessExit(t *testing.T) {
 	err := cmd.Start()
 	require.NoError(t, err)
 
-	pid, err := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
-	require.NoError(t, err)
-
+	pid := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
 	delayProc, err := process.FindWaitableProcess(pid, time.Time{})
 	require.NoError(t, err)
 
@@ -340,8 +340,7 @@ func TestContextCancelsWatch(t *testing.T) {
 
 	require.NoError(t, err, "command should start without error")
 
-	pid, err := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
-	require.NoError(t, err)
+	pid := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
 	delayProc, err := process.FindWaitableProcess(pid, time.Time{})
 	require.NoError(t, err, "find process should succeed without error")
 

@@ -928,12 +928,10 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 			rcd.containerState = apiv1.ContainerStateFailedToStart
 		}
 
-		r.runningContainers.QueueDeferredOp(
-			container.NamespacedName(),
-			func(containerObjectName types.NamespacedName, id containerID) {
-				r.runningContainers.Update(containerObjectName, id, rcd)
-			},
-		)
+		rcMap := r.runningContainers
+		r.runningContainers.QueueDeferredOp(container.NamespacedName(), func(containerObjectName types.NamespacedName, id containerID) {
+			rcMap.Update(containerObjectName, id, rcd)
+		})
 		r.scheduleContainerReconciliation(container.NamespacedName(), rcd.containerID)
 	}
 }
@@ -1328,12 +1326,10 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			}
 		}
 
-		r.runningContainers.QueueDeferredOp(
-			container.NamespacedName(),
-			func(containerObjectName types.NamespacedName, containerID containerID) {
-				r.runningContainers.UpdateChangingStateKey(containerObjectName, placeholderContainerID, rcd.containerID, rcd)
-			},
-		)
+		rcMap := r.runningContainers
+		r.runningContainers.QueueDeferredOp(container.NamespacedName(), func(containerObjectName types.NamespacedName, containerID containerID) {
+			rcMap.UpdateChangingStateKey(containerObjectName, placeholderContainerID, rcd.containerID, rcd)
+		})
 		r.scheduleContainerReconciliation(container.NamespacedName(), placeholderContainerID)
 	}
 }
@@ -1352,12 +1348,10 @@ func (r *ContainerReconciler) stopContainerFunc(container *apiv1.Container, rcd 
 			rcd.containerState = apiv1.ContainerStateExited
 		}
 
-		r.runningContainers.QueueDeferredOp(
-			container.NamespacedName(),
-			func(containerObjectName types.NamespacedName, containerID containerID) {
-				r.runningContainers.Update(containerObjectName, containerID, rcd)
-			},
-		)
+		rcMap := r.runningContainers
+		r.runningContainers.QueueDeferredOp(container.NamespacedName(), func(containerObjectName types.NamespacedName, containerID containerID) {
+			rcMap.Update(containerObjectName, containerID, rcd)
+		})
 		r.scheduleContainerReconciliation(container.NamespacedName(), rcd.containerID)
 	}
 
@@ -2038,9 +2032,10 @@ func (r *ContainerReconciler) handleHealthProbeResults() {
 
 			rcd.healthProbeResults[report.Probe.Name] = report.Result
 
+			rcMap := r.runningContainers
 			r.runningContainers.QueueDeferredOp(containerName, func(types.NamespacedName, containerID) {
 				// The run may have been deleted by the time we get here, so we do not care if Update() returns false.
-				_ = r.runningContainers.Update(containerName, cid, rcd)
+				_ = rcMap.Update(containerName, cid, rcd)
 			})
 
 			r.scheduleContainerReconciliation(containerName, cid)

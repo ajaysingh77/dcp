@@ -72,27 +72,26 @@ func (r *ProcessExecutableRunner) StartRun(
 		runInfo.StdErrFile = stdErrFile.Name()
 	}
 
-	var processExitHandler process.ProcessExitHandler = nil
-	if runChangeHandler != nil {
-		processExitHandler = process.ProcessExitHandlerFunc(func(pid process.Pid_t, exitCode int32, err error) {
-			ec := new(int32)
-			*ec = exitCode
+	var processExitHandler = process.ProcessExitHandlerFunc(func(pid process.Pid_t, exitCode int32, err error) {
+		ec := new(int32)
+		*ec = exitCode
 
-			runID := pidToRunID(pid)
+		runID := pidToRunID(pid)
 
-			if runState, found := r.runningProcesses.LoadAndDelete(runID); found {
-				for _, f := range []io.Closer{runState.stdOutFile, runState.stdErrFile} {
-					if f != nil {
-						if closeErr := f.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
-							err = errors.Join(closeErr, err)
-						}
+		if runState, found := r.runningProcesses.LoadAndDelete(runID); found {
+			for _, f := range []io.Closer{runState.stdOutFile, runState.stdErrFile} {
+				if f != nil {
+					if closeErr := f.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+						err = errors.Join(closeErr, err)
 					}
 				}
 			}
+		}
 
+		if runChangeHandler != nil {
 			runChangeHandler.OnRunCompleted(runID, ec, err)
-		})
-	}
+		}
+	})
 
 	// We want to ensure that the service process tree is killed when DCP is stopped so that ports are released etc.
 	pid, startTime, startWaitForProcessExit, startErr := r.pe.StartProcess(ctx, cmd, processExitHandler, process.CreationFlagEnsureKillOnDispose)
@@ -100,11 +99,17 @@ func (r *ProcessExecutableRunner) StartRun(
 		startLog.Error(startErr, "Failed to start a process")
 		runInfo.FinishTimestamp = metav1.NowMicro()
 		runInfo.ExeState = apiv1.ExecutableStateFailedToStart
+		if stdOutFile != nil {
+			_ = stdOutFile.Close()
+		}
+		if stdErrFile != nil {
+			_ = stdErrFile.Close()
+		}
 		return startErr
 	}
 
 	// Use original log here, the watcher is a different process.
-	dcpproc.RunWatcher(r.pe, pid, startTime, log)
+	dcpproc.RunProcessWatcher(r.pe, pid, startTime, log)
 
 	r.runningProcesses.Store(pidToRunID(pid), &processRunState{
 		startTime:  startTime,

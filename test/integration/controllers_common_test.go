@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"regexp"
 	std_slices "slices"
 	"testing"
@@ -59,7 +60,7 @@ func TestMain(m *testing.M) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	serverInfo, pe, ir, envStartErr := StartTestEnvironment(ctx, AllControllers, "IntegrationTests", log)
+	serverInfo, pe, ir, envStartErr := StartTestEnvironment(ctx, AllControllers, "IntegrationTests", "", log)
 	if envStartErr != nil {
 		cancel()
 		panic(envStartErr)
@@ -102,11 +103,16 @@ const (
 	AllControllers IncludedController = ^NoControllers
 )
 
+const (
+	NoSeparateWorkingDir = ""
+)
+
 // Starts the DCP API server (separate process) and standard controllers (in-proc).
 func StartTestEnvironment(
 	ctx context.Context,
 	inclCtrl IncludedController,
 	instanceTag string,
+	testTempDir string,
 	log logr.Logger,
 ) (
 	*ctrl_testutil.ApiServerInfo,
@@ -254,11 +260,18 @@ func StartTestEnvironment(
 		}
 	}
 
+	tprOpts := controllers.ContainerNetworkTunnelProxyReconcilerConfig{
+		Orchestrator:    serverInfo.ContainerOrchestrator,
+		ProcessExecutor: pe,
+	}
+	if testTempDir != NoSeparateWorkingDir {
+		tprOpts.MostRecentImageBuildsFilePath = filepath.Join(testTempDir, instanceTag+".imglist")
+	}
 	if inclCtrl&ContainerNetworkTunnelProxyController != 0 {
 		tunnelProxyR := controllers.NewContainerNetworkTunnelProxyReconciler(
 			ctx,
 			mgr.GetClient(),
-			serverInfo.ContainerOrchestrator,
+			tprOpts,
 			log.WithName("TunnelProxyReconciler"),
 		)
 		if err = tunnelProxyR.SetupWithManager(mgr, instanceTag+"-ContainerNetworkTunnelProxyReconciler"); err != nil {
@@ -363,11 +376,24 @@ func waitServiceReady(t *testing.T, ctx context.Context, svc *apiv1.Service) *ap
 	return updatedSvc
 }
 
-func retryOnConflict[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](ctx context.Context, name types.NamespacedName, action func(context.Context, PT) error) error {
+func retryOnConflict[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](
+	ctx context.Context,
+	name types.NamespacedName,
+	action func(context.Context, PT) error,
+) error {
+	return retryOnConflictEx[T, PT](ctx, client, name, action)
+}
+
+func retryOnConflictEx[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](
+	ctx context.Context,
+	apiServerClient ctrl_client.Client,
+	name types.NamespacedName,
+	action func(context.Context, PT) error,
+) error {
 
 	try := func() error {
 		var apiObject PT = new(T)
-		err := client.Get(ctx, name, PT(apiObject))
+		err := apiServerClient.Get(ctx, name, PT(apiObject))
 		if err != nil {
 			return resiliency.Permanent(fmt.Errorf("unable to fetch the object '%s' from API server: %w", name.String(), err))
 		}

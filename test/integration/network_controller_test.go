@@ -197,9 +197,7 @@ func nonExistentProcess(t *testing.T) process.ProcessTreeItem {
 	pps, ppsErr := ps.Processes()
 	require.NoError(t, ppsErr, "could not list processes")
 	pids := slices.Map[*ps.Process, process.Pid_t](pps, func(pp *ps.Process) process.Pid_t {
-		pid, pidErr := process.Uint32_ToPidT(uint32(pp.Pid))
-		require.NoError(t, pidErr)
-		return pid
+		return process.Uint32_ToPidT(uint32(pp.Pid))
 	})
 
 	for {

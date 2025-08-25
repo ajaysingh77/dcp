@@ -67,8 +67,7 @@ func TestMonitorProcessTerminatesWatchedProcesses(t *testing.T) {
 	parentCmdErr := parentCmd.Start()
 	require.NoError(t, parentCmdErr, "command should start without error")
 
-	parentPid, parentPidErr := process.Uint32_ToPidT(uint32(parentCmd.Process.Pid))
-	require.NoError(t, parentPidErr)
+	parentPid := process.Uint32_ToPidT(uint32(parentCmd.Process.Pid))
 	parentCreateTime := process.StartTimeForProcess(parentPid)
 	require.False(t, parentCreateTime.IsZero(), "parent process start time should not be zero")
 	int_testutil.EnsureProcessTree(t, process.ProcessTreeItem{Pid: parentPid, CreationTime: parentCreateTime}, 1, 5*time.Second)
@@ -79,8 +78,7 @@ func TestMonitorProcessTerminatesWatchedProcesses(t *testing.T) {
 	childrenCmdErr := childrenCmd.Start()
 	require.NoError(t, childrenCmdErr, "command should start without error")
 
-	pid, pidErr := process.Uint32_ToPidT(uint32(childrenCmd.Process.Pid))
-	require.NoError(t, pidErr)
+	pid := process.Uint32_ToPidT(uint32(childrenCmd.Process.Pid))
 	childCreateTime := process.StartTimeForProcess(pid)
 	require.False(t, childCreateTime.IsZero(), "child process start time should not be zero")
 	int_testutil.EnsureProcessTree(t, process.ProcessTreeItem{Pid: pid, CreationTime: childCreateTime}, 3, 10*time.Second)
@@ -136,8 +134,7 @@ func TestMonitorProcessNotMonitoredIfStartTimeDoesNotMatch(t *testing.T) {
 		_ = parentCmd.Wait()
 	}()
 
-	parentPid, parentPidErr := process.Uint32_ToPidT(uint32(parentCmd.Process.Pid))
-	require.NoError(t, parentPidErr)
+	parentPid := process.Uint32_ToPidT(uint32(parentCmd.Process.Pid))
 	parentCreateTime := process.StartTimeForProcess(parentPid)
 	require.False(t, parentCreateTime.IsZero(), "parent process start time should not be zero")
 	int_testutil.EnsureProcessTree(t, process.ProcessTreeItem{Pid: parentPid, CreationTime: parentCreateTime}, 1, 5*time.Second)
@@ -151,8 +148,7 @@ func TestMonitorProcessNotMonitoredIfStartTimeDoesNotMatch(t *testing.T) {
 		_ = childCmd.Wait()
 	}()
 
-	childPid, childPidErr := process.Uint32_ToPidT(uint32(childCmd.Process.Pid))
-	require.NoError(t, childPidErr)
+	childPid := process.Uint32_ToPidT(uint32(childCmd.Process.Pid))
 	childCreateTime := process.StartTimeForProcess(childPid)
 	require.False(t, childCreateTime.IsZero(), "child process start time should not be zero")
 	int_testutil.EnsureProcessTree(t, process.ProcessTreeItem{Pid: childPid, CreationTime: childCreateTime}, 1, 5*time.Second)
@@ -251,8 +247,7 @@ func TestMonitorContainerTerminatesWatchedContainer(t *testing.T) {
 	parentCmdErr := parentCmd.Start()
 	require.NoError(t, parentCmdErr, "Monitored process should start without error")
 
-	parentPid, parentPidErr := process.Uint32_ToPidT(uint32(parentCmd.Process.Pid))
-	require.NoError(t, parentPidErr)
+	parentPid := process.Uint32_ToPidT(uint32(parentCmd.Process.Pid))
 	parentCreateTime := process.StartTimeForProcess(parentPid)
 	require.False(t, parentCreateTime.IsZero(), "Monitored process start time should not be zero")
 
@@ -341,8 +336,7 @@ func TestMonitorContainerExitWhenContainerRemoved(t *testing.T) {
 	parentCmdErr := parentCmd.Start()
 	require.NoError(t, parentCmdErr, "Monitored process should start without error")
 
-	parentPid, parentPidErr := process.Uint32_ToPidT(uint32(parentCmd.Process.Pid))
-	require.NoError(t, parentPidErr)
+	parentPid := process.Uint32_ToPidT(uint32(parentCmd.Process.Pid))
 	parentCreateTime := process.StartTimeForProcess(parentPid)
 	require.False(t, parentCreateTime.IsZero(), "Monitored process start time should not be zero")
 

@@ -30,9 +30,6 @@ const (
 	// Default base image for client proxy containers
 	defaultBaseImage = "mcr.microsoft.com/azurelinux/base/core:3.0"
 
-	// Binary name for the client proxy (Linux executable)
-	clientBinaryName = "dcptun_c"
-
 	// The interval at which we check whether the client proxy image has been built
 	// (assuming another instance is building it).
 	checkImageBuiltInterval = 5 * time.Second
@@ -52,7 +49,7 @@ const (
 	DefaultContainerProxyDataPort = 15050
 
 	// Full path to the client proxy binary inside the container image.
-	ClientProxyBinaryPath = "/usr/local/bin/" + clientBinaryName
+	ClientProxyBinaryPath = "/usr/local/bin/" + ClientBinaryName
 )
 
 var (
@@ -335,7 +332,7 @@ func setupImageBuildContext(dcpTunClientPath string, opts BuildClientProxyImageO
 	}
 
 	// Make the client proxy binary appear the build context
-	destBinaryPath := filepath.Join(tempDir, clientBinaryName)
+	destBinaryPath := filepath.Join(tempDir, ClientBinaryName)
 	if osutil.IsWindows() {
 		// Windows requires SeCreateSymbolicLinkPrivilege to create symlinks, which is off by default.
 		// Also, syscall.Symlink() is defined, but not implemented on Windows.
@@ -364,7 +361,7 @@ RUN chmod +x %[3]s
 
 # Set the entrypoint to the dcptun client
 ENTRYPOINT ["%[3]s"]
-`, opts.BaseImage, clientBinaryName, ClientProxyBinaryPath)
+`, opts.BaseImage, ClientBinaryName, ClientProxyBinaryPath)
 
 	// Write Dockerfile
 	dockerfilePath := filepath.Join(tempDir, "Dockerfile")
@@ -420,7 +417,7 @@ func dcptunClientBinaryPath() (string, error) {
 		return "", fmt.Errorf("failed to get DCP bin directory: %w", binDirErr)
 	}
 
-	binaryPath := filepath.Join(binDir, clientBinaryName)
+	binaryPath := filepath.Join(binDir, ClientBinaryName)
 	fi, statErr := os.Stat(binaryPath)
 
 	// Verify the binary exists

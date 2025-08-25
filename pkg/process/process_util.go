@@ -48,10 +48,7 @@ func GetProcessTree(rootP ProcessTreeItem) ([]ProcessTreeItem, error) {
 	for len(next) > 0 {
 		current := next[0]
 		next = next[1:]
-		nextPid, nextPidErr := Uint32_ToPidT(uint32(current.Pid))
-		if nextPidErr != nil {
-			panic(nextPidErr)
-		}
+		nextPid := Uint32_ToPidT(uint32(current.Pid))
 		tree = append(tree, ProcessTreeItem{nextPid, startTimeForProcess(current)})
 
 		children, childrenErr := current.Children()
@@ -188,8 +185,9 @@ func Int64_ToPidT(val int64) (Pid_t, error) {
 	return convertPid[int64, Pid_t](val)
 }
 
-func Uint32_ToPidT(val uint32) (Pid_t, error) {
-	return convertPid[uint32, Pid_t](val)
+func Uint32_ToPidT(val uint32) Pid_t {
+	// uint32 ia always valid as a PID value (see convertPid()), and can always be converted to Pid_t, which is int64-based.
+	return Pid_t(val)
 }
 
 func PidT_ToInt(val Pid_t) (int, error) {
@@ -310,10 +308,7 @@ func init() {
 		}
 
 		osPid := os.Getpid()
-		pid, conversionErr := Uint32_ToPidT(uint32(osPid))
-		if conversionErr != nil {
-			return retval, conversionErr
-		}
+		pid := Uint32_ToPidT(uint32(osPid))
 
 		pp, findProcessErr := ps.NewProcess(int32(osPid))
 		if findProcessErr != nil {

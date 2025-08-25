@@ -1052,7 +1052,7 @@ func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 		return
 	}
 
-	dcpproc.RunWatcher(pco.executor, pid, startTime, pco.log)
+	dcpproc.RunProcessWatcher(pco.executor, pid, startTime, pco.log)
 
 	startWaitForProcessExit()
 
@@ -1112,7 +1112,7 @@ func (pco *PodmanCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 		return
 	}
 
-	dcpproc.RunWatcher(pco.executor, pid, startTime, pco.log)
+	dcpproc.RunProcessWatcher(pco.executor, pid, startTime, pco.log)
 
 	startWaitForProcessExit()
 
@@ -1166,7 +1166,7 @@ func (pco *PodmanCliOrchestrator) streamPodmanCommand(
 	}
 
 	if opts&streamCommandOptionUseWatcher != 0 {
-		dcpproc.RunWatcher(pco.executor, pid, startTime, pco.log)
+		dcpproc.RunProcessWatcher(pco.executor, pid, startTime, pco.log)
 	}
 
 	startWaitForProcessExit()

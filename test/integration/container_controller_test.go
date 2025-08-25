@@ -278,7 +278,7 @@ func TestContainerRuntimeUnhealthy(t *testing.T) {
 	// We are going to use a separate instance of the API server because we need to simulate container runtime being unhealthy,
 	// and that might interfere with other tests if we used the shared container orchestrator.
 
-	serverInfo, _, _, startupErr := StartTestEnvironment(ctx, ContainerController, t.Name(), log)
+	serverInfo, _, _, startupErr := StartTestEnvironment(ctx, ContainerController, t.Name(), NoSeparateWorkingDir, log)
 	require.NoError(t, startupErr, "Failed to start the API server")
 
 	defer func() {

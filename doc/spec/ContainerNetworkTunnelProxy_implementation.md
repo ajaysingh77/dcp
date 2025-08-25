@@ -20,7 +20,7 @@
 
 - [x] Implement container monitoring capability for `dcpproc`.
 - [x] Implement support for instantiating client proxy container, including exposing ports, reading exposed ports from Docker, and starting `dcpproc` for the newly created container.
-- [ ] Implement support for starting server proxy.
+- [x] Implement support for starting server proxy.
 - [ ] Implement support for proxy pair cleanup during object deletion.
 - [ ] Write automated integration test that verifies the proxy pair has been instantiated by the ContainerNetworkTunnelProxy controller. This might require adding to TestContainerOrchestrator a limited simulation of port allocation and exposure. We are not verifying that the proxy actually works here; just that the server proxy and client proxy (container) are created and hooked up as expected.
 - [ ] Write automated integration test that verifies server and client proxies are cleaned up when ContainerNetworkTunnelProxy object is deleted.

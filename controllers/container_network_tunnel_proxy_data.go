@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"os"
 	std_slices "slices"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
@@ -15,12 +16,22 @@ type containerNetworkTunnelProxyData struct {
 	// Whether the startup of the proxy pair has been scheduled.
 	// This is checked and updated when we enter the starting state.
 	startupScheduled bool
+
+	// Standard output file for the server proxy process.
+	// Note: this is a file descriptor, and is not "cloned" when Clone() is called.
+	serverStdout *os.File
+
+	// Standard error file for the server proxy process.
+	// Note: this is a file descriptor, and is not "cloned" when Clone() is called.
+	serverStderr *os.File
 }
 
 func (tpd *containerNetworkTunnelProxyData) Clone() *containerNetworkTunnelProxyData {
 	clone := containerNetworkTunnelProxyData{
 		ContainerNetworkTunnelProxyStatus: *tpd.ContainerNetworkTunnelProxyStatus.DeepCopy(),
 		startupScheduled:                  tpd.startupScheduled,
+		serverStdout:                      tpd.serverStdout,
+		serverStderr:                      tpd.serverStderr,
 	}
 	return &clone
 }
@@ -97,6 +108,16 @@ func (tpd *containerNetworkTunnelProxyData) UpdateFrom(other *containerNetworkTu
 		updated = true
 	}
 
+	if tpd.serverStdout != other.serverStdout {
+		tpd.serverStdout = other.serverStdout
+		updated = true
+	}
+
+	if tpd.serverStderr != other.serverStderr {
+		tpd.serverStderr = other.serverStderr
+		updated = true
+	}
+
 	return updated
 }
 
@@ -133,7 +154,7 @@ func (tpd *containerNetworkTunnelProxyData) applyTo(tunnelProxy *apiv1.Container
 		change |= statusChanged
 	}
 
-	if tpd.ServerProxyStartupTimestamp != tunnelProxy.Status.ServerProxyStartupTimestamp {
+	if tunnelProxy.Status.ServerProxyStartupTimestamp.IsZero() && !tpd.ServerProxyStartupTimestamp.IsZero() {
 		tunnelProxy.Status.ServerProxyStartupTimestamp = tpd.ServerProxyStartupTimestamp
 		change |= statusChanged
 	}

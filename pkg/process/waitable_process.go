@@ -65,10 +65,7 @@ func (p *WaitableProcess) pollingWait(ctx context.Context) {
 				for done := false; !done; {
 					select {
 					case <-timer.C:
-						pid, pidConversionErr := Uint32_ToPidT(uint32(p.process.Pid))
-						if pidConversionErr != nil {
-							panic(pidConversionErr)
-						}
+						pid := Uint32_ToPidT(uint32(p.process.Pid))
 
 						_, pollErr := FindProcess(pid, p.processStartTime)
 						// We couldn't find the PID, so the process has exited

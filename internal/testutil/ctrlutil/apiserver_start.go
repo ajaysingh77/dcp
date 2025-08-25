@@ -188,7 +188,7 @@ func StartApiServer(testRunCtx context.Context, log logr.Logger) (*ApiServerInfo
 	cmd.Stderr = &stderr
 
 	apiserverExitHandler := process.ProcessExitHandlerFunc(func(_ process.Pid_t, exitCode int32, err error) {
-		if errors.Is(err, context.Canceled) {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			// Expected, this is how we cancel the API server process.
 		} else if err != nil {
 			log.Error(err, "API server process could not be tracked")

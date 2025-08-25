@@ -173,10 +173,8 @@ func (e *OSExecutor) startProcess(cmd *exec.Cmd, flags ProcessCreationFlag) (Pid
 	}
 
 	osPid := cmd.Process.Pid
-	pid, err := Uint32_ToPidT(uint32(osPid))
-	if err != nil {
-		return UnknownPID, time.Time{}, err
-	}
+	pid := Uint32_ToPidT(uint32(osPid))
+
 	startLog := e.log.WithValues(
 		"PID", pid,
 		"Command", cmd.Path,

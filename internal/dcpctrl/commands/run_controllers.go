@@ -239,7 +239,10 @@ func runControllers(rootLogger logger.Logger) func(cmd *cobra.Command, _ []strin
 		containerNetworkTunnelProxyCtrl := controllers.NewContainerNetworkTunnelProxyReconciler(
 			ctrlCtx,
 			mgr.GetClient(),
-			containerOrchestrator,
+			controllers.ContainerNetworkTunnelProxyReconcilerConfig{
+				Orchestrator:    containerOrchestrator,
+				ProcessExecutor: processExecutor,
+			},
 			log.WithName("TunnelProxyReconciler"),
 		)
 		if err = containerNetworkTunnelProxyCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
