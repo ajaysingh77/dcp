@@ -17,17 +17,14 @@ import (
 	"github.com/go-logr/logr"
 
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	controller "sigs.k8s.io/controller-runtime/pkg/controller"
-	ctrl_event "sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	ctrl_source "sigs.k8s.io/controller-runtime/pkg/source"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
@@ -111,29 +108,22 @@ var _ UpdateableFrom[*runningNetworkState] = (*runningNetworkState)(nil)
 type networkStateMap = ObjectStateMap[string, runningNetworkState, *runningNetworkState]
 
 type NetworkReconciler struct {
-	ctrl_client.Client
-	Log                 logr.Logger
-	reconciliationSeqNo uint32
-	orchestrator        containers.ContainerOrchestrator
+	*ReconcilerBase[apiv1.ContainerNetwork, *apiv1.ContainerNetwork]
+
+	orchestrator containers.ContainerOrchestrator
 
 	existingNetworks *networkStateMap
 
-	// Channel used to trigger reconciliation when underlying networks change
-	notifyNetworkChanged *concurrency.UnboundedChan[ctrl_event.GenericEvent]
 	// Network events subscription
 	networkEvtSub *pubsub.Subscription[containers.EventMessage]
 	// Channel to receive network change events
 	networkEvtCh         *concurrency.UnboundedChan[containers.EventMessage]
 	networkEvtWorkerStop chan struct{}
+
 	// Count of existing Container resources
 	watchingResources *syncmap.Map[types.UID, bool]
-	// Debouncer used to schedule reconciliation. Extra data is the running network ID whose state changed.
-	debouncer *reconcilerDebouncer[string]
 	// Lock to protect the reconciler data that requires synchronized access
 	lock *sync.Mutex
-
-	// Reconciler lifetime context, used to cancel container watch during reconciler shutdown
-	lifetimeCtx context.Context
 
 	// True if the container orchestrator is healthy, false otherwise
 	orchestratorHealthy *atomic.Bool
@@ -149,23 +139,22 @@ var (
 func NewNetworkReconciler(
 	lifetimeCtx context.Context,
 	client ctrl_client.Client,
+	noCacheClient ctrl_client.Reader,
 	log logr.Logger,
 	orchestrator containers.ContainerOrchestrator,
 	harvester *resourceHarvester,
 ) *NetworkReconciler {
+	base := NewReconcilerBase[apiv1.ContainerNetwork, *apiv1.ContainerNetwork](client, noCacheClient, log, lifetimeCtx)
+
 	r := NetworkReconciler{
-		Client:               client,
+		ReconcilerBase:       base,
 		orchestrator:         orchestrator,
 		existingNetworks:     NewObjectStateMap[string, runningNetworkState](),
-		notifyNetworkChanged: concurrency.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx),
 		networkEvtSub:        nil,
 		networkEvtCh:         nil,
 		networkEvtWorkerStop: nil,
-		debouncer:            newReconcilerDebouncer[string](),
 		watchingResources:    &syncmap.Map[types.UID, bool]{},
 		lock:                 &sync.Mutex{},
-		lifetimeCtx:          lifetimeCtx,
-		Log:                  log,
 		orchestratorHealthy:  &atomic.Bool{},
 		harvester:            harvester,
 	}
@@ -193,21 +182,17 @@ func (r *NetworkReconciler) SetupWithManager(mgr ctrl.Manager, name string) erro
 		return err
 	}
 
-	src := ctrl_source.Channel(r.notifyNetworkChanged.Out, &handler.EnqueueRequestForObject{})
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv1.ContainerNetwork{}).
 		Watches(&apiv1.ContainerNetworkConnection{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForNetwork), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
-		WatchesRawSource(src).
+		WatchesRawSource(r.GetReconciliationEventSource()).
 		Named(name).
 		Complete(r)
 }
 
 func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.WithValues(
-		"Network", req.NamespacedName.String(),
-		"Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1),
-	)
+	reader, log := r.StartReconciliation(req)
 
 	if ctx.Err() != nil {
 		log.V(1).Info("Request context expired, nothing to do...")
@@ -222,7 +207,7 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	network := apiv1.ContainerNetwork{}
-	err := r.Get(ctx, req.NamespacedName, &network)
+	err := reader.Get(ctx, req.NamespacedName, &network)
 
 	if err != nil {
 		if apimachinery_errors.IsNotFound(err) {
@@ -278,18 +263,14 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
-	// Reconcile again after a delay (with some fuzz to avoid stampedes) if needed
-	reconciliationDelay := defaultAdditionalReconciliationDelay
-	reconciliationJitter := defaultAdditionalReconciliationJitter
+	reconciliationDelay := StandardDelay
 	if (change & additionalReconciliationNeeded) == 0 {
-		// Schedule followup reconciliation on a random delay between 5 to 10 seconds (to avoid stampedes).
-		// The goal is to enable periodic reconciliation polling.
-		reconciliationDelay = 5 * time.Second
-		reconciliationJitter = 5 * time.Second
+		// Schedule followup reconciliation on a long to enable periodic network polling.
+		reconciliationDelay = LongDelay
 		change |= additionalReconciliationNeeded
 	}
 
-	result, err := saveChangesWithCustomReconciliationDelay(r.Client, ctx, &network, patch, change, reconciliationDelay, reconciliationJitter, nil, log)
+	result, err := r.SaveChangesWithDelay(ctx, &network, patch, change, reconciliationDelay, nil, log)
 	return result, err
 }
 
@@ -646,7 +627,7 @@ func (r *NetworkReconciler) ensureNetworkWatch(network *apiv1.ContainerNetwork, 
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
-	if r.lifetimeCtx.Err() != nil {
+	if r.LifetimeCtx.Err() != nil {
 		return // Do not start a container watch if we are done
 	}
 
@@ -657,7 +638,7 @@ func (r *NetworkReconciler) ensureNetworkWatch(network *apiv1.ContainerNetwork, 
 	}
 
 	r.networkEvtCh = concurrency.NewUnboundedChanBuffered[containers.EventMessage](
-		r.lifetimeCtx,
+		r.LifetimeCtx,
 		containerEventChanBuffer,
 		containerEventChanBuffer,
 	)
@@ -728,7 +709,7 @@ func (r *NetworkReconciler) processNetworkEvent(em containers.EventMessage) {
 		}
 
 		r.Log.V(1).Info("detected network update, scheduling reconciliation for Network object", "Network", networkObjectName.String())
-		r.debouncer.ReconciliationNeeded(r.lifetimeCtx, networkObjectName, networkId, r.scheduleNetworkReconciliation)
+		r.ScheduleReconciliation(networkObjectName)
 	}
 }
 
@@ -744,18 +725,6 @@ func (r *NetworkReconciler) requestReconcileForNetwork(ctx context.Context, obj 
 	}
 }
 
-func (r *NetworkReconciler) scheduleNetworkReconciliation(rti reconcileTriggerInput[string]) {
-	event := ctrl_event.GenericEvent{
-		Object: &apiv1.ContainerNetwork{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      rti.target.Name,
-				Namespace: rti.target.Namespace,
-			},
-		},
-	}
-	r.notifyNetworkChanged.In <- event
-}
-
 func (r *NetworkReconciler) cancelNetworkWatch() {
 	if r.networkEvtWorkerStop != nil {
 		close(r.networkEvtWorkerStop)
@@ -768,7 +737,7 @@ func (r *NetworkReconciler) cancelNetworkWatch() {
 }
 
 func (r *NetworkReconciler) onShutdown() {
-	<-r.lifetimeCtx.Done()
+	<-r.LifetimeCtx.Done()
 	r.lock.Lock()
 	defer r.lock.Unlock()
 	r.cancelNetworkWatch()

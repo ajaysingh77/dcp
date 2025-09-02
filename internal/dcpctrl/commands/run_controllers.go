@@ -148,6 +148,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		serviceCtrl := controllers.NewServiceReconciler(
 			ctrlCtx,
 			mgr.GetClient(),
+			mgr.GetAPIReader(),
 			log.WithName("ServiceReconciler"),
 			controllers.ServiceReconcilerConfig{
 				ProcessExecutor: processExecutor,
@@ -177,7 +178,9 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		}
 
 		exReplicaSetCtrl := controllers.NewExecutableReplicaSetReconciler(
+			ctrlCtx,
 			mgr.GetClient(),
+			mgr.GetAPIReader(),
 			log.WithName("ExecutableReplicaSetReconciler"),
 		)
 		if err = exReplicaSetCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
@@ -204,6 +207,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		containerExecCtrl := controllers.NewContainerExecReconciler(
 			ctrlCtx,
 			mgr.GetClient(),
+			mgr.GetAPIReader(),
 			log.WithName("ContainerExecReconciler"),
 			containerOrchestrator,
 		)
@@ -213,7 +217,9 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		}
 
 		volumeCtrl := controllers.NewVolumeReconciler(
+			ctrlCtx,
 			mgr.GetClient(),
+			mgr.GetAPIReader(),
 			log.WithName("VolumeReconciler"),
 			containerOrchestrator,
 		)
@@ -225,6 +231,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		networkCtrl := controllers.NewNetworkReconciler(
 			ctrlCtx,
 			mgr.GetClient(),
+			mgr.GetAPIReader(),
 			log.WithName("NetworkReconciler"),
 			containerOrchestrator,
 			harvester,
@@ -237,6 +244,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		containerNetworkTunnelProxyCtrl := controllers.NewContainerNetworkTunnelProxyReconciler(
 			ctrlCtx,
 			mgr.GetClient(),
+			mgr.GetAPIReader(),
 			controllers.ContainerNetworkTunnelProxyReconcilerConfig{
 				Orchestrator:    containerOrchestrator,
 				ProcessExecutor: processExecutor,

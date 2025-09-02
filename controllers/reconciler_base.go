@@ -5,7 +5,6 @@ package controllers
 import (
 	"context"
 	"fmt"
-	mathrand "math/rand"
 	"reflect"
 	"sync/atomic"
 	"time"
@@ -110,6 +109,14 @@ func (rb *ReconcilerBase[T, PT]) ScheduleReconciliation(nn types.NamespacedName)
 	})
 }
 
+// Schedules reconciliation for specific object identified by namespaced name, delaying it by specified duration.
+func (rb *ReconcilerBase[T, PT]) ScheduleReconciliationWithDelay(nn types.NamespacedName, delay AdditionalReconciliationDelay) {
+	if delay != NoDelay {
+		time.Sleep(delayDuration(delay))
+	}
+	rb.ScheduleReconciliation(nn)
+}
+
 // Gets a reconciliation event source for triggering reconciliations programmatically.
 // The returned source should be passed to WatchesRawSource() controller builder method.
 func (rb *ReconcilerBase[T, PT]) GetReconciliationEventSource() ctrl_source.Source {
@@ -121,7 +128,6 @@ func (rb *ReconcilerBase[T, PT]) GetReconciliationEventSource() ctrl_source.Sour
 // Standard delay is used for additional reconciliation.
 // If conflicts occurred during previous save, additional delay will be exponentially increased up to maxConflictDelay.
 func (rb *ReconcilerBase[T, PT]) SaveChanges(
-	client ctrl_client.Client,
 	ctx context.Context,
 	obj PT,
 	patch ctrl_client.Patch,
@@ -129,27 +135,19 @@ func (rb *ReconcilerBase[T, PT]) SaveChanges(
 	onSuccessfulSave func(),
 	log logr.Logger,
 ) (ctrl.Result, error) {
-	return rb.SaveChangesWithDelay(client, ctx, obj, patch, change, standardDelay, onSuccessfulSave, log)
+	return rb.SaveChangesWithDelay(ctx, obj, patch, change, StandardDelay, onSuccessfulSave, log)
 }
-
-type additionalReconciliationDelay int
-
-const (
-	standardDelay additionalReconciliationDelay = iota
-	longDelay
-)
 
 // Saves changes to the object and schedules additional reconciliation as appropriate.
 // Standard or long delay will be used for additional reconciliation, depending on the flag passed.
 // If long delay is requested, it implies that additional reconciliation is needed.
 // If conflicts occurred during previous save, reconciliation delay will be exponentially increased up to maxConflictDelay.
 func (rb *ReconcilerBase[T, PT]) SaveChangesWithDelay(
-	client ctrl_client.Client,
 	ctx context.Context,
 	obj PT,
 	patch ctrl_client.Patch,
 	change objectChange,
-	delay additionalReconciliationDelay,
+	delay AdditionalReconciliationDelay,
 	onSuccessfulSave func(),
 	log logr.Logger,
 ) (ctrl.Result, error) {
@@ -162,7 +160,7 @@ func (rb *ReconcilerBase[T, PT]) SaveChangesWithDelay(
 			}
 		}
 
-		if delay == longDelay {
+		if delay == LongDelay {
 			change |= additionalReconciliationNeeded
 		}
 
@@ -206,11 +204,11 @@ func (rb *ReconcilerBase[T, PT]) SaveChangesWithDelay(
 
 		if (change & statusChanged) != 0 {
 			res, err = doUpdate(func(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch) error {
-				return client.Status().Patch(ctx, obj, patch)
+				return rb.Client.Status().Patch(ctx, obj, patch)
 			}, "status update", statusSaveCounter)
 		} else if (change & (metadataChanged | specChanged)) != 0 {
 			res, err = doUpdate(func(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch) error {
-				return client.Patch(ctx, obj, patch)
+				return rb.Client.Patch(ctx, obj, patch)
 			}, "update", metadataOrSpecSaveCounter)
 		}
 
@@ -219,14 +217,12 @@ func (rb *ReconcilerBase[T, PT]) SaveChangesWithDelay(
 			return res, err
 		} else if (change & additionalReconciliationNeeded) != 0 {
 			log.V(1).Info(fmt.Sprintf("scheduling additional reconciliation for %s...", kind))
-			reconciliationDelay := defaultAdditionalReconciliationDelay
-			reconciliationJitter := defaultAdditionalReconciliationJitter
-			if delay == longDelay {
-				reconciliationDelay = minimumLongAdditionalReconciliationDelay
-				reconciliationJitter = minimumLongAdditionalReconciliationDelay
+			delayDuration := delayDuration(delay)
+			// To make additional reconciliation happen, the RequeueAfter value must be > 0.
+			if delayDuration == 0 {
+				delayDuration = time.Millisecond
 			}
-			reconciliationDelay += time.Duration(mathrand.Int63n(int64(reconciliationJitter)))
-			return ctrl.Result{RequeueAfter: reconciliationDelay}, err
+			return ctrl.Result{RequeueAfter: delayDuration}, err
 		} else {
 			return res, err
 		}

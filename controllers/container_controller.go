@@ -48,8 +48,8 @@ const (
 	containerEventChanBuffer                = 20 // Container events tend to come in bursts, so we can help a bit with buffering
 	DefaultMaxParallelContainerStarts uint8 = 6
 
-	startupRetryDelay = 1 * time.Second
-	noDelay           = 0 * time.Second
+	startupRetryDelay  = 1 * time.Second
+	startupWithNoDelay = 0 * time.Second
 
 	// How long the container orchestrator will wait for a container to stop before killing it
 	stopContainerTimeoutSeconds = 10
@@ -267,12 +267,12 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		change = r.manageContainer(ctx, &container, log)
 	}
 
-	additionalReconcileDelay := standardDelay
+	additionalReconcileDelay := StandardDelay
 	if container.Status.State == apiv1.ContainerStateRuntimeUnhealthy {
-		additionalReconcileDelay = longDelay
+		additionalReconcileDelay = LongDelay
 	}
 
-	result, saveErr := r.SaveChangesWithDelay(r.Client, ctx, &container, patch, change, additionalReconcileDelay, nil, log)
+	result, saveErr := r.SaveChangesWithDelay(ctx, &container, patch, change, additionalReconcileDelay, nil, log)
 	return result, saveErr
 }
 
@@ -490,7 +490,7 @@ func ensureContainerStartingState(
 
 		r.runningContainers.Store(container.NamespacedName(), rcd.containerID, rcd.Clone())
 		r.ensureContainerWatch(container, log)
-		r.scheduleContainerCreation(container, rcd, log, noDelay)
+		r.scheduleContainerCreation(container, rcd, log, startupWithNoDelay)
 
 		// We need to update the runningContainers map with the new data here
 		// because the caller did not have a runningContainerData instance.
@@ -503,7 +503,7 @@ func ensureContainerStartingState(
 
 		rcd.ensureStartupLogFiles(container, log)
 
-		r.scheduleContainerCreation(container, rcd, log, noDelay)
+		r.scheduleContainerCreation(container, rcd, log, startupWithNoDelay)
 		change |= statusChanged
 
 	} else if templating.IsTransientTemplateError(rcd.startupError) {

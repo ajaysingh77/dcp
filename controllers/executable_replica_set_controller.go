@@ -35,11 +35,9 @@ type executableReplicaSetData struct {
 
 // ExecutableReplicaSetReconciler reconciles an ExecutableReplicaSet object
 type ExecutableReplicaSetReconciler struct {
-	ctrl_client.Client
-	Log                 logr.Logger
-	reconciliationSeqNo uint32
-	runningReplicaSets  *syncmap.Map[types.NamespacedName, executableReplicaSetData]
-	replicaCounters     *syncmap.Map[types.NamespacedName, *atomic.Int32]
+	*ReconcilerBase[apiv1.ExecutableReplicaSet, *apiv1.ExecutableReplicaSet]
+	runningReplicaSets *syncmap.Map[types.NamespacedName, executableReplicaSetData]
+	replicaCounters    *syncmap.Map[types.NamespacedName, *atomic.Int32]
 }
 
 const (
@@ -62,12 +60,18 @@ var (
 	executableReplicaSetFinalizer string = fmt.Sprintf("%s/executable-replica-set-reconciler", apiv1.GroupVersion.Group)
 )
 
-func NewExecutableReplicaSetReconciler(client ctrl_client.Client, log logr.Logger) *ExecutableReplicaSetReconciler {
+func NewExecutableReplicaSetReconciler(
+	lifetimeCtx context.Context,
+	client ctrl_client.Client,
+	noCacheClient ctrl_client.Reader,
+	log logr.Logger,
+) *ExecutableReplicaSetReconciler {
+	base := NewReconcilerBase[apiv1.ExecutableReplicaSet](client, noCacheClient, log, lifetimeCtx)
+
 	r := ExecutableReplicaSetReconciler{
-		Client:             client,
+		ReconcilerBase:     base,
 		runningReplicaSets: &syncmap.Map[types.NamespacedName, executableReplicaSetData]{},
 		replicaCounters:    &syncmap.Map[types.NamespacedName, *atomic.Int32]{},
-		Log:                log,
 	}
 
 	return &r
@@ -365,9 +369,7 @@ func (r *ExecutableReplicaSetReconciler) deleteReplicas(ctx context.Context, rep
 // Changes to Executables "owned" by a given ExecutableReplicaSet will also trigger our reconciler loop,
 // allowing us to respond to changes to both the ExecutableReplicaSet as well as its child Executables.
 func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
-	reconciliationDelay := defaultAdditionalReconciliationDelay
-
-	log := r.Log.WithValues("ExecutableReplicaSet", req.NamespacedName).WithValues("Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1))
+	reader, log := r.StartReconciliation(req)
 
 	if ctx.Err() != nil {
 		log.V(1).Info("Request context expired, nothing to do...")
@@ -375,7 +377,7 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 	}
 
 	replicaSet := apiv1.ExecutableReplicaSet{}
-	if err := r.Get(ctx, req.NamespacedName, &replicaSet); err != nil {
+	if err := reader.Get(ctx, req.NamespacedName, &replicaSet); err != nil {
 		if errors.IsNotFound(err) {
 			log.V(1).Info("ExecutableReplicaSet not found, nothing to do...")
 			getNotFoundCounter.Add(ctx, 1)
@@ -404,6 +406,7 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 
 	rsData, found := r.runningReplicaSets.Load(replicaSet.NamespacedName())
 	var onSuccessfulSave func() = nil
+	reconciliationDelay := StandardDelay
 
 	if replicaSet.DeletionTimestamp != nil && !replicaSet.DeletionTimestamp.IsZero() && found && rsData.actualReplicas == 0 {
 		// Delete any remaining child replicas to ensure successful deletion (cleanup of soft deleted replicas)
@@ -452,7 +455,7 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 
 			if replicaSet.Spec.Replicas != 0 && len(activeReplicas) != int(replicaSet.Spec.Replicas) && found && rsData.lastScaled.Add(scaleRateLimit).After(time.Now()) {
 				log.Info("replica count changed, but scaling is rate limited", "LastScaled", rsData.lastScaled)
-				reconciliationDelay = scaleRateLimit
+				reconciliationDelay = LongDelay
 				change |= additionalReconciliationNeeded
 			} else {
 				change |= r.scaleReplicas(ctx, &replicaSet, activeReplicas, log)
@@ -460,17 +463,7 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 		}
 	}
 
-	result, err := saveChangesWithCustomReconciliationDelay(
-		r,
-		ctx,
-		&replicaSet,
-		patch,
-		change,
-		reconciliationDelay,
-		defaultAdditionalReconciliationJitter,
-		nil,
-		log,
-	)
+	result, err := r.SaveChangesWithDelay(ctx, &replicaSet, patch, change, reconciliationDelay, nil, log)
 
 	if err == nil && onSuccessfulSave != nil {
 		onSuccessfulSave()

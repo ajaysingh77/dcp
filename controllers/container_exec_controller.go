@@ -9,7 +9,6 @@ import (
 	"os"
 	"slices"
 	"sync"
-	"sync/atomic"
 
 	"github.com/go-logr/logr"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
@@ -18,16 +17,12 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	controller "sigs.k8s.io/controller-runtime/pkg/controller"
-	ctrl_event "sigs.k8s.io/controller-runtime/pkg/event"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
-	ctrl_source "sigs.k8s.io/controller-runtime/pkg/source"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/logs"
 	"github.com/microsoft/usvc-apiserver/internal/templating"
 	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
-	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
@@ -54,21 +49,12 @@ type runningContainerExecStatus struct {
 }
 
 type ContainerExecReconciler struct {
-	ctrl_client.Client
-	Log                 logr.Logger
-	reconciliationSeqNo uint32
-	orchestrator        containers.ContainerOrchestrator
+	*ReconcilerBase[apiv1.ContainerExec, *apiv1.ContainerExec]
+
+	orchestrator containers.ContainerOrchestrator
 
 	// Currently running container exec commands
 	executions syncmap.Map[types.UID, *runningContainerExecStatus]
-
-	// Channel used to trigger reconciliation when underlying execution completes
-	notifyExecChanged *concurrency.UnboundedChan[ctrl_event.GenericEvent]
-	// Debouncer used to schedule reconciliation. Extra data is the running ContainerExec ID whose state changed.
-	debouncer *reconcilerDebouncer[string]
-
-	// Reconciler lifetime context, used to cancel container exec during reconciler shutdown
-	lifetimeCtx context.Context
 
 	// A WorkQueue related to stopping container executions, which need to be run asynchronously.
 	stopQueue *resiliency.WorkQueue
@@ -82,35 +68,35 @@ var (
 	containerExecFinalizer string = fmt.Sprintf("%s/container-exec-reconciler", apiv1.GroupVersion.Group)
 )
 
-func NewContainerExecReconciler(lifetimeCtx context.Context, client ctrl_client.Client, log logr.Logger, orchestrator containers.ContainerOrchestrator) *ContainerExecReconciler {
+func NewContainerExecReconciler(
+	lifetimeCtx context.Context,
+	client ctrl_client.Client,
+	noCacheClient ctrl_client.Reader,
+	log logr.Logger,
+	orchestrator containers.ContainerOrchestrator,
+) *ContainerExecReconciler {
+	base := NewReconcilerBase[apiv1.ContainerExec](client, noCacheClient, log, lifetimeCtx)
+
 	r := ContainerExecReconciler{
-		Client:            client,
-		Log:               log,
-		orchestrator:      orchestrator,
-		executions:        syncmap.Map[types.UID, *runningContainerExecStatus]{},
-		notifyExecChanged: concurrency.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx),
-		debouncer:         newReconcilerDebouncer[string](),
-		lifetimeCtx:       lifetimeCtx,
-		stopQueue:         resiliency.NewWorkQueue(lifetimeCtx, maxParallelStopOps),
+		ReconcilerBase: base,
+		orchestrator:   orchestrator,
+		executions:     syncmap.Map[types.UID, *runningContainerExecStatus]{},
+		stopQueue:      resiliency.NewWorkQueue(lifetimeCtx, maxParallelStopOps),
 	}
 	return &r
 }
 
 func (r *ContainerExecReconciler) SetupWithManager(mgr ctrl.Manager, name string) error {
-	src := ctrl_source.Channel(r.notifyExecChanged.Out, &handler.EnqueueRequestForObject{})
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv1.ContainerExec{}).
-		WatchesRawSource(src).
+		WatchesRawSource(r.GetReconciliationEventSource()).
 		Named(name).
 		Complete(r)
 }
 
 func (r *ContainerExecReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.WithValues(
-		"ContainerExec", req.NamespacedName.String(),
-		"Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1),
-	)
+	reader, log := r.StartReconciliation(req)
 
 	if ctx.Err() != nil {
 		log.V(1).Info("Request context expired, nothing to do...")
@@ -118,7 +104,7 @@ func (r *ContainerExecReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	exec := apiv1.ContainerExec{}
-	err := r.Get(ctx, req.NamespacedName, &exec)
+	err := reader.Get(ctx, req.NamespacedName, &exec)
 
 	if err != nil {
 		if apimachinery_errors.IsNotFound(err) {
@@ -148,7 +134,7 @@ func (r *ContainerExecReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 	}
 
-	result, saveErr := saveChanges(r.Client, ctx, &exec, patch, change, nil, log)
+	result, saveErr := r.SaveChanges(ctx, &exec, patch, change, nil, log)
 	return result, saveErr
 }
 
@@ -248,7 +234,7 @@ func (r *ContainerExecReconciler) ensureExec(ctx context.Context, exec *apiv1.Co
 
 	startupTime := metav1.NowMicro()
 
-	execContext, execCancel := context.WithCancel(r.lifetimeCtx)
+	execContext, execCancel := context.WithCancel(r.LifetimeCtx)
 
 	execStatus.cancel = execCancel
 	execChan, execErr := r.orchestrator.ExecContainer(execContext, options)
@@ -267,11 +253,11 @@ func (r *ContainerExecReconciler) ensureExec(ctx context.Context, exec *apiv1.Co
 	// Start a goroutine to monitor the execution
 	go func() {
 		select {
-		case <-r.lifetimeCtx.Done():
+		case <-r.LifetimeCtx.Done():
 			// We're exiting, so there's nothing to do
 			return
 		case exitCode := <-execChan:
-			if r.lifetimeCtx.Err() != nil {
+			if r.LifetimeCtx.Err() != nil {
 				// We're exiting, so there's nothing to do
 				return
 			}
@@ -286,23 +272,11 @@ func (r *ContainerExecReconciler) ensureExec(ctx context.Context, exec *apiv1.Co
 			execStatus.finishTimestamp = finishTimestamp
 
 			r.Log.V(1).Info("detected exec command completion, scheduling reconciliation for ContainerExec object", "ContainerExec", exec.Name)
-			r.debouncer.ReconciliationNeeded(r.lifetimeCtx, exec.NamespacedName(), string(exec.UID), r.scheduleReconciliation)
+			r.ScheduleReconciliation(exec.NamespacedName())
 		}
 	}()
 
 	return updateContainerExecStatus(exec, execStatus)
-}
-
-func (r *ContainerExecReconciler) scheduleReconciliation(rti reconcileTriggerInput[string]) {
-	event := ctrl_event.GenericEvent{
-		Object: &apiv1.Container{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      rti.target.Name,
-				Namespace: rti.target.Namespace,
-			},
-		},
-	}
-	r.notifyExecChanged.In <- event
 }
 
 func (r *ContainerExecReconciler) computeEffectiveEnvironment(

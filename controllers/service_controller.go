@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync/atomic"
-	"time"
 
 	"github.com/go-logr/logr"
 	"go.opentelemetry.io/otel/trace"
@@ -23,17 +22,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	controller "sigs.k8s.io/controller-runtime/pkg/controller"
-	ctrl_event "sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	ctrl_source "sigs.k8s.io/controller-runtime/pkg/source"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/proxy"
 	"github.com/microsoft/usvc-apiserver/internal/telemetry"
-	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/pointers"
@@ -56,29 +52,17 @@ type serviceData struct {
 // Stores ServiceReconciler dependencies and configuration that often varies
 // between normal execution and testing.
 type ServiceReconcilerConfig struct {
-	ProcessExecutor                process.Executor
-	CreateProxy                    proxy.ProxyFactory
-	AdditionalReconciliationDelay  time.Duration
-	AdditionalReconciliationJitter time.Duration
+	ProcessExecutor               process.Executor
+	CreateProxy                   proxy.ProxyFactory
+	AdditionalReconciliationDelay AdditionalReconciliationDelay
 }
 
 type ServiceReconciler struct {
-	ctrl_client.Client
-	Log                            logr.Logger
-	reconciliationSeqNo            uint32
-	ProcessExecutor                process.Executor
-	ProxyConfigDir                 string
-	serviceInfo                    *syncmap.Map[types.NamespacedName, *serviceData]
-	createProxy                    proxy.ProxyFactory
-	additionalReconciliationDelay  time.Duration
-	additionalReconciliationJitter time.Duration
-
-	// Channel used to trigger reconciliation function when underlying run status changes.
-	notifyProxyRunChanged *concurrency.UnboundedChan[ctrl_event.GenericEvent]
-
-	lifetimeCtx context.Context
-
-	tracer trace.Tracer
+	*ReconcilerBase[apiv1.Service, *apiv1.Service]
+	ProxyConfigDir string
+	serviceInfo    *syncmap.Map[types.NamespacedName, *serviceData]
+	tracer         trace.Tracer
+	config         ServiceReconcilerConfig
 }
 
 const (
@@ -95,6 +79,7 @@ var (
 func NewServiceReconciler(
 	lifetimeCtx context.Context,
 	client ctrl_client.Client,
+	noCacheClient ctrl_client.Reader,
 	log logr.Logger,
 	config ServiceReconcilerConfig,
 ) *ServiceReconciler {
@@ -102,33 +87,18 @@ func NewServiceReconciler(
 		panic("ProcessExecutor is required")
 	}
 
+	base := NewReconcilerBase[apiv1.Service](client, noCacheClient, log, lifetimeCtx)
+
 	r := ServiceReconciler{
-		Client:                client,
-		ProcessExecutor:       config.ProcessExecutor,
-		ProxyConfigDir:        filepath.Join(usvc_io.DcpTempDir(), "usvc-servicecontroller-serviceconfig"),
-		serviceInfo:           &syncmap.Map[types.NamespacedName, *serviceData]{},
-		notifyProxyRunChanged: concurrency.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx),
-		lifetimeCtx:           lifetimeCtx,
-		tracer:                telemetry.GetTelemetrySystem().TracerProvider.Tracer("service-controller"),
-		Log:                   log,
+		ReconcilerBase: base,
+		config:         config, // Makes a copy
+		ProxyConfigDir: filepath.Join(usvc_io.DcpTempDir(), "usvc-servicecontroller-serviceconfig"),
+		serviceInfo:    &syncmap.Map[types.NamespacedName, *serviceData]{},
+		tracer:         telemetry.GetTelemetrySystem().TracerProvider.Tracer("service-controller"),
 	}
 
 	if config.CreateProxy == nil {
-		r.createProxy = proxy.NewRuntimeProxy
-	} else {
-		r.createProxy = config.CreateProxy
-	}
-
-	if config.AdditionalReconciliationDelay != 0 {
-		r.additionalReconciliationDelay = config.AdditionalReconciliationDelay
-	} else {
-		r.additionalReconciliationDelay = defaultAdditionalReconciliationDelay
-	}
-
-	if config.AdditionalReconciliationJitter != 0 {
-		r.additionalReconciliationJitter = config.AdditionalReconciliationJitter
-	} else {
-		r.additionalReconciliationJitter = defaultAdditionalReconciliationJitter
+		r.config.CreateProxy = proxy.NewRuntimeProxy
 	}
 
 	return &r
@@ -151,12 +121,11 @@ func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager, name string) erro
 		return err
 	}
 
-	src := ctrl_source.Channel(r.notifyProxyRunChanged.Out, &handler.EnqueueRequestForObject{})
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv1.Service{}).
 		Watches(&apiv1.Endpoint{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForEndpoint), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
-		WatchesRawSource(src).
+		WatchesRawSource(r.GetReconciliationEventSource()).
 		Named(name).
 		Complete(r)
 }
@@ -223,17 +192,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
-	result, err := saveChangesWithCustomReconciliationDelay(
-		r.Client,
-		ctx,
-		&svc,
-		patch,
-		change,
-		r.additionalReconciliationDelay,
-		r.additionalReconciliationJitter,
-		nil,
-		log,
-	)
+	result, err := r.SaveChangesWithDelay(ctx, &svc, patch, change, r.config.AdditionalReconciliationDelay, nil, log)
 	return result, err
 }
 
@@ -536,9 +495,9 @@ func (r *ServiceReconciler) getProxyData(svc *apiv1.Service, requestedServiceAdd
 			}
 		}
 
-		proxyCtx, cancelFunc := context.WithCancel(r.lifetimeCtx)
+		proxyCtx, cancelFunc := context.WithCancel(r.LifetimeCtx)
 		proxies = append(proxies, proxyInstanceData{
-			proxy:     r.createProxy(svc.Spec.Protocol, proxyInstanceAddress, proxyPort, proxyCtx, proxyLog),
+			proxy:     r.config.CreateProxy(svc.Spec.Protocol, proxyInstanceAddress, proxyPort, proxyCtx, proxyLog),
 			stopProxy: cancelFunc,
 		})
 	}

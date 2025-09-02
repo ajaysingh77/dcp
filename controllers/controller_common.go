@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -20,7 +19,6 @@ import (
 	ctrl_config "sigs.k8s.io/controller-runtime/pkg/config"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/microsoft/usvc-apiserver/internal/telemetry"
 	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	usvc_slices "github.com/microsoft/usvc-apiserver/pkg/slices"
 )
@@ -34,12 +32,9 @@ const (
 	specChanged                    objectChange = 0x4
 	additionalReconciliationNeeded objectChange = 0x8
 
-	defaultAdditionalReconciliationDelay     = 2 * time.Second
-	defaultAdditionalReconciliationJitter    = 500 * time.Millisecond
-	minimumLongAdditionalReconciliationDelay = 5 * time.Second
-	conflictRequeueDelay                     = 100 * time.Millisecond
-	reconciliationDebounceDelay              = 500 * time.Millisecond
-	reconciliationMaxDelay                   = 5 * time.Second
+	conflictRequeueDelay        = 100 * time.Millisecond
+	reconciliationDebounceDelay = 500 * time.Millisecond
+	reconciliationMaxDelay      = 5 * time.Second
 
 	PersistentLabel              = "com.microsoft.developer.usvc-dev.persistent"
 	CreatorProcessIdLabel        = "com.microsoft.developer.usvc-dev.creatorProcessId"
@@ -50,10 +45,46 @@ const (
 	numPostfixBytes = 6
 )
 
+type AdditionalReconciliationDelay int
+
+const (
+	StandardDelay AdditionalReconciliationDelay = 0 // Zero value means standard delay
+	NoDelay       AdditionalReconciliationDelay = 1
+	LongDelay     AdditionalReconciliationDelay = 2
+	TestDelay     AdditionalReconciliationDelay = 3
+)
+
+type durationAndJitter struct {
+	time.Duration
+	Jitter time.Duration
+}
+
+var (
+	// Maps additionalReconciliationDelay values to actual time.Duration values for delay and jitter.
+	delayDurations = map[AdditionalReconciliationDelay]durationAndJitter{
+		StandardDelay: {Duration: 2 * time.Second, Jitter: 500 * time.Millisecond},
+		LongDelay:     {Duration: 5 * time.Second, Jitter: 2 * time.Second},
+		TestDelay:     {Duration: 200 * time.Millisecond, Jitter: 1 * time.Millisecond},
+		NoDelay:       {Duration: 0 * time.Second, Jitter: 0 * time.Millisecond},
+	}
+)
+
 var (
 	// Base32 encoder used to generate unique postfixes for Executable replicas.
 	randomNameEncoder = base32.HexEncoding.WithPadding(base32.NoPadding)
 )
+
+func delayDuration(delay AdditionalReconciliationDelay) time.Duration {
+	if delay == NoDelay {
+		return 0
+	}
+	dnj, found := delayDurations[delay]
+	if !found {
+		dnj = delayDurations[StandardDelay] // Should never happen, but just in case...
+	}
+	retval := dnj.Duration + time.Duration(mathrand.Int63n(int64(dnj.Jitter)))
+	return retval
+}
 
 func ensureFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objectChange {
 	finalizers := obj.GetFinalizers()
@@ -105,132 +136,6 @@ func GetShortId(id string) string {
 	}
 
 	return id
-}
-
-// OBSOLETE: use ReconcilerBase.SaveChanges instead
-// Computes the delay to use for additional reconciliation, if necessary.
-// The passed "useLongDelay" parameter determines whether the delay should be "standard" or "long".
-// Passing true will result in a longer delay with a random component,
-// and will also adjust the returned object change to force additional reconciliation.
-func computeAdditionalReconciliationDelay(change objectChange, useLongDelay bool) (time.Duration, time.Duration, objectChange) {
-	reconciliationDelay := defaultAdditionalReconciliationDelay
-	reconciliationJitter := defaultAdditionalReconciliationJitter
-	if useLongDelay {
-		reconciliationDelay = minimumLongAdditionalReconciliationDelay
-		reconciliationJitter = minimumLongAdditionalReconciliationDelay
-		change |= additionalReconciliationNeeded
-	}
-	return reconciliationDelay, reconciliationJitter, change
-}
-
-// OBSOLETE: use ReconcilerBase.SaveChanges instead
-func saveChanges[T commonapi.ObjectStruct, PCT commonapi.PCopyableObjectStruct[T]](
-	client ctrl_client.Client,
-	ctx context.Context,
-	obj PCT,
-	patch ctrl_client.Patch,
-	change objectChange,
-	onSuccessfulSave func(),
-	log logr.Logger,
-) (ctrl.Result, error) {
-	return saveChangesWithCustomReconciliationDelay(
-		client,
-		ctx,
-		obj,
-		patch,
-		change,
-		defaultAdditionalReconciliationDelay, // Default delay + up to 500ms of random jitter to avoid thundering herd
-		defaultAdditionalReconciliationJitter,
-		onSuccessfulSave,
-		log,
-	)
-}
-
-// OBSOLETE: use ReconcilerBase.SaveChanges instead
-func saveChangesWithCustomReconciliationDelay[T commonapi.ObjectStruct, PCT commonapi.PCopyableObjectStruct[T]](
-	client ctrl_client.Client,
-	parentCtx context.Context,
-	obj PCT,
-	patch ctrl_client.Patch,
-	change objectChange,
-	customReconciliationDelay time.Duration,
-	customReconciliationJitter time.Duration,
-	onSuccessfulSave func(),
-	log logr.Logger,
-) (ctrl.Result, error) {
-	return telemetry.CallWithTelemetryOnErrorOnly(telemetry.GetTracer("controller-common"), "saveChanges", parentCtx, func(ctx context.Context) (ctrl.Result, error) {
-		var update PCT
-		var err error
-		kind := obj.GetObjectKind().GroupVersionKind().Kind
-		afterGoodSave := func() {
-			if onSuccessfulSave != nil {
-				onSuccessfulSave()
-			}
-		}
-
-		if customReconciliationJitter > 0 {
-			customReconciliationDelay += time.Duration(mathrand.Int63n(int64(customReconciliationJitter)))
-		}
-
-		// Apply one update per reconciliation function invocation,
-		// to avoid observing "partially updated" objects during subsequent reconciliations.
-		switch {
-		case change == noChange:
-			log.V(1).Info(fmt.Sprintf("no changes detected for %s object, continue monitoring...", kind))
-			return ctrl.Result{}, nil
-
-		case (change & statusChanged) != 0:
-			update = obj.DeepCopy()
-			err = client.Status().Patch(ctx, update, patch)
-			if err != nil {
-				if k8serrors.IsNotFound(err) {
-					log.V(1).Info(fmt.Sprintf("%s status update failed as it was removed", kind))
-					return ctrl.Result{}, nil
-				} else if k8serrors.IsConflict(err) {
-					// Error is expected optimistic concurrency check error, simply requeue
-					log.V(1).Info(fmt.Sprintf("%s status update failed due to conflict", kind))
-					return ctrl.Result{RequeueAfter: conflictRequeueDelay}, nil
-				} else {
-					log.Error(err, fmt.Sprintf("%s status update failed", kind))
-					saveFailedCounter.Add(ctx, 1)
-					return ctrl.Result{}, err
-				}
-			} else {
-				log.V(1).Info(fmt.Sprintf("%s status update succeeded", kind))
-				afterGoodSave()
-				statusSaveCounter.Add(ctx, 1)
-			}
-
-		case (change & (metadataChanged | specChanged)) != 0:
-			update = obj.DeepCopy()
-			err = client.Patch(ctx, update, patch)
-			if err != nil {
-				if k8serrors.IsNotFound(err) {
-					log.V(1).Info(fmt.Sprintf("%s object update failed as it was removed", kind))
-					return ctrl.Result{}, nil
-				} else if k8serrors.IsConflict(err) {
-					// Error is expected optimistic concurrency check error, simply requeue
-					log.V(1).Info(fmt.Sprintf("%s object update failed due to conflict", kind))
-					return ctrl.Result{RequeueAfter: conflictRequeueDelay}, nil
-				} else {
-					log.Error(err, fmt.Sprintf("%s object update failed", kind))
-					saveFailedCounter.Add(ctx, 1)
-					return ctrl.Result{}, err
-				}
-			} else {
-				log.V(1).Info(fmt.Sprintf("%s object update succeeded", kind))
-				afterGoodSave()
-				metadataOrSpecSaveCounter.Add(ctx, 1)
-			}
-		}
-
-		if (change & additionalReconciliationNeeded) != 0 {
-			log.V(1).Info(fmt.Sprintf("scheduling additional reconciliation for %s...", kind))
-			return ctrl.Result{RequeueAfter: customReconciliationDelay}, nil
-		} else {
-			return ctrl.Result{}, nil
-		}
-	})
 }
 
 type ControllerContextOption string

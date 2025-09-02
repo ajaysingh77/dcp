@@ -183,7 +183,9 @@ func StartTestEnvironment(
 
 	if inclCtrl&ExecutableReplicaSetController != 0 {
 		execrsR := controllers.NewExecutableReplicaSetReconciler(
+			ctx,
 			mgr.GetClient(),
+			mgr.GetAPIReader(),
 			log.WithName("ExecutableReplicaSetReconciler"),
 		)
 		if err = execrsR.SetupWithManager(mgr, instanceTag+"-ExecutableReplicaSetReconciler"); err != nil {
@@ -195,6 +197,7 @@ func StartTestEnvironment(
 		networkR := controllers.NewNetworkReconciler(
 			ctx,
 			mgr.GetClient(),
+			mgr.GetAPIReader(),
 			log.WithName("NetworkReconciler"),
 			serverInfo.ContainerOrchestrator,
 			harvester,
@@ -226,6 +229,7 @@ func StartTestEnvironment(
 		containerExecR := controllers.NewContainerExecReconciler(
 			ctx,
 			mgr.GetClient(),
+			mgr.GetAPIReader(),
 			log.WithName("ContainerExecReconciler"),
 			serverInfo.ContainerOrchestrator,
 		)
@@ -236,7 +240,9 @@ func StartTestEnvironment(
 
 	if inclCtrl&VolumeController != 0 {
 		volumeR := controllers.NewVolumeReconciler(
+			ctx,
 			mgr.GetClient(),
+			mgr.GetAPIReader(),
 			log.WithName("VolumeReconciler"),
 			serverInfo.ContainerOrchestrator,
 		)
@@ -249,12 +255,12 @@ func StartTestEnvironment(
 		serviceR := controllers.NewServiceReconciler(
 			ctx,
 			mgr.GetClient(),
+			mgr.GetAPIReader(),
 			log.WithName("ServiceReconciler"),
 			controllers.ServiceReconcilerConfig{
-				ProcessExecutor:                pe,
-				CreateProxy:                    ctrl_testutil.NewTestProxy,
-				AdditionalReconciliationDelay:  200 * time.Millisecond,
-				AdditionalReconciliationJitter: 1 * time.Millisecond,
+				ProcessExecutor:               pe,
+				CreateProxy:                   ctrl_testutil.NewTestProxy,
+				AdditionalReconciliationDelay: controllers.TestDelay,
 			},
 		)
 		if err = serviceR.SetupWithManager(mgr, instanceTag+"-ServiceReconciler"); err != nil {
@@ -273,6 +279,7 @@ func StartTestEnvironment(
 		tunnelProxyR := controllers.NewContainerNetworkTunnelProxyReconciler(
 			ctx,
 			mgr.GetClient(),
+			mgr.GetAPIReader(),
 			tprOpts,
 			log.WithName("TunnelProxyReconciler"),
 		)

@@ -178,7 +178,7 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		change = r.manageExecutable(ctx, &exe, log)
 	}
 
-	result, err := r.SaveChanges(r, ctx, &exe, patch, change, nil, log)
+	result, err := r.SaveChanges(ctx, &exe, patch, change, nil, log)
 	if exe.Done() {
 		log.V(1).Info("Executable reached done state")
 	}

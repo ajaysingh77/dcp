@@ -65,5 +65,5 @@ func (rd *reconcilerDebouncer[ReconcileInput]) ReconciliationNeeded(ctx context.
 		input:  ri,
 	}
 
-	debounce.run(context.Background(), input)
+	debounce.run(ctx, input)
 }

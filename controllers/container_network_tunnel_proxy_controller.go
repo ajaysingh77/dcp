@@ -9,12 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	mathrand "math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"sync/atomic"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
@@ -26,12 +24,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	controller "sigs.k8s.io/controller-runtime/pkg/controller"
-	ctrl_event "sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
-	ctrl_handler "sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	ctrl_source "sigs.k8s.io/controller-runtime/pkg/source"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
@@ -40,7 +35,6 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/dcptun"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
-	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
@@ -91,12 +85,7 @@ type ContainerNetworkTunnelProxyReconcilerConfig struct {
 }
 
 type ContainerNetworkTunnelProxyReconciler struct {
-	ctrl_client.Client
-	log                 logr.Logger
-	reconciliationSeqNo uint32
-
-	// Reconciler lifetime context.
-	lifetimeCtx context.Context
+	*ReconcilerBase[apiv1.ContainerNetworkTunnelProxy, *apiv1.ContainerNetworkTunnelProxy]
 
 	config ContainerNetworkTunnelProxyReconcilerConfig
 
@@ -105,17 +94,12 @@ type ContainerNetworkTunnelProxyReconciler struct {
 
 	// A work queue for long-running operations.
 	workQueue *resiliency.WorkQueue
-
-	// Debouncer for scheduling reconciliations.
-	debouncer *reconcilerDebouncer[struct{}]
-
-	// A channel used to trigger reconciliations.
-	reconciliationTriggerChan *concurrency.UnboundedChan[ctrl_event.GenericEvent]
 }
 
 func NewContainerNetworkTunnelProxyReconciler(
 	lifetimeCtx context.Context,
 	client ctrl_client.Client,
+	noCacheClient ctrl_client.Reader,
 	config ContainerNetworkTunnelProxyReconcilerConfig,
 	log logr.Logger,
 ) *ContainerNetworkTunnelProxyReconciler {
@@ -126,15 +110,13 @@ func NewContainerNetworkTunnelProxyReconciler(
 		panic("ContainerNetworkTunnelProxyReconcilerConfig.ProcessExecutor must not be nil")
 	}
 
+	base := NewReconcilerBase[apiv1.ContainerNetworkTunnelProxy](client, noCacheClient, log, lifetimeCtx)
+
 	return &ContainerNetworkTunnelProxyReconciler{
-		Client:                    client,
-		log:                       log,
-		lifetimeCtx:               lifetimeCtx,
-		config:                    config,
-		proxyData:                 NewObjectStateMap[types.NamespacedName, containerNetworkTunnelProxyData](),
-		workQueue:                 resiliency.NewWorkQueue(lifetimeCtx, resiliency.DefaultConcurrency),
-		debouncer:                 newReconcilerDebouncer[struct{}](),
-		reconciliationTriggerChan: concurrency.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx),
+		ReconcilerBase: base,
+		config:         config,
+		proxyData:      NewObjectStateMap[types.NamespacedName, containerNetworkTunnelProxyData](),
+		workQueue:      resiliency.NewWorkQueue(lifetimeCtx, resiliency.DefaultConcurrency),
 	}
 }
 
@@ -148,17 +130,15 @@ func (r *ContainerNetworkTunnelProxyReconciler) SetupWithManager(mgr ctrl.Manage
 			return []string{cntp.Spec.ContainerNetworkName}
 		}
 	}); err != nil {
-		r.log.Error(err, "Failed to create index for ContainerNetworkTunnelProxy.Spec.ContainerNetworkName field")
+		r.Log.Error(err, "Failed to create index for ContainerNetworkTunnelProxy.Spec.ContainerNetworkName field")
 		return err
 	}
-
-	src := ctrl_source.Channel(r.reconciliationTriggerChan.Out, &ctrl_handler.EnqueueRequestForObject{})
 
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv1.ContainerNetworkTunnelProxy{}).
 		Watches(&apiv1.ContainerNetwork{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForContainerNetworkTunnelProxy), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
-		WatchesRawSource(src).
+		WatchesRawSource(r.GetReconciliationEventSource()).
 		Named(name).
 		Complete(r)
 }
@@ -173,7 +153,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) requestReconcileForContainerNetw
 	}
 
 	if err := r.List(ctx, &tunnelProxies, listOpts...); err != nil {
-		r.log.Error(err, "Failed to list ContainerNetworkTunnelProxies for ContainerNetwork", "ContainerNetwork", network.Name)
+		r.Log.Error(err, "Failed to list ContainerNetworkTunnelProxies for ContainerNetwork", "ContainerNetwork", network.Name)
 		return nil
 	}
 
@@ -185,7 +165,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) requestReconcileForContainerNetw
 	}
 
 	if len(requests) > 0 {
-		r.log.V(1).Info("Enqueuing ContainerNetworkTunnelProxy reconciliation requests due to ContainerNetwork change",
+		r.Log.V(1).Info("Enqueuing ContainerNetworkTunnelProxy reconciliation requests due to ContainerNetwork change",
 			"ContainerNetwork", network.Name,
 			"AffectedTunnelProxies", slices.Map[reconcile.Request, string](
 				requests, func(req reconcile.Request) string { return req.NamespacedName.String() },
@@ -197,10 +177,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) requestReconcileForContainerNetw
 }
 
 func (r *ContainerNetworkTunnelProxyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.log.WithValues(
-		"ContainerNetworkTunnelProxy", req.NamespacedName.String(),
-		"Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1),
-	)
+	reader, log := r.StartReconciliation(req)
 
 	if ctx.Err() != nil {
 		log.V(1).Info("Request context expired, nothing to do...")
@@ -208,7 +185,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) Reconcile(ctx context.Context, r
 	}
 
 	tproxy := apiv1.ContainerNetworkTunnelProxy{}
-	err := r.Get(ctx, req.NamespacedName, &tproxy)
+	err := reader.Get(ctx, req.NamespacedName, &tproxy)
 
 	if err != nil {
 		if apimachinery_errors.IsNotFound(err) {
@@ -239,7 +216,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) Reconcile(ctx context.Context, r
 		}
 	}
 
-	result, err := saveChanges(r.Client, ctx, &tproxy, patch, change, nil, log)
+	result, err := r.SaveChanges(ctx, &tproxy, patch, change, nil, log)
 	return result, err
 }
 
@@ -471,7 +448,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) ensureContainerProxyImage(
 		pdMap.QueueDeferredOp(nn, func(_ types.NamespacedName, _ types.NamespacedName) {
 			pdMap.Update(nn, nn, pd)
 		})
-		r.scheduleReconciliation(nn)
+		r.ScheduleReconciliation(nn)
 	}
 }
 
@@ -484,7 +461,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startProxyPair(
 	log logr.Logger,
 ) func(context.Context) {
 	return func(ctx context.Context) {
-		clientCtrCreated, reconciliationKind := r.startClientProxy(ctx, tunnelProxy, pd, log)
+		clientCtrCreated, reconciliationDelay := r.startClientProxy(ctx, tunnelProxy, pd, log)
 
 		if clientCtrCreated {
 			// Start server proxy now that client proxy ports are known
@@ -495,26 +472,14 @@ func (r *ContainerNetworkTunnelProxyReconciler) startProxyPair(
 			}
 		}
 
-		if reconciliationKind == reconciliationKindDelayed {
-			delay := defaultAdditionalReconciliationDelay + time.Duration(mathrand.Int63n(int64(defaultAdditionalReconciliationJitter)))
-			time.Sleep(delay)
-		}
-
 		nn := tunnelProxy.NamespacedName()
 		pdMap := r.proxyData
 		pdMap.QueueDeferredOp(nn, func(_ types.NamespacedName, _ types.NamespacedName) {
 			pdMap.Update(nn, nn, pd)
 		})
-		r.scheduleReconciliation(nn)
+		r.ScheduleReconciliationWithDelay(nn, reconciliationDelay)
 	}
 }
-
-type reconciliationKind uint8
-
-const (
-	reconciliationKindImmediate reconciliationKind = 0
-	reconciliationKindDelayed   reconciliationKind = 1
-)
 
 // Starts the client proxy container.
 // The passed containerNetworkTunnelProxy data will be updated, reflecting success or failure of the client proxy start.
@@ -526,13 +491,13 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 	tunnelProxy *apiv1.ContainerNetworkTunnelProxy,
 	pd *containerNetworkTunnelProxyData,
 	log logr.Logger,
-) (bool, reconciliationKind) {
+) (bool, AdditionalReconciliationDelay) {
 	clientProxyCtrName, _, nameErr := MakeUniqueName(tunnelProxy.Name)
 	if nameErr != nil {
 		// This would be quite unusual and mean the random number generator failed.
 		log.Error(nameErr, "Failed to create a unique name for the client proxy container")
 		pd.startupScheduled = false // Reset startupScheduled flag as means of forcing a retry after potentially transient error.
-		return false, reconciliationKindDelayed
+		return false, StandardDelay
 	}
 
 	containerNetworkName := commonapi.AsNamespacedName(tunnelProxy.Spec.ContainerNetworkName, tunnelProxy.Namespace)
@@ -541,12 +506,12 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 	if cnErr != nil {
 		log.Error(cnErr, "Failed to retrieve ContainerNetwork data necessary for starting the client proxy container")
 		pd.startupScheduled = false
-		return false, reconciliationKindDelayed
+		return false, StandardDelay
 	}
 	if containerNetwork.Status.State != apiv1.ContainerNetworkStateRunning || containerNetwork.Status.ID == "" {
 		log.V(1).Info("Referenced ContainerNetwork is not in Running state, cannot start the client proxy container")
 		pd.startupScheduled = false
-		return false, reconciliationKindDelayed
+		return false, StandardDelay
 	}
 
 	log.V(1).Info("Starting client proxy container...")
@@ -588,7 +553,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 	if createErr != nil {
 		log.Error(createErr, "Failed to create client proxy container")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
-		return false, reconciliationKindImmediate
+		return false, NoDelay
 	}
 
 	pd.ClientProxyContainerID = created.Id
@@ -606,7 +571,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 		log.Error(startErr, "Failed to start client proxy container")
 		cleanupContainer = true
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
-		return false, reconciliationKindImmediate
+		return false, NoDelay
 	}
 
 	_, controlEndpointHostPort, controlEndpointErr := getHostAddressAndPortForContainerPort(
@@ -616,7 +581,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 		// Error already logged
 		cleanupContainer = true
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
-		return false, reconciliationKindImmediate
+		return false, NoDelay
 	}
 
 	_, dataEndpointHostPort, dataEndpointErr := getHostAddressAndPortForContainerPort(
@@ -626,14 +591,14 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 		// Error already logged
 		cleanupContainer = true
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
-		return false, reconciliationKindImmediate
+		return false, NoDelay
 	}
 
 	dcpproc.RunContainerWatcher(r.config.ProcessExecutor, created.Id, log)
 
 	pd.ClientProxyControlPort = controlEndpointHostPort
 	pd.ClientProxyDataPort = dataEndpointHostPort
-	return true, reconciliationKindImmediate
+	return true, NoDelay
 }
 
 // Starts the server proxy as an OS process.
@@ -851,27 +816,13 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupProxyPair(
 		pdMap.QueueDeferredOp(nn, func(_ types.NamespacedName, _ types.NamespacedName) {
 			pdMap.Update(nn, nn, pd)
 		})
-		r.scheduleReconciliation(nn)
+		r.ScheduleReconciliation(nn)
 	}
 }
 
 //
 // MISCELLANEOUS HELPER METHODS
 //
-
-func (r ContainerNetworkTunnelProxyReconciler) scheduleReconciliation(tunnelProxyName types.NamespacedName) {
-	r.debouncer.ReconciliationNeeded(r.lifetimeCtx, tunnelProxyName, struct{}{}, func(rti reconcileTriggerInput[struct{}]) {
-		event := ctrl_event.GenericEvent{
-			Object: &apiv1.ContainerNetworkTunnelProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace: tunnelProxyName.Namespace,
-					Name:      tunnelProxyName.Name,
-				},
-			},
-		}
-		r.reconciliationTriggerChan.In <- event
-	})
-}
 
 func (r ContainerNetworkTunnelProxyReconciler) cleanupClientContainer(ctx context.Context, containerID string) {
 	removeCtx, removeCtxCancel := context.WithTimeout(ctx, clientProxyContainerCleanupTimeout)

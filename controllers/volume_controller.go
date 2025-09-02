@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync/atomic"
 
 	"github.com/go-logr/logr"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
@@ -68,21 +67,24 @@ type volumeName string
 type volumeDataMap = ObjectStateMap[volumeName, containerVolumeData, *containerVolumeData]
 
 type VolumeReconciler struct {
-	ctrl_client.Client
-	Log                 logr.Logger
-	reconciliationSeqNo uint32
-	orchestrator        containers.VolumeOrchestrator
-	volumeData          *volumeDataMap
-	debouncer           *reconcilerDebouncer[volumeName]
+	*ReconcilerBase[apiv1.ContainerVolume, *apiv1.ContainerVolume]
+	orchestrator containers.VolumeOrchestrator
+	volumeData   *volumeDataMap
 }
 
-func NewVolumeReconciler(client ctrl_client.Client, log logr.Logger, orchestrator containers.VolumeOrchestrator) *VolumeReconciler {
+func NewVolumeReconciler(
+	lifetimeCtx context.Context,
+	client ctrl_client.Client,
+	noCacheClient ctrl_client.Reader,
+	log logr.Logger,
+	orchestrator containers.VolumeOrchestrator,
+) *VolumeReconciler {
+	base := NewReconcilerBase[apiv1.ContainerVolume](client, noCacheClient, log, lifetimeCtx)
+
 	r := VolumeReconciler{
-		Client:       client,
-		Log:          log,
-		orchestrator: orchestrator,
-		volumeData:   NewObjectStateMap[volumeName, containerVolumeData](),
-		debouncer:    newReconcilerDebouncer[volumeName](),
+		ReconcilerBase: base,
+		orchestrator:   orchestrator,
+		volumeData:     NewObjectStateMap[volumeName, containerVolumeData](),
 	}
 	return &r
 }
@@ -96,12 +98,7 @@ func (r *VolumeReconciler) SetupWithManager(mgr ctrl.Manager, name string) error
 }
 
 func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.WithValues(
-		"Volume", req.NamespacedName.String(),
-		"Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1),
-	)
-
-	r.debouncer.OnReconcile(req.NamespacedName)
+	reader, log := r.StartReconciliation(req)
 
 	if ctx.Err() != nil {
 		log.V(1).Info("Request context expired, nothing to do...")
@@ -109,7 +106,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	vol := apiv1.ContainerVolume{}
-	err := r.Get(ctx, req.NamespacedName, &vol)
+	err := reader.Get(ctx, req.NamespacedName, &vol)
 
 	if err != nil {
 		if apimachinery_errors.IsNotFound(err) {
@@ -136,9 +133,12 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		change = r.manageVolume(ctx, &vol, log)
 	}
 
-	reconciliationDelay, reconciliationJitter, finalChange := computeAdditionalReconciliationDelay(change, vol.Status.State == apiv1.ContainerVolumeStateRuntimeUnhealthy)
+	reconciliationDelay := StandardDelay
+	if vol.Status.State == apiv1.ContainerVolumeStateRuntimeUnhealthy {
+		reconciliationDelay = LongDelay
+	}
 
-	result, saveErr := saveChangesWithCustomReconciliationDelay(r.Client, ctx, &vol, patch, finalChange, reconciliationDelay, reconciliationJitter, nil, log)
+	result, saveErr := r.SaveChangesWithDelay(ctx, &vol, patch, change, reconciliationDelay, nil, log)
 	return result, saveErr
 }
 
