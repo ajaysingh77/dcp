@@ -15,6 +15,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
+	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
@@ -31,7 +32,7 @@ func TestEndpointCreatedAndDeletedForExecutable(t *testing.T) {
 			Name:      testName,
 			Namespace: metav1.NamespaceNone,
 			Annotations: map[string]string{
-				"service-producer": fmt.Sprintf(`[{"serviceName":"%s","address":"127.0.0.1","port":5001}]`, serviceName),
+				commonapi.ServiceProducerAnnotation: fmt.Sprintf(`[{"serviceName":"%s","address":"127.0.0.1","port":5001}]`, serviceName),
 			},
 		},
 		Spec: apiv1.ExecutableSpec{
@@ -74,7 +75,7 @@ func TestEndpointCreatedAndDeletedForContainer(t *testing.T) {
 			Name:      testName,
 			Namespace: metav1.NamespaceNone,
 			Annotations: map[string]string{
-				"service-producer": fmt.Sprintf(`[{"serviceName":"%s","port":80}]`, svcName),
+				commonapi.ServiceProducerAnnotation: fmt.Sprintf(`[{"serviceName":"%s","port":80}]`, svcName),
 			},
 		},
 		Spec: apiv1.ContainerSpec{
@@ -134,7 +135,7 @@ func TestEndpointDeletedIfExecutableStopped(t *testing.T) {
 			Name:      testName,
 			Namespace: metav1.NamespaceNone,
 			Annotations: map[string]string{
-				"service-producer": fmt.Sprintf(`[{"serviceName":"%s","address":"127.0.0.1","port":5001}]`, svcName),
+				commonapi.ServiceProducerAnnotation: fmt.Sprintf(`[{"serviceName":"%s","address":"127.0.0.1","port":5001}]`, svcName),
 			},
 		},
 		Spec: apiv1.ExecutableSpec{
@@ -179,7 +180,7 @@ func TestEndpointDeletedIfContainerStopped(t *testing.T) {
 			Name:      testName,
 			Namespace: metav1.NamespaceNone,
 			Annotations: map[string]string{
-				"service-producer": fmt.Sprintf(`[{"serviceName":"%s","port":80}]`, svcName),
+				commonapi.ServiceProducerAnnotation: fmt.Sprintf(`[{"serviceName":"%s","port":80}]`, svcName),
 			},
 		},
 		Spec: apiv1.ContainerSpec{
@@ -231,7 +232,7 @@ func TestEndpointRecreatedIfContainerPortsChange(t *testing.T) {
 			Name:      testName,
 			Namespace: metav1.NamespaceNone,
 			Annotations: map[string]string{
-				"service-producer": fmt.Sprintf(`[{"serviceName":"%s","port":%d}]`, svcName, containerPort),
+				commonapi.ServiceProducerAnnotation: fmt.Sprintf(`[{"serviceName":"%s","port":%d}]`, svcName, containerPort),
 			},
 		},
 		Spec: apiv1.ContainerSpec{
@@ -300,5 +301,9 @@ func waitEndpointCount(t *testing.T, ctx context.Context, serviceName string, ex
 }
 
 func waitEndpointExists(t *testing.T, ctx context.Context, contextStr string, selector func(e *apiv1.Endpoint) (bool, error)) *apiv1.Endpoint {
-	return ctrl_testutil.WaitObjectExists[apiv1.Endpoint, apiv1.EndpointList](t, ctx, client, contextStr, selector)
+	return waitEndpointExistsEx(t, ctx, client, contextStr, selector)
+}
+
+func waitEndpointExistsEx(t *testing.T, ctx context.Context, cl ctrl_client.Client, contextStr string, selector func(e *apiv1.Endpoint) (bool, error)) *apiv1.Endpoint {
+	return ctrl_testutil.WaitObjectExists[apiv1.Endpoint, apiv1.EndpointList](t, ctx, cl, contextStr, selector)
 }

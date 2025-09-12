@@ -70,6 +70,9 @@ const (
 	// of the ServiceReconciler attempting to start the service (proxies) before giving up.
 	// A typical failure is associated with port conflict, which may be transient.
 	MaxServiceStartAttempts = 30
+
+	serviceNamespaceKey = ".metadata.serviceNamespace"
+	serviceNameKey      = ".metadata.serviceName"
 )
 
 var (
@@ -105,7 +108,7 @@ func NewServiceReconciler(
 }
 
 func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager, name string) error {
-	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &apiv1.Endpoint{}, ".metadata.serviceNamespace", func(rawObj ctrl_client.Object) []string {
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &apiv1.Endpoint{}, serviceNamespaceKey, func(rawObj ctrl_client.Object) []string {
 		endpoint := rawObj.(*apiv1.Endpoint)
 		return []string{endpoint.Spec.ServiceNamespace}
 	}); err != nil {
@@ -113,7 +116,7 @@ func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager, name string) erro
 		return err
 	}
 
-	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &apiv1.Endpoint{}, ".metadata.serviceName", func(rawObj ctrl_client.Object) []string {
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &apiv1.Endpoint{}, serviceNameKey, func(rawObj ctrl_client.Object) []string {
 		endpoint := rawObj.(*apiv1.Endpoint)
 		return []string{endpoint.Spec.ServiceName}
 	}); err != nil {
@@ -358,7 +361,11 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 
 func (r *ServiceReconciler) getServiceEndpoints(ctx context.Context, svc *apiv1.Service, log logr.Logger) (apiv1.EndpointList, error) {
 	var serviceEndpoints apiv1.EndpointList
-	if err := r.List(ctx, &serviceEndpoints, ctrl_client.MatchingFields{".metadata.serviceNamespace": svc.ObjectMeta.Namespace}, ctrl_client.MatchingFields{".metadata.serviceName": svc.ObjectMeta.Name}); err != nil {
+	err := r.List(ctx, &serviceEndpoints, ctrl_client.MatchingFields{
+		serviceNamespaceKey: svc.ObjectMeta.Namespace,
+		serviceNameKey:      svc.ObjectMeta.Name,
+	})
+	if err != nil {
 		log.Error(err, "Could not get associated endpoints")
 		return apiv1.EndpointList{}, fmt.Errorf("could not get associated endpoints: %w", err)
 	} else {

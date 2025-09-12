@@ -440,6 +440,91 @@ func TestDiffFunc(t *testing.T) {
 	require.EqualValues(t, []point2d{{5, 6}, {7, 8}}, DiffFunc([]point2d{{5, 6}, {7, 8}, {1, 2}}, []point2d{{1, 2}, {3, 4}}, samePoint))
 }
 
+func TestIntersect(t *testing.T) {
+	t.Parallel()
+
+	// Intersection of two empty slices should be empty
+	result := Intersect([]string{}, []string{})
+	require.Empty(t, result)
+
+	// Intersection of empty and non-empty slice should be empty
+	result = Intersect([]string{}, []string{"something"})
+	require.Empty(t, result)
+
+	// Intersection of non-empty and empty slice should be empty
+	result = Intersect([]string{"alpha", "bravo"}, []string{})
+	require.Empty(t, result)
+
+	// First slice is a subset of the second slice (intersection is the first slice)
+	result = Intersect([]string{"bravo", "alpha"}, []string{"charlie", "alpha", "bravo"})
+	require.EqualValues(t, []string{"alpha", "bravo"}, result)
+
+	// First slice is a superset of the second slice (intersection is the second slice)
+	result = Intersect([]string{"charlie", "alpha", "bravo"}, []string{"bravo", "alpha"})
+	require.EqualValues(t, []string{"alpha", "bravo"}, result)
+
+	// First slice and second slice have no elements in common
+	result = Intersect([]string{"charlie", "delta"}, []string{"alpha", "bravo"})
+	require.Empty(t, result)
+
+	// First slice and second slice have some elements in common
+	result = Intersect([]string{"charlie", "delta", "alpha"}, []string{"alpha", "bravo"})
+	require.EqualValues(t, []string{"alpha"}, result)
+
+	// Test with duplicates in input slices
+	result = Intersect([]string{"alpha", "alpha", "bravo"}, []string{"alpha", "charlie", "alpha"})
+	require.EqualValues(t, []string{"alpha"}, result)
+
+	// Test with integers
+	intResult := Intersect([]int{3, 1, 4, 1, 5}, []int{2, 1, 4, 6})
+	require.EqualValues(t, []int{1, 4}, intResult)
+}
+
+func TestIntersectFunc(t *testing.T) {
+	t.Parallel()
+
+	type point2d struct {
+		x int
+		y int
+	}
+
+	samePoint := func(p1, p2 point2d) bool {
+		return p1.x == p2.x && p1.y == p2.y
+	}
+
+	// Intersection of two empty slices should be empty
+	result := IntersectFunc([]point2d{}, []point2d{}, samePoint)
+	require.Empty(t, result)
+
+	// Intersection of empty and non-empty slice should be empty
+	result = IntersectFunc([]point2d{}, []point2d{{1, 2}}, samePoint)
+	require.Empty(t, result)
+
+	// Intersection of non-empty and empty slice should be empty
+	result = IntersectFunc([]point2d{{1, 2}, {3, 4}}, []point2d{}, samePoint)
+	require.Empty(t, result)
+
+	// First slice is a subset of the second slice (intersection is the first slice)
+	result = IntersectFunc([]point2d{{1, 2}, {3, 4}}, []point2d{{5, 6}, {3, 4}, {1, 2}}, samePoint)
+	require.EqualValues(t, []point2d{{1, 2}, {3, 4}}, result)
+
+	// First slice is a superset of the second slice (intersection is the second slice elements in first slice order)
+	result = IntersectFunc([]point2d{{5, 6}, {1, 2}, {3, 4}}, []point2d{{3, 4}, {1, 2}}, samePoint)
+	require.EqualValues(t, []point2d{{1, 2}, {3, 4}}, result)
+
+	// First slice and second slice have no elements in common
+	result = IntersectFunc([]point2d{{5, 6}, {7, 8}}, []point2d{{1, 2}, {3, 4}}, samePoint)
+	require.Empty(t, result)
+
+	// First slice and second slice have some elements in common
+	result = IntersectFunc([]point2d{{5, 6}, {7, 8}, {1, 2}}, []point2d{{1, 2}, {3, 4}}, samePoint)
+	require.EqualValues(t, []point2d{{1, 2}}, result)
+
+	// Test with duplicates in input slices
+	result = IntersectFunc([]point2d{{1, 2}, {1, 2}, {3, 4}}, []point2d{{1, 2}, {5, 6}, {1, 2}}, samePoint)
+	require.EqualValues(t, []point2d{{1, 2}}, result)
+}
+
 func TestGroupBy(t *testing.T) {
 	t.Parallel()
 

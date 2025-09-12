@@ -1408,7 +1408,7 @@ func (r *ContainerReconciler) disableEndpointsAndHealthProbes(
 		}
 	}
 
-	removeEndpointsForWorkload(r, ctx, ctr, log)
+	removeEndpointsForWorkload(ctx, r, ctr, log)
 }
 
 func (r *ContainerReconciler) enableEndpointsAndHealthProbes(
@@ -1718,13 +1718,14 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 	return validConnectedNetworks, nil
 }
 
-func (r *ContainerReconciler) createEndpoint(
+func (r *ContainerReconciler) createEndpoints(
 	ctx context.Context,
 	owner ctrl_client.Object,
 	serviceProducer commonapi.ServiceProducer,
+	existingEndpoints []*apiv1.Endpoint,
 	inspected *containers.InspectedContainer,
 	log logr.Logger,
-) (*apiv1.Endpoint, error) {
+) ([]*apiv1.Endpoint, error) {
 	endpointName, _, err := MakeUniqueName(owner.GetName())
 	if err != nil {
 		log.Error(err, "Could not generate unique name for Endpoint object")
@@ -1735,6 +1736,16 @@ func (r *ContainerReconciler) createEndpoint(
 	if err != nil {
 		log.Error(err, "Could not determine host address and port for container port")
 		return nil, err
+	}
+
+	endpointExists := slices.Any(existingEndpoints, func(ep *apiv1.Endpoint) bool {
+		return ep.Spec.ServiceName == serviceProducer.ServiceName &&
+			ep.Spec.ServiceNamespace == owner.GetNamespace() &&
+			ep.Spec.Address == hostAddress &&
+			ep.Spec.Port == hostPort
+	})
+	if endpointExists {
+		return nil, nil
 	}
 
 	// Otherwise, create a new Endpoint object.
@@ -1751,29 +1762,32 @@ func (r *ContainerReconciler) createEndpoint(
 		},
 	}
 
-	return endpoint, nil
+	return []*apiv1.Endpoint{endpoint}, nil
 }
 
-func (r *ContainerReconciler) validateExistingEndpoint(
+func (r *ContainerReconciler) validateExistingEndpoints(
 	ctx context.Context,
 	owner ctrl_client.Object,
 	serviceProducer commonapi.ServiceProducer,
+	existingEndpoints []*apiv1.Endpoint,
 	inspected *containers.InspectedContainer,
-	endpoint *apiv1.Endpoint,
 	log logr.Logger,
-) error {
+) ([]*apiv1.Endpoint, []*apiv1.Endpoint, error) {
 	hostAddress, hostPort, err := getHostAddressAndPortForContainerPort(owner.(*apiv1.Container).Spec, serviceProducer.Port, inspected, log)
 	if err != nil {
 		log.Error(err, "Could not determine host address and port for container port")
-		return err
+		return nil, nil, err
 	}
 
-	if endpoint.Spec.Address != hostAddress || endpoint.Spec.Port != hostPort {
-		log.V(1).Info("Existing Endpoint does not match host address and port derived from inspected Container port information", "EffectiveHostAddress", hostAddress, "HostPort", hostPort, "EndpointAddress", endpoint.Spec.Address, "EndpointPort", endpoint.Spec.Port)
-		return fmt.Errorf("endpoint configuration does not match inspected Container port information")
+	var valid, invalid []*apiv1.Endpoint
+	for _, e := range existingEndpoints {
+		if e.Spec.Address != hostAddress || e.Spec.Port != hostPort {
+			invalid = append(invalid, e)
+		} else {
+			valid = append(valid, e)
+		}
 	}
-
-	return nil
+	return valid, invalid, nil
 }
 
 // CONTAINER RESOURCE MANAGEMENT METHODS

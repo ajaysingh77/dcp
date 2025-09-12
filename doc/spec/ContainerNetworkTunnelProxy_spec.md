@@ -24,9 +24,9 @@ Refer to `(repo root)/api/v1/container_network_tunnel_proxy_types.go`
 #### ContainerNetworkTunnelProxy.Spec.Tunnels and TunnelConfiguration verification
 
 1. Each tunnel that is part of Spec.Tunnels must have a unique name.
-2. TunnelConfiguration.ServerPort must be set.
-
-    > Note: re-definition of TunnelConfiguration is allowed. If a TunnelConfiguration is updated, the old tunnel will be stopped gracefully and the new tunnel (with the same Name) will be prepared.
+2. Each tunnel has references to two Service objects: one that represents the implementation of a service exposed via a tunnel, and one that will be used by clients to take advantage of the tunnel.
+   - Both services are identified by name/namespace combination. Names are mandatory, namespaces are optional. When namespace is not provided, it defaults to the namespace of the ContainerNetworkTunnelProxy object.
+3. Re-definition of TunnelConfiguration is NOT allowed.
 
 ### State handling
 

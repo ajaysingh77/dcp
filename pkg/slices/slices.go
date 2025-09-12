@@ -10,17 +10,12 @@ import (
 )
 
 func Contains[T comparable, S ~[]T](ss S, s T) bool {
-	return Index(ss, s) != -1
+	return stdslices.Contains(ss, s)
 }
 
 // Returns the index of the first occurrence of `s` in `ss`, or -1 if not found.
 func Index[T comparable, S ~[]T](ss S, s T) int {
-	for i, b := range ss {
-		if b == s {
-			return i
-		}
-	}
-	return -1
+	return stdslices.Index(ss, s)
 }
 
 // Returns the index of the first occurrence of `seq` in `ss`, or -1 if not found.
@@ -205,10 +200,15 @@ func Any[T any, SF SelectFunc[T], S ~[]T](ss S, selector SF) bool {
 	return IndexFunc(ss, selector) != -1
 }
 
+// The purpose of the accumulator function is to take the "accumulated so far" value (first parameter)
+// and apply the "next element" (second parameter) to it, producing a new "accumulated so far" value.
+// The accumulated value type and the element type can be different.
+// It is the "reduce" operation from map-reduce pattern of large-scale data processing.
 type AccumulatorFunc[T any, R any] interface {
 	~func(R, T) R | ~func(R, *T) R
 }
 
+// Successively applies the accumulator function to each element of a slice, producing a single accumulated (reduced) result.
 func Accumulate[T any, R any, AF AccumulatorFunc[T, R], S ~[]T](ss S, accumulator AF) R {
 	return AccumulateIf[T, R](ss, func(_ T) bool { return true }, accumulator)
 }
@@ -337,6 +337,92 @@ func DiffFunc[T any, EF EqualFunc[T], S ~[]T](a, b S, equalFunc EF) S {
 	}
 
 	return diff
+}
+
+// Intersect computes the intersection of two slices of ordered elements.
+// It returns a new slice with elements that exist in both input slices.
+// The resulting slice has no duplicates and elements are in sorted order.
+func Intersect[T cmp.Ordered, S []T](a, b S) S {
+	if len(a) == 0 || len(b) == 0 {
+		return nil
+	}
+
+	ac := stdslices.Clone(a)
+	stdslices.Sort(ac)
+	bc := stdslices.Clone(b)
+	stdslices.Sort(bc)
+
+	var result S
+	var i, j int
+
+	for i < len(ac) && j < len(bc) {
+		switch cmp.Compare(ac[i], bc[j]) {
+		case -1:
+			i++
+		case 0:
+			// Found element in both slices
+			// Add to result only if it's not a duplicate
+			if len(result) == 0 || result[len(result)-1] != ac[i] {
+				result = append(result, ac[i])
+			}
+			i++
+			j++
+		case 1:
+			j++
+		}
+	}
+
+	return result
+}
+
+// IntersectFunc computes the intersection of two slices
+// by using a provided function to determine if two elements are equal.
+// It returns a new slice with elements that exist in both input slices.
+// The resulting slice has no duplicates and preserves the order from the first slice.
+func IntersectFunc[T any, EF EqualFunc[T], S ~[]T](a, b S, equalFunc EF) S {
+	if len(a) == 0 || len(b) == 0 {
+		return nil
+	}
+
+	eq := func(first *T, second *T) bool {
+		switch teq := (any)(equalFunc).(type) {
+		case func(T, T) bool:
+			return teq(*first, *second)
+		case func(*T, *T) bool:
+			return teq(first, second)
+		default:
+			panic(fmt.Sprintf("IntersectFunc cannot understand equality function type %T", equalFunc))
+		}
+	}
+
+	var result S
+
+	for _, el := range a {
+		// Check if element exists in second slice
+		foundInB := false
+		for _, bel := range b {
+			if eq(&el, &bel) {
+				foundInB = true
+				break
+			}
+		}
+
+		// If found in b, check if it's already in result to avoid duplicates
+		if foundInB {
+			alreadyInResult := false
+			for _, rel := range result {
+				if eq(&el, &rel) {
+					alreadyInResult = true
+					break
+				}
+			}
+			if !alreadyInResult {
+				result = append(result, el)
+			}
+		}
+	}
+
+	return result
 }
 
 type KeyFunc[T any, K comparable] interface {

@@ -2,6 +2,7 @@ package v1
 
 import (
 	"context"
+	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -98,6 +99,15 @@ func (e *Endpoint) NamespacedName() types.NamespacedName {
 		Name:      e.Name,
 		Namespace: e.Namespace,
 	}
+}
+
+func (e *Endpoint) String() string {
+	return fmt.Sprintf("%s (Service: %s, Address: %s, Port: %d)",
+		e.NamespacedName().String(),
+		types.NamespacedName{Name: e.Spec.ServiceName, Namespace: e.Spec.ServiceNamespace}.String(),
+		e.Spec.Address,
+		e.Spec.Port,
+	)
 }
 
 func (e *Endpoint) Validate(ctx context.Context) field.ErrorList {

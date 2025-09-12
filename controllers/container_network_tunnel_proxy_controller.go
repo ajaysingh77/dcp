@@ -17,6 +17,9 @@ import (
 
 	"github.com/cenkalti/backoff/v4"
 	"github.com/go-logr/logr"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	stdproto "google.golang.org/protobuf/proto"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -33,10 +36,12 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/dcppaths"
 	"github.com/microsoft/usvc-apiserver/internal/dcpproc"
 	"github.com/microsoft/usvc-apiserver/internal/dcptun"
+	dcptunproto "github.com/microsoft/usvc-apiserver/internal/dcptun/proto"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
+	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/pointers"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
@@ -56,7 +61,19 @@ type tunnelProxyStateInitializerFunc = stateInitializerFunc[
 type tunnelProxyDataMap = ObjectStateMap[types.NamespacedName, containerNetworkTunnelProxyData, *containerNetworkTunnelProxyData]
 
 const (
-	tunnelProxyContainerNameProperty = ".spec.containerNetworkName"
+	containerNetworkNameKey = ".metadata.containerNetworkName"
+	serviceReferencesKey    = ".metadata.serviceReferences"
+
+	clientProxyContainerCleanupTimeout = 5 * time.Second
+	serverProxyConfigReadTimeout       = 10 * time.Second
+
+	// Timeout for tunnel operations (like preparation or deletion of a tunnel)
+	tunnelOperationTimeout = 5 * time.Second
+
+	maxTunnelPreparationAttempts = 20
+
+	// Annotation for an Endpoint object that links it to a specific tunnel that serves it.
+	TunnelIdAnnotation = "container-network-tunnel-proxy.usvc-dev.developer.microsoft.com/tunnel-id"
 )
 
 var (
@@ -70,14 +87,16 @@ var (
 		apiv1.ContainerNetworkTunnelProxyStateRunning:       ensureTunnelProxyRunningState,
 		apiv1.ContainerNetworkTunnelProxyStateFailed:        ensureTunnelProxyFailedState,
 	}
-
-	clientProxyContainerCleanupTimeout = 5 * time.Second
-	serverProxyConfigReadTimeout       = 10 * time.Second
 )
 
 type ContainerNetworkTunnelProxyReconcilerConfig struct {
 	Orchestrator    containers.ContainerOrchestrator // Mandatory
 	ProcessExecutor process.Executor                 // Mandatory
+
+	// The factory function to create a TunnelControlClient used to control the proxy pair.
+	// Normal execution uses "real" gRPC client, tests use a stub since most tests do not run real tunnels.
+	// Mandatory.
+	MakeTunnelControlClient func(grpc.ClientConnInterface) dcptunproto.TunnelControlClient
 
 	// Overrides the most recent image builds file path.
 	// Used primarily for testing purposes.
@@ -109,6 +128,9 @@ func NewContainerNetworkTunnelProxyReconciler(
 	if config.ProcessExecutor == nil {
 		panic("ContainerNetworkTunnelProxyReconcilerConfig.ProcessExecutor must not be nil")
 	}
+	if config.MakeTunnelControlClient == nil {
+		panic("ContainerNetworkTunnelProxyReconcilerConfig.TunnelControlClientFactory must not be nil")
+	}
 
 	base := NewReconcilerBase[apiv1.ContainerNetworkTunnelProxy](client, noCacheClient, log, lifetimeCtx)
 
@@ -121,55 +143,102 @@ func NewContainerNetworkTunnelProxyReconciler(
 }
 
 func (r *ContainerNetworkTunnelProxyReconciler) SetupWithManager(mgr ctrl.Manager, name string) error {
-	// Setup a client-side index to allow quickly finding all ContainerNetworkTunnelProxies referencing a specific ContainerNetwork.
-	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &apiv1.ContainerNetworkTunnelProxy{}, tunnelProxyContainerNameProperty, func(rawObj ctrl_client.Object) []string {
+	indexer := mgr.GetFieldIndexer()
+
+	err := indexer.IndexField(context.Background(), &apiv1.ContainerNetworkTunnelProxy{}, containerNetworkNameKey, func(rawObj ctrl_client.Object) []string {
 		cntp := rawObj.(*apiv1.ContainerNetworkTunnelProxy)
 		if cntp.Spec.ContainerNetworkName == "" {
 			return nil
 		} else {
 			return []string{cntp.Spec.ContainerNetworkName}
 		}
-	}); err != nil {
-		r.Log.Error(err, "Failed to create index for ContainerNetworkTunnelProxy.Spec.ContainerNetworkName field")
+	})
+	if err != nil {
+		r.Log.Error(err, "Failed to create index for finding ContainerNetworkTunnelProxies using specific ContainerNetwork")
+		return err
+	}
+
+	err = indexer.IndexField(context.Background(), &apiv1.ContainerNetworkTunnelProxy{}, serviceReferencesKey, func(rawObj ctrl_client.Object) []string {
+		cntp := rawObj.(*apiv1.ContainerNetworkTunnelProxy)
+		if len(cntp.Spec.Tunnels) == 0 {
+			return nil
+		}
+
+		serverServiceNames := slices.Map[apiv1.TunnelConfiguration, string](cntp.Spec.Tunnels, func(t apiv1.TunnelConfiguration) string { return t.ServerServiceName })
+		clientServiceNames := slices.Map[apiv1.TunnelConfiguration, string](cntp.Spec.Tunnels, func(t apiv1.TunnelConfiguration) string { return t.ClientServiceName })
+
+		svcUsed := slices.Unique(append(serverServiceNames, clientServiceNames...))
+		return svcUsed
+	})
+	if err != nil {
+		r.Log.Error(err, "Failed to create index for finding ContainerNetworkTunnelProxies referencing a Service via one or more of the tunnels")
 		return err
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv1.ContainerNetworkTunnelProxy{}).
-		Watches(&apiv1.ContainerNetwork{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForContainerNetworkTunnelProxy), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		Owns(&apiv1.Endpoint{}).
+		Watches(&apiv1.Service{}, handler.EnqueueRequestsFromMapFunc(r.reconcileProxiesUsingService), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		Watches(&apiv1.ContainerNetwork{}, handler.EnqueueRequestsFromMapFunc(r.reconcileProxiesUsingNetwork), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		WatchesRawSource(r.GetReconciliationEventSource()).
 		Named(name).
 		Complete(r)
 }
 
-func (r *ContainerNetworkTunnelProxyReconciler) requestReconcileForContainerNetworkTunnelProxy(ctx context.Context, obj ctrl_client.Object) []reconcile.Request {
+// Create reconciliation requests for all ContainerNetworkTunnelProxies using the given ContainerNetwork
+func (r *ContainerNetworkTunnelProxyReconciler) reconcileProxiesUsingNetwork(ctx context.Context, obj ctrl_client.Object) []reconcile.Request {
 	network := obj.(*apiv1.ContainerNetwork)
 
-	// Find all ContainerNetworkTunnelProxies that reference this ContainerNetwork
 	var tunnelProxies apiv1.ContainerNetworkTunnelProxyList
 	listOpts := []ctrl_client.ListOption{
-		ctrl_client.MatchingFields{tunnelProxyContainerNameProperty: network.Name},
+		ctrl_client.MatchingFields{containerNetworkNameKey: network.Name},
+		ctrl_client.InNamespace(network.GetNamespace()),
 	}
 
 	if err := r.List(ctx, &tunnelProxies, listOpts...); err != nil {
-		r.Log.Error(err, "Failed to list ContainerNetworkTunnelProxies for ContainerNetwork", "ContainerNetwork", network.Name)
+		r.Log.Error(err, "Failed to list ContainerNetworkTunnelProxies using ContainerNetwork", "ContainerNetwork", network.Name)
 		return nil
 	}
 
-	requests := make([]reconcile.Request, len(tunnelProxies.Items))
-	for i, tunnelProxy := range tunnelProxies.Items {
-		requests[i] = reconcile.Request{
-			NamespacedName: tunnelProxy.NamespacedName(),
-		}
-	}
+	requests := slices.Map[apiv1.ContainerNetworkTunnelProxy, reconcile.Request](tunnelProxies.Items, func(tunnelProxy apiv1.ContainerNetworkTunnelProxy) reconcile.Request {
+		return reconcile.Request{NamespacedName: tunnelProxy.NamespacedName()}
+	})
 
 	if len(requests) > 0 {
+		proxyNames := slices.Map[reconcile.Request, string](requests, func(req reconcile.Request) string { return req.NamespacedName.String() })
 		r.Log.V(1).Info("Enqueuing ContainerNetworkTunnelProxy reconciliation requests due to ContainerNetwork change",
 			"ContainerNetwork", network.Name,
-			"AffectedTunnelProxies", slices.Map[reconcile.Request, string](
-				requests, func(req reconcile.Request) string { return req.NamespacedName.String() },
-			),
+			"AffectedTunnelProxies", proxyNames,
+		)
+	}
+
+	return requests
+}
+
+func (r *ContainerNetworkTunnelProxyReconciler) reconcileProxiesUsingService(ctx context.Context, obj ctrl_client.Object) []reconcile.Request {
+	service := obj.(*apiv1.Service)
+
+	var tunnelProxies apiv1.ContainerNetworkTunnelProxyList
+	listOpts := []ctrl_client.ListOption{
+		ctrl_client.MatchingFields{serviceReferencesKey: service.Name},
+		ctrl_client.InNamespace(service.GetNamespace()),
+	}
+
+	if err := r.List(ctx, &tunnelProxies, listOpts...); err != nil {
+		r.Log.Error(err, "Failed to list ContainerNetworkTunnelProxies referencing Service", "Service", service.Name)
+		return nil
+	}
+
+	requests := slices.Map[apiv1.ContainerNetworkTunnelProxy, reconcile.Request](tunnelProxies.Items, func(tunnelProxy apiv1.ContainerNetworkTunnelProxy) reconcile.Request {
+		return reconcile.Request{NamespacedName: tunnelProxy.NamespacedName()}
+	})
+
+	if len(requests) > 0 {
+		proxyNames := slices.Map[reconcile.Request, string](requests, func(req reconcile.Request) string { return req.NamespacedName.String() })
+		r.Log.V(1).Info("Enqueuing ContainerNetworkTunnelProxy reconciliation requests due to Service change",
+			"Service", service.Name,
+			"AffectedTunnelProxies", proxyNames,
 		)
 	}
 
@@ -216,7 +285,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) Reconcile(ctx context.Context, r
 		}
 	}
 
-	result, err := r.SaveChanges(ctx, &tproxy, patch, change, nil, log)
+	result, err := r.SaveChangesWithDelay(ctx, &tproxy, patch, change, StandardDelay, nil, log)
 	return result, err
 }
 
@@ -371,7 +440,7 @@ func ensureTunnelProxyStartingState(
 	change := noChange
 
 	if pd == nil { // Should never happen when we reach this state
-		log.Error(fmt.Errorf("the data about ContainerNetworkTunnelProxy object is missing"), "",
+		log.Error(fmt.Errorf("Data about ContainerNetworkTunnelProxy object is missing"), "",
 			"CurrentState", apiv1.ContainerNetworkTunnelProxyStateStarting,
 		)
 		return r.setTunnelProxyState(tunnelProxy, apiv1.ContainerNetworkTunnelProxyStateFailed)
@@ -401,8 +470,17 @@ func ensureTunnelProxyRunningState(
 	pd *containerNetworkTunnelProxyData,
 	log logr.Logger,
 ) objectChange {
-	// TODO
-	return pd.applyTo(tunnelProxy)
+	if pd == nil { // Should never happen when we reach this state
+		log.Error(fmt.Errorf("Data about ContainerNetworkTunnelProxy object is missing"), "",
+			"CurrentState", apiv1.ContainerNetworkTunnelProxyStateRunning,
+		)
+		return r.setTunnelProxyState(tunnelProxy, apiv1.ContainerNetworkTunnelProxyStateFailed)
+	}
+
+	change := r.manageTunnels(ctx, tunnelProxy, pd, log)
+	ensureEndpointsForWorkload(ctx, r, tunnelProxy, nil, pd, log)
+
+	return change | pd.applyTo(tunnelProxy)
 }
 
 func ensureTunnelProxyFailedState(
@@ -413,8 +491,237 @@ func ensureTunnelProxyFailedState(
 	pd *containerNetworkTunnelProxyData,
 	log logr.Logger,
 ) objectChange {
-	// TODO
+	// TODO: delete other resources as necessary
+	removeEndpointsForWorkload(ctx, r, tunnelProxy, log)
 	return pd.applyTo(tunnelProxy)
+}
+
+// TUNNEL MANAGEMENT HELPER METHODS
+
+// Compares the current tunnel configuration with the desired configuration.
+// Attempts to prepare new tunnels and deletes removed ones.
+// This method is called as part of the reconciliation loop and is responsible
+// for saving changes to containerNetworkTunnelProxyData as needed.
+func (r *ContainerNetworkTunnelProxyReconciler) manageTunnels(
+	ctx context.Context,
+	tunnelProxy *apiv1.ContainerNetworkTunnelProxy,
+	pd *containerNetworkTunnelProxyData,
+	log logr.Logger,
+) objectChange {
+	change := noChange
+
+	// Convert to maps for easier lookup
+	specTunnels := maps.SliceToMap(tunnelProxy.Spec.Tunnels, apiv1.TunnelConfiguration.KV)
+	currentTunnels := maps.SliceToMap(pd.TunnelStatuses, apiv1.TunnelStatus.KV)
+
+	// Remove tunnels that are no longer in the spec
+	for tunnelName, tunnelStatus := range currentTunnels {
+		if _, found := specTunnels[tunnelName]; found {
+			continue
+		}
+
+		tlog := log.WithValues("TunnelName", tunnelName)
+		tlog.V(1).Info("Deleting tunnel that is no longer in spec...")
+
+		if r.deleteTunnel(ctx, tunnelProxy, tunnelStatus, tlog) {
+			pd.removeTunnelStatus(tunnelName)
+			change |= statusChanged
+		} else {
+			change |= additionalReconciliationNeeded
+		}
+	}
+
+	// Add or update tunnels from the spec
+	// Note that tunnels cannot be redefined in the spec, our type validation prevents that.
+	for tunnelName, tunnelConfig := range specTunnels {
+		tlog := log.WithValues("TunnelName", tunnelName)
+		tunnelStatus, found := currentTunnels[tunnelName]
+
+		if found {
+			if tunnelStatus.State == apiv1.TunnelStateEmpty {
+				tlog.V(1).Info("Attempting to prepare exiting tunnel...")
+				change |= r.prepareTunnel(ctx, tunnelProxy, tunnelConfig, tunnelStatus, pd, tlog)
+			}
+		} else {
+			tlog.V(1).Info("Preparing new tunnel...")
+			tunnelStatus = apiv1.TunnelStatus{
+				Name:      tunnelName,
+				State:     apiv1.TunnelStateEmpty,
+				Timestamp: metav1.NewMicroTime(time.Now()),
+			}
+			pd.setTunnelStatus(tunnelStatus)
+			change |= statusChanged // Added new tunnel, so we definitively have a status change
+			change |= r.prepareTunnel(ctx, tunnelProxy, tunnelConfig, tunnelStatus, pd, tlog)
+		}
+	}
+
+	if (change & statusChanged) == statusChanged {
+		pd.TunnelConfigurationVersion++
+		r.proxyData.Update(tunnelProxy.NamespacedName(), tunnelProxy.NamespacedName(), pd)
+	}
+
+	return change
+}
+
+// Attempts to prepare a tunnel by checking required services and calling the tunnel proxy's PrepareTunnel API.
+// Returns objectChange value indicating whether any changes have been made to tunnel status.
+func (r *ContainerNetworkTunnelProxyReconciler) prepareTunnel(
+	ctx context.Context,
+	tunnelProxy *apiv1.ContainerNetworkTunnelProxy,
+	tunnelConfig apiv1.TunnelConfiguration,
+	originalTunnelStatus apiv1.TunnelStatus,
+	pd *containerNetworkTunnelProxyData,
+	tlog logr.Logger,
+) objectChange {
+	if now := metav1.NowMicro(); now.Before(originalTunnelStatus.NextPreparationNoEarilerThan) {
+		// We do not want to busy-loop on preparation attempts
+		return additionalReconciliationNeeded
+	}
+
+	serverSvc, _, servicesReady := r.getTunnelServices(ctx, tunnelConfig, tlog)
+	if !servicesReady {
+		return additionalReconciliationNeeded
+	}
+
+	// CONSIDER: having a spec property for choosing server proxy control address
+	// (the one that server proxy listens on for control commands)
+
+	serverProxyClient, serverProxyClientErr := r.createProxyClient(tunnelProxy)
+	if serverProxyClientErr != nil {
+		// This should really never happen. No I/O is performed here; the error most likely indicates misconfiguration of the gRPC client.
+		tlog.Error(serverProxyClientErr, "Failed to create gRPC connection to server proxy control endpoint")
+		pd.setTunnelStatus(failedTunnelStatus(originalTunnelStatus, fmt.Sprintf("Failed to create gRPC connection to server proxy control endpoint: %v", serverProxyClientErr)))
+		return additionalReconciliationNeeded
+	}
+
+	tunnelReq := &dcptunproto.TunnelReq{
+		ServerAddress: stdproto.String(serverSvc.Status.EffectiveAddress),
+		ServerPort:    stdproto.Int32(serverSvc.Status.EffectivePort),
+		// ClientProxyAddress and ClientProxyPort are omitted; we rely on dcptun defaults,
+		// which are 0.0.0.0 (all IPv4 interfaces) and 0 (random port assigned by OS).
+	}
+	prepareCtx, prepareCtxCancel := context.WithTimeout(ctx, tunnelOperationTimeout)
+	defer prepareCtxCancel()
+	tSpec, prepareErr := serverProxyClient.PrepareTunnel(prepareCtx, tunnelReq, grpc.WaitForReady(true))
+	if prepareErr != nil {
+		if originalTunnelStatus.PreparationAttempts >= maxTunnelPreparationAttempts {
+			tlog.Error(prepareErr, "Failed to prepare tunnel (maximum number of preparation attempts reached)")
+			pd.setTunnelStatus(failedTunnelStatus(originalTunnelStatus, fmt.Sprintf("Failed to prepare tunnel (maximum number of preparation attempts reached); last error was: %v ", prepareErr)))
+			return statusChanged
+		} else {
+			tlog.Error(prepareErr, "Failed to prepare tunnel, will retry...")
+			ts := originalTunnelStatus.Clone()
+			ts.PreparationAttempts++
+			// Set the next preparation earliest time to 90% of the standard delay for additional reconciliation.
+			earliestPrepTime := metav1.NewMicroTime(time.Now().Add(delayDuration(StandardDelay) / 9 * 10))
+			ts.NextPreparationNoEarilerThan = &earliestPrepTime
+			pd.setTunnelStatus(ts)
+			return statusChanged | additionalReconciliationNeeded
+		}
+	}
+
+	tlog.V(1).Info("Tunnel prepared successfully")
+	ts := originalTunnelStatus.Clone()
+	ts.State = apiv1.TunnelStateReady
+	ts.TunnelID = tSpec.GetTunnelRef().GetTunnelId()
+	ts.Timestamp = metav1.NewMicroTime(time.Now())
+	ts.ClientProxyAddresses = tSpec.GetClientProxyAddresses()
+	ts.ClientProxyPort = tSpec.GetClientProxyPort()
+	ts.PreparationAttempts++
+	ts.NextPreparationNoEarilerThan = nil
+	pd.setTunnelStatus(ts)
+
+	return statusChanged
+}
+
+// deleteTunnel attempts to delete an existing tunnel.
+// Returns true if the tunnel was successfully deleted, false if retry is needed.
+func (r *ContainerNetworkTunnelProxyReconciler) deleteTunnel(
+	ctx context.Context,
+	tunnelProxy *apiv1.ContainerNetworkTunnelProxy,
+	tunnelStatus apiv1.TunnelStatus,
+	log logr.Logger,
+) bool {
+	serverProxyClient, serverProxyClientErr := r.createProxyClient(tunnelProxy)
+	if serverProxyClientErr != nil {
+		// This should really never happen. No I/O is performed here; the error most likely indicates misconfiguration of the gRPC client.
+		log.Error(serverProxyClientErr, "Failed to create gRPC connection to server proxy control endpoint")
+		return false
+	}
+
+	tunnelRef := &dcptunproto.TunnelRef{TunnelId: stdproto.Uint32(tunnelStatus.TunnelID)}
+	deleteCtx, deleteCtxCancel := context.WithTimeout(ctx, tunnelOperationTimeout)
+	defer deleteCtxCancel()
+	_, deleteErr := serverProxyClient.DeleteTunnel(deleteCtx, tunnelRef, grpc.WaitForReady(true))
+	if deleteErr != nil {
+		log.Error(deleteErr, "Failed to delete a tunnel")
+		return false
+	}
+
+	return true
+}
+
+// Checks if the Services used by the tunnel exist and are in the correct state.
+// Returns both services (if available), and a flag indicating whether both services
+// meet requirements for preparing the tunnel.
+func (r *ContainerNetworkTunnelProxyReconciler) getTunnelServices(
+	ctx context.Context,
+	tunnelConfig apiv1.TunnelConfiguration,
+	tlog logr.Logger,
+) (*apiv1.Service, *apiv1.Service, bool) {
+	serverSvcNN := types.NamespacedName{Name: tunnelConfig.ServerServiceName, Namespace: tunnelConfig.ServerServiceNamespace}
+	serverService := apiv1.Service{}
+	err := r.Get(ctx, serverSvcNN, &serverService)
+	if err != nil {
+		if apimachinery_errors.IsNotFound(err) {
+			tlog.V(1).Info("Server service required by the tunnel not found", "ServerService", serverSvcNN.String())
+		} else {
+			tlog.Error(err, "Failed to get information about server service required by the tunnel", "ServerService", serverSvcNN.String())
+		}
+		return nil, nil, false
+	}
+
+	if serverService.Status.State != apiv1.ServiceStateReady {
+		tlog.V(1).Info("Server service required by the tunnel is not in Ready state", "ServerService", serverSvcNN.String())
+		return &serverService, nil, false
+	}
+
+	clientServiceNN := types.NamespacedName{Name: tunnelConfig.ClientServiceName, Namespace: tunnelConfig.ClientServiceNamespace}
+	clientService := apiv1.Service{}
+	err = r.Get(ctx, clientServiceNN, &clientService)
+	if err != nil {
+		if apimachinery_errors.IsNotFound(err) {
+			tlog.V(1).Info("Client service required by the tunnel not found", "ClientService", clientServiceNN.String())
+		} else {
+			tlog.Error(err, "Failed to get information about client service required by the tunnel", "ClientService", clientServiceNN.String())
+		}
+		return &serverService, nil, false
+	}
+
+	return &serverService, &clientService, true
+}
+
+func failedTunnelStatus(original apiv1.TunnelStatus, errorMessage string) apiv1.TunnelStatus {
+	ts := original.Clone()
+	ts.PreparationAttempts++
+	ts.ErrorMessage = errorMessage
+	ts.Timestamp = metav1.NewMicroTime(time.Now())
+	ts.State = apiv1.TunnelStateFailed
+	return ts
+}
+
+func (r *ContainerNetworkTunnelProxyReconciler) createProxyClient(
+	tunnelProxy *apiv1.ContainerNetworkTunnelProxy,
+) (dcptunproto.TunnelControlClient, error) {
+	serverProxyConn, serverProxyErr := grpc.NewClient(
+		networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, tunnelProxy.Status.ServerProxyControlPort),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if serverProxyErr != nil {
+		return nil, serverProxyErr
+	}
+	serverProxyClient := r.config.MakeTunnelControlClient(serverProxyConn)
+	return serverProxyClient, nil
 }
 
 // INITIALIZATION AND SHUTDOWN HELPER METHODS
@@ -821,10 +1128,145 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupProxyPair(
 }
 
 //
+// ENDPOINT OWNER (CREATOR) METHODS
+//
+
+// Creates Endpoint object(s) for the given service producer by finding corresponding tunnel
+// and ensuring it is in Ready state.
+func (r *ContainerNetworkTunnelProxyReconciler) createEndpoints(
+	ctx context.Context,
+	owner ctrl_client.Object,
+	serviceProducer commonapi.ServiceProducer,
+	existingEndpoints []*apiv1.Endpoint,
+	pd *containerNetworkTunnelProxyData,
+	log logr.Logger,
+) ([]*apiv1.Endpoint, error) {
+	tunnelProxy := owner.(*apiv1.ContainerNetworkTunnelProxy)
+	csName := serviceProducer.ServiceNamespacedName()
+	csTunnels := pd.tunnelsForClientService(tunnelProxy.Spec.Tunnels, csName)
+	if len(csTunnels) == 0 {
+		// May be because we did not get to the point of creating the corresponding tunnel yet.
+		log.V(1).Info("There are no tunnels that support given client service", "ClientService", csName.String())
+		return nil, nil
+	}
+
+	readyTunnels := slices.Select(csTunnels, func(t apiv1.TunnelStatus) bool {
+		return t.State == apiv1.TunnelStateReady
+	})
+	if len(readyTunnels) == 0 {
+		log.V(1).Info("There are no tunnels in Ready state that support given client service", "ClientService", csName.String())
+		return nil, nil
+	}
+
+	var retval []*apiv1.Endpoint
+
+	for _, t := range readyTunnels {
+		for _, addr := range t.ClientProxyAddresses {
+			exists := slices.Any(existingEndpoints, func(ep *apiv1.Endpoint) bool {
+				return ep.Spec.Port == t.ClientProxyPort && ep.Spec.Address == addr
+				// No need to check service name/namespace as existingEndpoints/readyTunnels is already filtered by that
+			})
+			if exists {
+				continue
+			}
+
+			endpointName, _, nameErr := MakeUniqueName(tunnelProxy.Name)
+			if nameErr != nil {
+				// Should never happen
+				log.Error(nameErr, "Failed to create a unique name for the Endpoint object")
+				return nil, nameErr
+			}
+
+			retval = append(retval, &apiv1.Endpoint{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      endpointName,
+					Namespace: tunnelProxy.Namespace,
+					Annotations: map[string]string{
+						TunnelIdAnnotation: strconv.FormatUint(uint64(t.TunnelID), 10),
+					},
+				},
+				Spec: apiv1.EndpointSpec{
+					ServiceNamespace: csName.Namespace,
+					ServiceName:      csName.Name,
+					Address:          addr,
+					Port:             t.ClientProxyPort,
+				},
+			})
+		}
+
+	}
+	return retval, nil
+}
+
+func (r *ContainerNetworkTunnelProxyReconciler) validateExistingEndpoints(
+	ctx context.Context,
+	owner ctrl_client.Object,
+	serviceProducer commonapi.ServiceProducer,
+	existingEndpoints []*apiv1.Endpoint,
+	pd *containerNetworkTunnelProxyData,
+	log logr.Logger,
+) ([]*apiv1.Endpoint, []*apiv1.Endpoint, error) {
+	tunnelProxy := owner.(*apiv1.ContainerNetworkTunnelProxy)
+	csName := serviceProducer.ServiceNamespacedName()
+	csTunnels := pd.tunnelsForClientService(tunnelProxy.Spec.Tunnels, csName)
+	if len(csTunnels) == 0 {
+		// No new tunnels, and all existing endpoints are invalid
+		return nil, existingEndpoints, nil
+	}
+
+	var valid, invalid []*apiv1.Endpoint
+
+	for _, ep := range existingEndpoints {
+		elog := log.WithValues("Endpoint", ep.NamespacedName().String())
+
+		tunnelIdStr, found := ep.Annotations[TunnelIdAnnotation]
+		if !found {
+			elog.V(1).Info("Endpoint is missing tunnel ID annotation")
+			invalid = append(invalid, ep)
+			continue
+		}
+		tunnelId, parseErr := strconv.ParseUint(tunnelIdStr, 10, 32)
+		if parseErr != nil {
+			log.V(1).Info("Endpoint has invalid tunnel ID annotation", "TunnelIdAnnotation", tunnelIdStr)
+			invalid = append(invalid, ep)
+			continue
+		}
+		i := slices.IndexFunc(csTunnels, func(ts apiv1.TunnelStatus) bool {
+			return uint64(ts.TunnelID) == tunnelId
+		})
+		if i < 0 {
+			log.V(1).Info("Endpoint refers to a tunnel that does not exist", "TunnelId", tunnelId)
+			invalid = append(invalid, ep)
+			continue
+		}
+		t := csTunnels[i]
+		if t.State != apiv1.TunnelStateReady {
+			log.V(1).Info("Endpoint refers to a tunnel that is not in Ready state", "TunnelId", tunnelId, "TunnelState", t.State)
+			invalid = append(invalid, ep)
+			continue
+		}
+		if ep.Spec.Port != t.ClientProxyPort {
+			log.V(1).Info("Endpoint port does not match the port of the tunnel it refers to", "TunnelId", tunnelId, "EndpointPort", ep.Spec.Port, "TunnelPort", t.ClientProxyPort)
+			invalid = append(invalid, ep)
+			continue
+		}
+		if !slices.Contains(t.ClientProxyAddresses, ep.Spec.Address) {
+			log.V(1).Info("Endpoint address is not among the addresses of the tunnel it refers to", "TunnelId", tunnelId, "EndpointAddress", ep.Spec.Address, "TunnelAddresses", t.ClientProxyAddresses)
+			invalid = append(invalid, ep)
+			continue
+		}
+
+		valid = append(valid, ep)
+	}
+
+	return valid, invalid, nil
+}
+
+//
 // MISCELLANEOUS HELPER METHODS
 //
 
-func (r ContainerNetworkTunnelProxyReconciler) cleanupClientContainer(ctx context.Context, containerID string) {
+func (r *ContainerNetworkTunnelProxyReconciler) cleanupClientContainer(ctx context.Context, containerID string) {
 	removeCtx, removeCtxCancel := context.WithTimeout(ctx, clientProxyContainerCleanupTimeout)
 	defer removeCtxCancel()
 	_ = removeContainer(removeCtx, r.config.Orchestrator, containerID) // Best effort

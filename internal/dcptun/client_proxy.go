@@ -95,6 +95,9 @@ type ClientProxy struct {
 	// Data about tunnels managed by this proxy, indexed by tunnel ID.
 	tunnels map[TunnelID]*clientTunnelData
 
+	// Mapping from tunnel request parameters to tunnel ID for idempotency.
+	tunnelRequests map[proto.TunnelRequestFingerprint]TunnelID
+
 	// A channel that carries new stream requests. It is used for communication between
 	// goroutines accepting new client connections and the goroutine that interacts
 	// with the server-side proxy to start a new tunnel stream.
@@ -117,6 +120,7 @@ func NewClientProxy(ctx context.Context, dataListener net.Listener, requestShutd
 		requestShutdown: requestShutdown,
 		log:             log,
 		tunnels:         make(map[TunnelID]*clientTunnelData),
+		tunnelRequests:  make(map[proto.TunnelRequestFingerprint]TunnelID),
 		newStreamsReqs:  concurrency.NewUnboundedChan[*proto.StreamRef](ctx),
 		lock:            &sync.Mutex{},
 		disposed:        &atomic.Bool{},
@@ -141,6 +145,21 @@ func (cp *ClientProxy) PrepareTunnel(ctx context.Context, tr *proto.TunnelReq) (
 	if validationErr != nil {
 		return nil, validationErr
 	}
+
+	// Check if we already have a tunnel for this request (idempotency)
+	tf := tr.Fingerprint()
+
+	cp.lock.Lock()
+	if tid, alreadyRequested := cp.tunnelRequests[tf]; alreadyRequested {
+		if ctd, found := cp.tunnels[tid]; found && !ctd.deleted.Load() {
+			cp.lock.Unlock()
+			cp.log.V(1).Info("Returning existing tunnel for request", "TunnelID", tid, "TunnelSpec", ctd.spec.String())
+			return ctd.spec, nil
+		}
+		// The tunnel was deleted, so remove it from the requests map and continue to create a new one
+		delete(cp.tunnelRequests, tf)
+	}
+	cp.lock.Unlock()
 
 	effectiveAddresses, lookupErr := networking.LookupIP(tr.GetClientProxyAddress())
 	if lookupErr != nil {
@@ -179,6 +198,7 @@ func (cp *ClientProxy) PrepareTunnel(ctx context.Context, tr *proto.TunnelReq) (
 	}
 	cp.lock.Lock()
 	cp.tunnels[tid] = ctd
+	cp.tunnelRequests[tf] = tid
 	cp.lock.Unlock()
 
 	go cp.handleClientConnections(tunnelCtx, tid, tunnelListener)
@@ -201,6 +221,14 @@ func (cp *ClientProxy) DeleteTunnel(ctx context.Context, tr *proto.TunnelRef) (*
 		return nil, status.Errorf(codes.NotFound, "tunnel with ID %d does not exist", tid)
 	} else {
 		td.deleted.Store(true)
+
+		for tf, id := range cp.tunnelRequests {
+			if id == tid {
+				delete(cp.tunnelRequests, tf)
+				break
+			}
+		}
+
 		cp.log.V(1).Info("Tunnel deleted", "TunnelID", tid)
 		return &emptypb.Empty{}, nil
 	}
@@ -521,6 +549,7 @@ func (cp *ClientProxy) shutDownAllTunnels() {
 	cp.lock.Lock()
 	tunnels := cp.tunnels
 	cp.tunnels = make(map[TunnelID]*clientTunnelData)
+	cp.tunnelRequests = make(map[proto.TunnelRequestFingerprint]TunnelID)
 	cp.lock.Unlock()
 
 	for tid, td := range tunnels {
@@ -573,7 +602,16 @@ func (cp *ClientProxy) forgetStream(tid TunnelID, streamID StreamID) {
 	si := cp.getStreamInfo(tid, streamID)
 	if si != nil {
 		si.dispose()
-		delete(cp.tunnels[tid].streams, streamID)
+		ctd := cp.tunnels[tid]
+		delete(ctd.streams, streamID)
+
+		if len(ctd.streams) == 0 && ctd.deleted.Load() {
+			cp.log.V(1).Info("All streams for deleted tunnel have been closed, cleaning up the tunnel", "TunnelID", tid)
+			ctd.tunnelCtxCancel()
+			_ = ctd.listener.Close()
+			delete(cp.tunnels, tid)
+			// cp.tunnelRequests entry was already removed when ctd.deleted was set to true
+		}
 	}
 
 	cp.lock.Unlock()

@@ -111,10 +111,19 @@ func (rb *ReconcilerBase[T, PT]) ScheduleReconciliation(nn types.NamespacedName)
 
 // Schedules reconciliation for specific object identified by namespaced name, delaying it by specified duration.
 func (rb *ReconcilerBase[T, PT]) ScheduleReconciliationWithDelay(nn types.NamespacedName, delay AdditionalReconciliationDelay) {
-	if delay != NoDelay {
-		time.Sleep(delayDuration(delay))
+	if delay == NoDelay {
+		rb.ScheduleReconciliation(nn)
+		return
 	}
-	rb.ScheduleReconciliation(nn)
+
+	go func() {
+		select {
+		case <-rb.LifetimeCtx.Done():
+			return
+		case <-time.After(delayDuration(delay)):
+			rb.ScheduleReconciliation(nn)
+		}
+	}()
 }
 
 // Gets a reconciliation event source for triggering reconciliations programmatically.

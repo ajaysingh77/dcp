@@ -1,12 +1,14 @@
 package controllers
 
 import (
+	"cmp"
 	"os"
 	std_slices "slices"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/pkg/pointers"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // Data we keep in memory for ContainerNetworkTunnelProxy instances.
@@ -196,6 +198,51 @@ func (tpd *containerNetworkTunnelProxyData) applyTo(tunnelProxy *apiv1.Container
 	}
 
 	return change
+}
+
+// Adds or updates a tunnel status in the proxy data.
+// To make status comparison and change detection easy, tunnel status are always sorted by tunnel name.
+func (tpd *containerNetworkTunnelProxyData) setTunnelStatus(ts apiv1.TunnelStatus) {
+	i, found := std_slices.BinarySearchFunc(tpd.TunnelStatuses, ts.Name, func(current apiv1.TunnelStatus, target string) int {
+		return cmp.Compare(current.Name, target)
+	})
+	if found {
+		tpd.TunnelStatuses[i] = ts
+	} else {
+		tpd.TunnelStatuses = std_slices.Insert(tpd.TunnelStatuses, i, ts)
+	}
+}
+
+// Removes a tunnels status from the proxy data.
+// It is a no-op if the tunnel status does not exist.
+func (tpd *containerNetworkTunnelProxyData) removeTunnelStatus(tunnelName string) {
+	i, found := std_slices.BinarySearchFunc(tpd.TunnelStatuses, tunnelName, func(current apiv1.TunnelStatus, target string) int {
+		return cmp.Compare(current.Name, target)
+	})
+	if found {
+		// Remove existing status
+		tpd.TunnelStatuses = std_slices.Delete(tpd.TunnelStatuses, i, i+1)
+	}
+}
+
+// Returns all known tunnel statuses associated with given client service namespaced name.
+func (tpd *containerNetworkTunnelProxyData) tunnelsForClientService(tunnels []apiv1.TunnelConfiguration, csName types.NamespacedName) []apiv1.TunnelStatus {
+	tunnelNames := slices.Map[apiv1.TunnelConfiguration, string](tunnels, func(tc apiv1.TunnelConfiguration) string {
+		nn := types.NamespacedName{
+			Namespace: tc.ClientServiceNamespace,
+			Name:      tc.ClientServiceName,
+		}
+		if nn == csName {
+			return tc.Name
+		}
+		return ""
+	})
+	tunnelNames = slices.NonEmpty[string](tunnelNames)
+
+	statuses := slices.Select(tpd.TunnelStatuses, func(ts apiv1.TunnelStatus) bool {
+		return slices.Contains(tunnelNames, ts.Name)
+	})
+	return statuses
 }
 
 var _ Cloner[*containerNetworkTunnelProxyData] = (*containerNetworkTunnelProxyData)(nil)

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"google.golang.org/grpc"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -28,6 +29,7 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
 	"github.com/microsoft/usvc-apiserver/internal/dcpclient"
+	dcptunproto "github.com/microsoft/usvc-apiserver/internal/dcptun/proto"
 	"github.com/microsoft/usvc-apiserver/internal/exerunners"
 	"github.com/microsoft/usvc-apiserver/internal/health"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
@@ -60,7 +62,7 @@ func TestMain(m *testing.M) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	serverInfo, pe, ir, envStartErr := StartTestEnvironment(ctx, AllControllers, "IntegrationTests", "", log)
+	serverInfo, teInfo, envStartErr := StartTestEnvironment(ctx, AllControllers, "IntegrationTests", "", log)
 	if envStartErr != nil {
 		cancel()
 		panic(envStartErr)
@@ -68,8 +70,8 @@ func TestMain(m *testing.M) {
 	client = serverInfo.Client
 	restClient = serverInfo.RestClient
 	containerOrchestrator = serverInfo.ContainerOrchestrator
-	testProcessExecutor = pe
-	ideRunner = ir
+	testProcessExecutor = teInfo.TestProcessExecutor
+	ideRunner = teInfo.TestIdeRunner
 
 	var code int = 0
 	defer func() {
@@ -107,6 +109,13 @@ const (
 	NoSeparateWorkingDir = ""
 )
 
+// TestEnvironmentInfo provides information about the test environment created via StartTestEnvironment().
+type TestEnvironmentInfo struct {
+	*internal_testutil.TestProcessExecutor
+	*ctrl_testutil.TestIdeRunner
+	*ctrl_testutil.TestTunnelControlClient
+}
+
 // Starts the DCP API server (separate process) and standard controllers (in-proc).
 func StartTestEnvironment(
 	ctx context.Context,
@@ -116,13 +125,12 @@ func StartTestEnvironment(
 	log logr.Logger,
 ) (
 	*ctrl_testutil.ApiServerInfo,
-	*internal_testutil.TestProcessExecutor,
-	*ctrl_testutil.TestIdeRunner,
+	*TestEnvironmentInfo,
 	error,
 ) {
 	serverInfo, serverErr := ctrl_testutil.StartApiServer(ctx, log)
 	if serverErr != nil {
-		return nil, nil, nil, fmt.Errorf("failed to start the API server: %w", serverErr)
+		return nil, nil, fmt.Errorf("failed to start the API server: %w", serverErr)
 	}
 
 	pe := internal_testutil.NewTestProcessExecutor(ctx)
@@ -153,7 +161,7 @@ func StartTestEnvironment(
 	opts := controllers.NewControllerManagerOptions(ctx, serverInfo.Client.Scheme(), log)
 	mgr, err := ctrl.NewManager(serverInfo.ClientConfig, opts)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to initialize controller manager: %w", err)
+		return nil, nil, fmt.Errorf("failed to initialize controller manager: %w", err)
 	}
 
 	hpSet := health.NewHealthProbeSet(
@@ -177,7 +185,7 @@ func StartTestEnvironment(
 			hpSet,
 		)
 		if err = execR.SetupWithManager(mgr, instanceTag+"-ExecutableReconciler"); err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to initialize Executable reconciler: %w", err)
+			return nil, nil, fmt.Errorf("failed to initialize Executable reconciler: %w", err)
 		}
 	}
 
@@ -189,7 +197,7 @@ func StartTestEnvironment(
 			log.WithName("ExecutableReplicaSetReconciler"),
 		)
 		if err = execrsR.SetupWithManager(mgr, instanceTag+"-ExecutableReplicaSetReconciler"); err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to initialize ExecutableReplicaSet reconciler: %w", err)
+			return nil, nil, fmt.Errorf("failed to initialize ExecutableReplicaSet reconciler: %w", err)
 		}
 	}
 
@@ -203,7 +211,7 @@ func StartTestEnvironment(
 			harvester,
 		)
 		if err = networkR.SetupWithManager(mgr, instanceTag+"-NetworkReconciler"); err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to initialize Network reconciler: %w", err)
+			return nil, nil, fmt.Errorf("failed to initialize Network reconciler: %w", err)
 		}
 	}
 
@@ -221,7 +229,7 @@ func StartTestEnvironment(
 			},
 		)
 		if err = containerR.SetupWithManager(mgr, instanceTag+"-ContainerReconciler"); err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to initialize Container reconciler: %w", err)
+			return nil, nil, fmt.Errorf("failed to initialize Container reconciler: %w", err)
 		}
 	}
 
@@ -234,7 +242,7 @@ func StartTestEnvironment(
 			serverInfo.ContainerOrchestrator,
 		)
 		if err = containerExecR.SetupWithManager(mgr, instanceTag+"-ContainerExecReconciler"); err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to initialize ContainerExec reconciler: %w", err)
+			return nil, nil, fmt.Errorf("failed to initialize ContainerExec reconciler: %w", err)
 		}
 	}
 
@@ -247,7 +255,7 @@ func StartTestEnvironment(
 			serverInfo.ContainerOrchestrator,
 		)
 		if err = volumeR.SetupWithManager(mgr, instanceTag+"-VolumeReconciler"); err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to initialize ContainerVolume reconciler: %w", err)
+			return nil, nil, fmt.Errorf("failed to initialize ContainerVolume reconciler: %w", err)
 		}
 	}
 
@@ -264,13 +272,15 @@ func StartTestEnvironment(
 			},
 		)
 		if err = serviceR.SetupWithManager(mgr, instanceTag+"-ServiceReconciler"); err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to initialize Service reconciler: %w", err)
+			return nil, nil, fmt.Errorf("failed to initialize Service reconciler: %w", err)
 		}
 	}
 
+	tcc := ctrl_testutil.NewTestTunnelControlClient()
 	tprOpts := controllers.ContainerNetworkTunnelProxyReconcilerConfig{
-		Orchestrator:    serverInfo.ContainerOrchestrator,
-		ProcessExecutor: pe,
+		Orchestrator:            serverInfo.ContainerOrchestrator,
+		ProcessExecutor:         pe,
+		MakeTunnelControlClient: func(_ grpc.ClientConnInterface) dcptunproto.TunnelControlClient { return tcc },
 	}
 	if testTempDir != NoSeparateWorkingDir {
 		tprOpts.MostRecentImageBuildsFilePath = filepath.Join(testTempDir, instanceTag+".imglist")
@@ -284,12 +294,12 @@ func StartTestEnvironment(
 			log.WithName("TunnelProxyReconciler"),
 		)
 		if err = tunnelProxyR.SetupWithManager(mgr, instanceTag+"-ContainerNetworkTunnelProxyReconciler"); err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to initialize ContainerNetworkTunnelProxy reconciler: %w", err)
+			return nil, nil, fmt.Errorf("failed to initialize ContainerNetworkTunnelProxy reconciler: %w", err)
 		}
 	}
 
 	if err = controllers.SetupEndpointIndexWithManager(mgr); err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to initialize Endpoint index: %w", err)
+		return nil, nil, fmt.Errorf("failed to initialize Endpoint index: %w", err)
 	}
 
 	// Starts the controller manager and all the associated controllers
@@ -299,7 +309,12 @@ func StartTestEnvironment(
 		managerDone.Set()
 	}()
 
-	return serverInfo, pe, ir, nil
+	teInfo := &TestEnvironmentInfo{
+		TestProcessExecutor:     pe,
+		TestIdeRunner:           ir,
+		TestTunnelControlClient: tcc,
+	}
+	return serverInfo, teInfo, nil
 }
 
 // unexpectedObjectStateError can be used to provide additional context when an object is not in the expected state.
@@ -378,8 +393,12 @@ func waitObjectAssumesStateEx[T commonapi.ObjectStruct, PT commonapi.PObjectStru
 	}
 }
 
-func waitServiceReady(t *testing.T, ctx context.Context, svc *apiv1.Service) *apiv1.Service {
-	updatedSvc := waitObjectAssumesState(t, ctx, svc.NamespacedName(), func(svc *apiv1.Service) (bool, error) {
+func waitServiceReady(t *testing.T, ctx context.Context, svcName types.NamespacedName) *apiv1.Service {
+	return waitServiceReadyEx(t, ctx, client, svcName)
+}
+
+func waitServiceReadyEx(t *testing.T, ctx context.Context, cl ctrl_client.Client, svcName types.NamespacedName) *apiv1.Service {
+	updatedSvc := waitObjectAssumesStateEx(t, ctx, cl, svcName, func(svc *apiv1.Service) (bool, error) {
 		return svc.Status.State == apiv1.ServiceStateReady, nil
 	})
 	return updatedSvc

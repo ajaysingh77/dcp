@@ -3594,37 +3594,38 @@ func schema_microsoft_usvc_apiserver_api_v1_TunnelConfiguration(ref common.Refer
 							Format:      "",
 						},
 					},
-					"serverAddress": {
+					"serverServiceNamespace": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Address of the server on the host that clients will be tunneled to. Defaults to \"localhost\" if not specified.",
+							Description: "Namespace of the Service that identifies the server the tunnel connects to.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
-					"serverPort": {
+					"serverServiceName": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Port of the server on the host that clients will be tunneled to.",
-							Default:     0,
-							Type:        []string{"integer"},
-							Format:      "int32",
-						},
-					},
-					"clientProxyAddress": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Address that the client proxy will bind to on the container network Defaults to \"0.0.0.0\" (all interfaces) if not specified.",
+							Description: "Name of the Service that identifies the server the tunnel connects to.",
+							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
-					"clientProxyPort": {
+					"clientServiceNamespace": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Port that the client proxy will use on the container network. If set to 0 or not specified, a random port will be assigned.",
-							Type:        []string{"integer"},
-							Format:      "int32",
+							Description: "Namespace of the Service associated with the client proxy on the container network.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"clientServiceName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name of the Service associated with the client proxy on the container network.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 				},
-				Required: []string{"name", "serverPort"},
+				Required: []string{"name", "serverServiceName", "clientServiceName"},
 			},
 		},
 	}
@@ -3667,9 +3668,49 @@ func schema_microsoft_usvc_apiserver_api_v1_TunnelStatus(ref common.ReferenceCal
 							Format:      "",
 						},
 					},
+					"clientProxyAddresses": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Addresses on the container network that client proxy is listening on for this tunnel. May be empty if the tunnel is not ready.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"clientProxyPort": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Port on the container network that client proxy is listening on for this tunnel. May be zero if the tunnel is not ready.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
 					"timestamp": {
 						SchemaProps: spec.SchemaProps{
 							Description: "The timestamp for the status (last update).",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"),
+						},
+					},
+					"preparationAttempts": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The number of preparation attempts made for this tunnel. If the tunnel cannot be prepared after maximum number of attempts (currently 20) it will be marked as failed.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"nextPreparationNoEarlierThan": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Timestamp for the next preparation attempt (the next attempt must be made no earlier than this time). This is necessary because PreparationAttempts update counts as a change to the object, which means whenever PreparationAttempts is updated, another reconciliation is triggered shortly after.",
 							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"),
 						},
 					},

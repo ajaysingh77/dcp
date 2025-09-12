@@ -8,17 +8,19 @@ import (
 	"testing"
 	"time"
 
-	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/controllers"
-	"github.com/microsoft/usvc-apiserver/internal/networking"
-	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
-	"github.com/microsoft/usvc-apiserver/pkg/slices"
-	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/nettest"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+
+	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/controllers"
+	"github.com/microsoft/usvc-apiserver/internal/networking"
+	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
+	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
 const (
@@ -132,7 +134,7 @@ func TestServicesBecomeReadyMultipleReplicas(t *testing.T) {
 					Replicas: 3,
 					Template: apiv1.ExecutableTemplate{
 						Annotations: map[string]string{
-							"service-producer": fmt.Sprintf(`[{"serviceName":"%s"}]`, "svc-becomes-ready-multi-process"),
+							commonapi.ServiceProducerAnnotation: fmt.Sprintf(`[{"serviceName":"%s"}]`, "svc-becomes-ready-multi-process"),
 						},
 						Spec: apiv1.ExecutableSpec{
 							ExecutablePath: "/path/to/ers-becomes-ready-multi-process",
@@ -169,7 +171,7 @@ func TestServicesBecomeReadyMultipleReplicas(t *testing.T) {
 					Replicas: 3,
 					Template: apiv1.ExecutableTemplate{
 						Annotations: map[string]string{
-							"service-producer":                          fmt.Sprintf(`[{"serviceName":"%s"}]`, "svc-becomes-ready-multi-ide"),
+							commonapi.ServiceProducerAnnotation:         fmt.Sprintf(`[{"serviceName":"%s"}]`, "svc-becomes-ready-multi-ide"),
 							ctrl_testutil.AutoStartExecutableAnnotation: "true",
 						},
 						Spec: apiv1.ExecutableSpec{
@@ -232,7 +234,7 @@ func TestServiceDelayedCreation(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "test-service-delayed-creation",
 			Namespace:   metav1.NamespaceNone,
-			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{ "serviceName":"%s", "address":"127.0.0.1", "port":%d }]`, svcName, pDelayedCreationExe)},
+			Annotations: map[string]string{commonapi.ServiceProducerAnnotation: fmt.Sprintf(`[{ "serviceName":"%s", "address":"127.0.0.1", "port":%d }]`, svcName, pDelayedCreationExe)},
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/test-service-delayed-creation",
@@ -251,7 +253,7 @@ func TestServiceDelayedCreation(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        svcName + "-container",
 			Namespace:   metav1.NamespaceNone,
-			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s","port":80}]`, svcName)},
+			Annotations: map[string]string{commonapi.ServiceProducerAnnotation: fmt.Sprintf(`[{"serviceName":"%s","port":80}]`, svcName)},
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: svcName + "-image",
@@ -513,7 +515,7 @@ func TestServiceProxyless(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        svcName + "-container",
 			Namespace:   metav1.NamespaceNone,
-			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s","port":80}]`, svcName)},
+			Annotations: map[string]string{commonapi.ServiceProducerAnnotation: fmt.Sprintf(`[{"serviceName":"%s","port":80}]`, svcName)},
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: svcName + "-image",
@@ -852,7 +854,7 @@ func TestServiceGetsReadyAfterTransientProxyFailure(t *testing.T) {
 	require.NoError(t, err, "Could not create Endpoint '%s", endpoint.ObjectMeta.Name)
 
 	t.Logf("Ensure Service '%s' is in Ready state...", svc.ObjectMeta.Name)
-	_ = waitServiceReady(t, ctx, &svc)
+	_ = waitServiceReady(t, ctx, svc.NamespacedName())
 }
 
 func TestBindAllResolvesCorrectInterfaces(t *testing.T) {

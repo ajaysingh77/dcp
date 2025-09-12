@@ -3,6 +3,7 @@ package v1
 import (
 	"context"
 	"fmt"
+	std_slices "slices"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -15,6 +16,8 @@ import (
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
 
 	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
+	"github.com/microsoft/usvc-apiserver/pkg/maps"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
 type ContainerNetworkTunnelProxyState string
@@ -48,6 +51,9 @@ const (
 
 	// Tunnel preparation failed, see ErrorMessage for details.
 	TunnelStateFailed TunnelState = "Failed"
+
+	// Initial state -- no attempt to prepare the tunnel have been made yet.
+	TunnelStateEmpty TunnelState = ""
 )
 
 // TunnelConfiguration defines a single tunnel enabled by a ContainerNetworkTunnelProxy.
@@ -57,24 +63,23 @@ type TunnelConfiguration struct {
 	// Must be unique within the ContainerNetworkTunnelProxy.
 	Name string `json:"name"`
 
-	// Address of the server on the host that clients will be tunneled to.
-	// Defaults to "localhost" if not specified.
+	// Namespace of the Service that identifies the server the tunnel connects to.
 	// +optional
-	ServerAddress string `json:"serverAddress,omitempty"`
+	ServerServiceNamespace string `json:"serverServiceNamespace,omitempty"`
 
-	// Port of the server on the host that clients will be tunneled to.
-	ServerPort int32 `json:"serverPort"`
+	// Name of the Service that identifies the server the tunnel connects to.
+	ServerServiceName string `json:"serverServiceName"`
 
-	// Address that the client proxy will bind to on the container network
-	// Defaults to "0.0.0.0" (all interfaces) if not specified.
+	// Namespace of the Service associated with the client proxy on the container network.
 	// +optional
-	ClientProxyAddress string `json:"clientProxyAddress,omitempty"`
+	ClientServiceNamespace string `json:"clientServiceNamespace,omitempty"`
 
-	// Port that the client proxy will use on the container network.
-	// If set to 0 or not specified, a random port will be assigned.
-	// +optional
-	ClientProxyPort int32 `json:"clientProxyPort,omitempty"`
+	// Name of the Service associated with the client proxy on the container network.
+	ClientServiceName string `json:"clientServiceName"`
 }
+
+// Converts a TunnelConfiguration to key-value pair for use in maps.
+func (tc TunnelConfiguration) KV() (string, TunnelConfiguration) { return tc.Name, tc }
 
 // TunnelStatus represents the status of a single tunnel within the proxy pair
 // +k8s:openapi-gen=true
@@ -91,21 +96,53 @@ type TunnelStatus struct {
 	// Human-readable explanation for why the tunnel preparation failed (if it did).
 	ErrorMessage string `json:"errorMessage,omitempty"`
 
+	// Addresses on the container network that client proxy is listening on for this tunnel.
+	// May be empty if the tunnel is not ready.
+	// +listType=set
+	ClientProxyAddresses []string `json:"clientProxyAddresses,omitempty"`
+
+	// Port on the container network that client proxy is listening on for this tunnel.
+	// May be zero if the tunnel is not ready.
+	ClientProxyPort int32 `json:"clientProxyPort,omitempty"`
+
 	// The timestamp for the status (last update).
 	Timestamp metav1.MicroTime `json:"timestamp"`
+
+	// The number of preparation attempts made for this tunnel.
+	// If the tunnel cannot be prepared after maximum number of attempts (currently 20)
+	// it will be marked as failed.
+	PreparationAttempts uint32 `json:"preparationAttempts,omitempty"`
+
+	// Timestamp for the next preparation attempt (the next attempt must be made no earlier than this time).
+	// This is necessary because PreparationAttempts update counts as a change to the object,
+	// which means whenever PreparationAttempts is updated, another reconciliation is triggered shortly after.
+	NextPreparationNoEarilerThan *metav1.MicroTime `json:"nextPreparationNoEarlierThan,omitempty"`
 }
 
 func (ts TunnelStatus) Equal(other TunnelStatus) bool {
-	// Default comparison works today, but may not in future,
-	// depending on what data TunnelStatus contains.
-	return ts == other
+	allmostEqual := ts.Name == other.Name &&
+		ts.TunnelID == other.TunnelID &&
+		ts.State == other.State &&
+		ts.ErrorMessage == other.ErrorMessage &&
+		ts.Timestamp.Equal(&other.Timestamp) &&
+		ts.PreparationAttempts == other.PreparationAttempts &&
+		ts.ClientProxyPort == other.ClientProxyPort
+	if !allmostEqual {
+		return false
+	}
+
+	std_slices.Sort(ts.ClientProxyAddresses)
+	std_slices.Sort(other.ClientProxyAddresses)
+	return std_slices.Equal(ts.ClientProxyAddresses, other.ClientProxyAddresses)
 }
 
 func (ts TunnelStatus) Clone() TunnelStatus {
-	// Returns copy of the struct because Go is a pass-by-value language.
-	// May not be enough in future, depending on what data TunnelStatus contains.
-	return ts
+	retval := ts
+	retval.ClientProxyAddresses = std_slices.Clone(ts.ClientProxyAddresses)
+	return retval
 }
+
+func (ts TunnelStatus) KV() (string, TunnelStatus) { return ts.Name, ts }
 
 // ContainerNetworkTunnelProxySpec defines the desired state of a ContainerNetworkTunnelProxy.
 // +k8s:openapi-gen=true
@@ -241,7 +278,7 @@ func (cntp *ContainerNetworkTunnelProxy) Validate(ctx context.Context) field.Err
 		errorList = append(errorList, field.Required(field.NewPath("spec", "containerNetworkName"), "Container network name is required"))
 	}
 
-	// Check that each tunnel configuration has a unique name and valid server port.
+	// Check that each tunnel configuration has a unique name.
 	tunnelNames := make(map[string]bool)
 
 	for i, tunnel := range cntp.Spec.Tunnels {
@@ -253,9 +290,12 @@ func (cntp *ContainerNetworkTunnelProxy) Validate(ctx context.Context) field.Err
 			tunnelNames[tunnel.Name] = true
 		}
 
-		// (cannot use networking package to validate port number because it depends on this package i.e. api/v1)
-		if tunnel.ServerPort <= 0 || tunnel.ServerPort > 65535 {
-			errorList = append(errorList, field.Required(field.NewPath("spec", "tunnels").Index(i).Child("serverPort"), fmt.Sprintf("Server port must be between 1 and 65535, got %d", tunnel.ServerPort)))
+		if tunnel.ServerServiceName == "" {
+			errorList = append(errorList, field.Required(field.NewPath("spec", "tunnels").Index(i).Child("serverServiceName"), "Server service name is required"))
+		}
+
+		if tunnel.ClientServiceName == "" {
+			errorList = append(errorList, field.Required(field.NewPath("spec", "tunnels").Index(i).Child("clientServiceName"), "Client service name is required"))
 		}
 	}
 
@@ -277,7 +317,51 @@ func (cntp *ContainerNetworkTunnelProxy) ValidateUpdate(ctx context.Context, obj
 		errorList = append(errorList, field.Invalid(field.NewPath("spec", "baseImage"), cntp.Spec.BaseImage, "Base image cannot be changed after ContainerNetworkTunnelProxy is created"))
 	}
 
+	// New tunnels can be added and existing tunnels can be removed,
+	// but existing tunnels cannot be re-defined.
+	oldTunnelMap := maps.SliceToMap(oldProxy.Spec.Tunnels, TunnelConfiguration.KV)
+	newTunnelMap := maps.SliceToMap(cntp.Spec.Tunnels, TunnelConfiguration.KV)
+	preservedTunnelNames := slices.Intersect(maps.Keys(newTunnelMap), maps.Keys(oldTunnelMap))
+	redefinedTunnelNames := slices.Select(preservedTunnelNames, func(name string) bool {
+		return oldTunnelMap[name] != newTunnelMap[name] // All-property comparison
+	})
+	for i, tc := range cntp.Spec.Tunnels {
+		if slices.Contains(redefinedTunnelNames, tc.Name) {
+			errorList = append(errorList, field.Invalid(field.NewPath("spec", "tunnels").Index(i), tc, "Tunnel configuration cannot be changed after the tunnel is created"))
+		}
+	}
+
+	errorList = append(errorList, cntp.Validate(ctx)...)
+
 	return errorList
+}
+
+func (cntp *ContainerNetworkTunnelProxy) ServicesProduced() []commonapi.ServiceProducer {
+	var retval []commonapi.ServiceProducer
+	tunnelMap := maps.SliceToMap(cntp.Spec.Tunnels, TunnelConfiguration.KV)
+
+	for _, ts := range cntp.Status.TunnelStatuses {
+		if ts.State != TunnelStateReady {
+			continue
+		}
+
+		tc, found := tunnelMap[ts.Name]
+		if !found {
+			// Should not really happen (having a status for a tunnel that is not in the spec???)
+			continue
+		}
+
+		for _, addr := range ts.ClientProxyAddresses {
+			retval = append(retval, commonapi.ServiceProducer{
+				ServiceName:      tc.ClientServiceName,
+				ServiceNamespace: tc.ClientServiceNamespace,
+				Port:             ts.ClientProxyPort,
+				Address:          addr,
+			})
+		}
+	}
+
+	return retval
 }
 
 // ContainerNetworkTunnelProxyList contains a list of ContainerNetworkTunnelProxy instances
@@ -318,3 +402,4 @@ var _ apiserver_resource.StatusSubResource = (*ContainerNetworkTunnelProxyStatus
 var _ apiserver_resourcerest.ShortNamesProvider = (*ContainerNetworkTunnelProxy)(nil)
 var _ apiserver_resourcestrategy.Validater = (*ContainerNetworkTunnelProxy)(nil)
 var _ apiserver_resourcestrategy.ValidateUpdater = (*ContainerNetworkTunnelProxy)(nil)
+var _ commonapi.DynamicServiceProducer = (*ContainerNetworkTunnelProxy)(nil)

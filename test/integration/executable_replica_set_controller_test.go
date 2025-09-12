@@ -17,6 +17,7 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
+	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
@@ -477,7 +478,7 @@ func TestExecutableReplicaSetInjectsPortsIntoReplicas(t *testing.T) {
 			Replicas: replicas,
 			Template: apiv1.ExecutableTemplate{
 				Annotations: map[string]string{
-					"service-producer": fmt.Sprintf(`[{"serviceName":"%s"}, {"serviceName":"%s"}]`, svcAName, svcBName),
+					commonapi.ServiceProducerAnnotation: fmt.Sprintf(`[{"serviceName":"%s"}, {"serviceName":"%s"}]`, svcAName, svcBName),
 				},
 				Spec: apiv1.ExecutableSpec{
 					ExecutablePath: "/path/to/exers-injects-ports-into-replicas",

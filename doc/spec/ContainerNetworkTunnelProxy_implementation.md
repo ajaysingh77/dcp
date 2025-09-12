@@ -28,16 +28,23 @@
 
 ## Phase 4: Handling tunnel creation and deletion
 
-- [ ] Modify TunnelConfiguration definition so that both the server and the client are identified by a Service object instead of explicit address and port combination. This means ServiceAddress, ServicePort, ClientProxyAddress, and ClientProxyPort properties should be deleted and replaced by server Service name and namespace and client proxy Service name and namespace.
-- [ ] Make the ContainerNetworkTunnelProxyReconciler watches Services.
+- [x] Modify TunnelConfiguration definition so that both the server and the client are identified by a Service object instead of explicit address and port combination. This means ServiceAddress, ServicePort, ClientProxyAddress, and ClientProxyPort properties should be deleted and replaced by server Service name and namespace and client proxy Service name and namespace.
+- [x] Make the ContainerNetworkTunnelProxyReconciler watches Services.
 - [ ] Implement tunnel preparation and deletion as the Spec.Tunnels set changes. Tunnel cannot be prepared until server and client Services exist and the server Service is in Ready state.
 - [ ] Ensure that TunnelStatuses are updated accordingly, including differentiation between successfully prepared tunnels vs. tunnels that failed.
 - [ ] Write automated integration test that verifies the proxies get appropriate tunnel enablement/deletion calls in result to Spec.Tunnels changes.
 - [ ] Write automated integration test that verifies tunnels get prepared/disabled depending on server Service being in Ready vs NotReady state.
 - [ ] Write automated integration test that verifies the controller creates and deletes Endpoints that are associated with client Service (for each tunnel).
 
+## Phase 5: Support for DNS names ("aliases") for container-side proxy.
 
-## Phase 5: Failure handling
+- [ ] Add facility for specifying multiple aliases for a new container in generic container orchestrator interfaces.
+- [ ] Implement support for container aliases in Docker and Podman container orchestrators.
+- [ ] Modify ContainerNetworkTunnelProxy spec to include ability to specify aliases for client-side (container) proxy.
+- [ ] Change ContainerNetworkTunnelProxy controller so that it uses aliases in the spec when creating client-side (container) proxy.
+- [ ] Write automated integration tests that verifies the controller applies aliases to client-side proxy when requested by ContainerNetworkTunnelProxy spec.
+
+## Phase 6: Failure handling
 
 - [ ] Ensure that failure of the server side proxy results in transition to Failed state.
 - [ ] Ensure that failure of the client side proxy (container) results in transition to Failed state.
@@ -45,13 +52,13 @@
 - [ ] Ensure that tunnels are shut down if their server Service goes from Ready to NotReady (and vice versa).
 - [ ] Write automated tests that verify all the above.
 
-## Phase 6: Observability (maybe skip)
+## Phase 7 Observability (maybe skip)
 
 - [ ] Implement system log subresource for ContainerNetworkTunnelProxy.
 - [ ] Ensure that important lifetime changes for ContainerNetworkTunnelProxy (e.g. results of precondition checks for transitioning out of Pending state) end up logged into the system log.
 
 
-## Phase 7: End-to-end testing
+## Phase 8: End-to-end testing
 
 - [ ] Implement automated test that launches DCP API server and DCP controllers process and creates a tunnel between a server running on the host (simple echo server will suffice) and a client running as container. The client should verify that it can reach and communicate with the server and should report the result via a REST API that can be called from the test.
 

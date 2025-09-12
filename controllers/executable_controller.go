@@ -34,6 +34,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/pointers"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
 type executableStateInitializerFunc = stateInitializerFunc[
@@ -637,7 +638,7 @@ func (r *ExecutableReconciler) disableEndpointsAndHealthProbes(
 		}
 	}
 
-	removeEndpointsForWorkload(r, ctx, exe, log)
+	removeEndpointsForWorkload(ctx, r, exe, log)
 }
 
 func (r *ExecutableReconciler) deleteOutputFiles(exe *apiv1.Executable, log logr.Logger) {
@@ -668,13 +669,14 @@ func (r *ExecutableReconciler) deleteOutputFiles(exe *apiv1.Executable, log logr
 	}
 }
 
-func (r *ExecutableReconciler) createEndpoint(
+func (r *ExecutableReconciler) createEndpoints(
 	ctx context.Context,
 	owner ctrl_client.Object,
 	serviceProducer commonapi.ServiceProducer,
+	existingEndpoints []*apiv1.Endpoint,
 	_ struct{}, // Endpoint creation context data, not used for Executables
 	log logr.Logger,
-) (*apiv1.Endpoint, error) {
+) ([]*apiv1.Endpoint, error) {
 	endpointName, _, err := MakeUniqueName(owner.GetName())
 	if err != nil {
 		log.Error(err, "Could not generate unique name for Endpoint object")
@@ -698,6 +700,16 @@ func (r *ExecutableReconciler) createEndpoint(
 		address = networking.IPv6LocalhostDefaultAddress
 	}
 
+	endpointExists := slices.Any(existingEndpoints, func(ep *apiv1.Endpoint) bool {
+		return ep.Spec.ServiceName == serviceProducer.ServiceName &&
+			ep.Spec.ServiceNamespace == owner.GetNamespace() &&
+			ep.Spec.Address == address &&
+			ep.Spec.Port == serviceProducer.Port
+	})
+	if endpointExists {
+		return nil, nil
+	}
+
 	// Otherwise, create a new Endpoint object.
 	endpoint := &apiv1.Endpoint{
 		ObjectMeta: metav1.ObjectMeta{
@@ -712,20 +724,20 @@ func (r *ExecutableReconciler) createEndpoint(
 		},
 	}
 
-	return endpoint, nil
+	return []*apiv1.Endpoint{endpoint}, nil
 }
 
-func (r *ExecutableReconciler) validateExistingEndpoint(
+func (r *ExecutableReconciler) validateExistingEndpoints(
 	ctx context.Context,
 	owner ctrl_client.Object,
 	serviceProducer commonapi.ServiceProducer,
+	existing []*apiv1.Endpoint,
 	_ struct{},
-	_ *apiv1.Endpoint,
 	log logr.Logger,
-) error {
+) ([]*apiv1.Endpoint, []*apiv1.Endpoint, error) {
 	// Currently we do not support any scenario when Executable replicas change the ports they listen on
 	// at run time, so once an Endpoint is created, it will always be "valid".
-	return nil
+	return existing, nil, nil
 }
 
 // Environment variables starting with these prefixes will never be applied to Executables.

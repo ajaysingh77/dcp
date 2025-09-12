@@ -29,6 +29,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	internal_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
+	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
@@ -544,7 +545,7 @@ func TestExecutableServingPortInjected(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "test-executable-serving-port-injected-env-var",
 			Namespace:   metav1.NamespaceNone,
-			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s","address":"127.0.0.1","port":7733}]`, svc.ObjectMeta.Name)},
+			Annotations: map[string]string{commonapi.ServiceProducerAnnotation: fmt.Sprintf(`[{"serviceName":"%s","address":"127.0.0.1","port":7733}]`, svc.ObjectMeta.Name)},
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/test-executable-serving-port-injected-env-var",
@@ -580,7 +581,7 @@ func TestExecutableServingPortInjected(t *testing.T) {
 	require.True(t, slices.Contains(effectiveEnv, "SVC_PORT=7733"), "The Executable '%s' effective environment does not contain expected port information. The effective environment is %v", exe.ObjectMeta.Name, effectiveEnv)
 
 	t.Logf("Ensure service exposed by Executable '%s' gets to Ready state...", exe.ObjectMeta.Name)
-	waitServiceReady(t, ctx, &svc)
+	waitServiceReady(t, ctx, svc.NamespacedName())
 }
 
 // Verify ports are injected into Executable environment variables via portForServing template function.
@@ -611,7 +612,7 @@ func TestExecutableServingPortAllocatedAndInjected(t *testing.T) {
 			Name:      "test-executable-serving-port-allocated-injected-env-var",
 			Namespace: metav1.NamespaceNone,
 			// No address and no port information
-			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s"}]`, svc.ObjectMeta.Name)},
+			Annotations: map[string]string{commonapi.ServiceProducerAnnotation: fmt.Sprintf(`[{"serviceName":"%s"}]`, svc.ObjectMeta.Name)},
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/test-executable-serving-port-allocated-injected-env-var",
@@ -666,7 +667,7 @@ func TestExecutableServingPortAllocatedAndInjected(t *testing.T) {
 	require.True(t, slices.Contains(effectiveEnv, expectedEnvVar), "The Executable '%s' effective environment does not contain expected port information. The effective environemtn is %v", exe.ObjectMeta.Name, effectiveEnv)
 
 	t.Logf("Ensure service exposed by Executable '%s' gets to Ready state...", exe.ObjectMeta.Name)
-	waitServiceReady(t, ctx, &svc)
+	waitServiceReady(t, ctx, svc.NamespacedName())
 }
 
 // Verify ports are injected into Executable using startup parameters and portForServing template function.
@@ -696,7 +697,7 @@ func TestExecutableServingPortInjectedViaStartupParameter(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "test-executable-serving-port-injected-startup-param",
 			Namespace:   metav1.NamespaceNone,
-			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s","address":"127.0.0.1","port":7746}]`, svc.ObjectMeta.Name)},
+			Annotations: map[string]string{commonapi.ServiceProducerAnnotation: fmt.Sprintf(`[{"serviceName":"%s","address":"127.0.0.1","port":7746}]`, svc.ObjectMeta.Name)},
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/test-executable-serving-port-injected-startup-param",
@@ -729,7 +730,7 @@ func TestExecutableServingPortInjectedViaStartupParameter(t *testing.T) {
 	require.Equal(t, updatedExe.Status.EffectiveArgs[1], "7746", "The Executable '%s' startup parameters do not include expected port. The startup parameters are %v", exe.ObjectMeta.Name, updatedExe.Status.EffectiveArgs)
 
 	t.Logf("Ensure service exposed by Executable '%s' gets to Ready state...", exe.ObjectMeta.Name)
-	waitServiceReady(t, ctx, &svc)
+	waitServiceReady(t, ctx, svc.NamespacedName())
 }
 
 // Verify ports are injected into Executable using startup parameters and portForServing template function.
@@ -760,7 +761,7 @@ func TestExecutableServingPortAllocatedInjectedViaStartupParameter(t *testing.T)
 			Name:      "test-executable-serving-port-allocated-injected-startup-param",
 			Namespace: metav1.NamespaceNone,
 			// No address and no port information
-			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s"}]`, svc.ObjectMeta.Name)},
+			Annotations: map[string]string{commonapi.ServiceProducerAnnotation: fmt.Sprintf(`[{"serviceName":"%s"}]`, svc.ObjectMeta.Name)},
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/test-executable-serving-port-allocated-injected-startup-param",
@@ -809,7 +810,7 @@ func TestExecutableServingPortAllocatedInjectedViaStartupParameter(t *testing.T)
 	require.Equal(t, updatedExe.Status.EffectiveArgs[1], portStr, "The Executable '%s' startup parameters do not include expected port. The startup parameters are %v", exe.ObjectMeta.Name, updatedExe.Status.EffectiveArgs)
 
 	t.Logf("Ensure service exposed by Executable '%s' gets to Ready state...", exe.ObjectMeta.Name)
-	waitServiceReady(t, ctx, &svc)
+	waitServiceReady(t, ctx, svc.NamespacedName())
 }
 
 // Verify ports are injected into Executable using a combination of startup parameters and environment variables.
@@ -899,7 +900,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "test-executable-multiple-serving-ports-injected",
 			Namespace:   metav1.NamespaceNone,
-			Annotations: map[string]string{"service-producer": spAnn.String()},
+			Annotations: map[string]string{commonapi.ServiceProducerAnnotation: spAnn.String()},
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/test-executable-multiple-serving-ports-injected",
@@ -1028,7 +1029,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 
 	t.Logf("Ensure services exposed by Executable '%s' gets to Ready state...", exe.ObjectMeta.Name)
 	for _, svc := range services {
-		waitServiceReady(t, ctx, &svc)
+		waitServiceReady(t, ctx, svc.NamespacedName())
 	}
 }
 
@@ -1106,7 +1107,7 @@ func TestExecutablePortsInjectedAfterServiceCreated(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        testName,
 			Namespace:   metav1.NamespaceNone,
-			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s", "port":%d}]`, producedSvcName, 26020)},
+			Annotations: map[string]string{commonapi.ServiceProducerAnnotation: fmt.Sprintf(`[{"serviceName":"%s", "port":%d}]`, producedSvcName, 26020)},
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/" + testName,
@@ -1306,7 +1307,7 @@ func TestExecutableUsingAllInterfaceAddress(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:        "test-executable-using-all-interface-address-exe-" + tc.name,
 					Namespace:   metav1.NamespaceNone,
-					Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s", "address":"%s"}]`, svc.ObjectMeta.Name, tc.address)},
+					Annotations: map[string]string{commonapi.ServiceProducerAnnotation: fmt.Sprintf(`[{"serviceName":"%s", "address":"%s"}]`, svc.ObjectMeta.Name, tc.address)},
 				},
 				Spec: apiv1.ExecutableSpec{
 					ExecutablePath: "/path/to/test-executable-using-all-interface-address-exe-" + tc.name,
@@ -1332,7 +1333,7 @@ func TestExecutableUsingAllInterfaceAddress(t *testing.T) {
 			require.NoError(t, err, "Process could not be started")
 
 			t.Logf("Ensure service exposed by Executable '%s' gets to Ready state...", exe.ObjectMeta.Name)
-			updatedSvc := waitServiceReady(t, ctx, &svc)
+			updatedSvc := waitServiceReady(t, ctx, svc.NamespacedName())
 
 			t.Logf("Ensure that Service '%s' effective address and port are usable...", svc.ObjectMeta.Name)
 			require.True(t, tc.isUsableAddress(updatedSvc.Status.EffectiveAddress), "The Service '%s' effective address (%s) is not usable", svc.ObjectMeta.Name, updatedSvc.Status.EffectiveAddress)
@@ -1492,7 +1493,7 @@ func TestExecutableServingAddressInjected(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        testName + "-server",
 			Namespace:   metav1.NamespaceNone,
-			Annotations: map[string]string{"service-producer": spAnn.String()},
+			Annotations: map[string]string{commonapi.ServiceProducerAnnotation: spAnn.String()},
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/" + testName + "-server",
@@ -1560,7 +1561,7 @@ func TestExecutableServingAddressInjected(t *testing.T) {
 	)
 
 	t.Logf("Ensure service exposed by Executable '%s' gets to Ready state...", server.ObjectMeta.Name)
-	waitServiceReady(t, ctx, &svc)
+	waitServiceReady(t, ctx, svc.NamespacedName())
 }
 
 // Verify that all changes to the Executable status made by IDE executable runner are reflected in the Executable status.
@@ -3144,7 +3145,7 @@ func TestExecutableHttpHealthProbePortAllocatedAndInjected(t *testing.T) {
 			Name:      baseName + "-exe",
 			Namespace: metav1.NamespaceNone,
 			// No address and no port information
-			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s"}]`, svc.ObjectMeta.Name)},
+			Annotations: map[string]string{commonapi.ServiceProducerAnnotation: fmt.Sprintf(`[{"serviceName":"%s"}]`, svc.ObjectMeta.Name)},
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/" + baseName + "-exe",

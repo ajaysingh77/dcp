@@ -30,6 +30,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	internal_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
+	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
@@ -281,7 +282,7 @@ func TestContainerRuntimeUnhealthy(t *testing.T) {
 	// We are going to use a separate instance of the API server because we need to simulate container runtime being unhealthy,
 	// and that might interfere with other tests if we used the shared container orchestrator.
 
-	serverInfo, _, _, startupErr := StartTestEnvironment(ctx, ContainerController, t.Name(), NoSeparateWorkingDir, log)
+	serverInfo, _, startupErr := StartTestEnvironment(ctx, ContainerController, t.Name(), NoSeparateWorkingDir, log)
 	require.NoError(t, startupErr, "Failed to start the API server")
 
 	defer func() {
@@ -1109,7 +1110,7 @@ func TestContainerMultipleServingPortsInjected(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        testName,
 			Namespace:   metav1.NamespaceNone,
-			Annotations: map[string]string{"service-producer": spAnn.String()},
+			Annotations: map[string]string{commonapi.ServiceProducerAnnotation: spAnn.String()},
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
@@ -1161,7 +1162,7 @@ func TestContainerMultipleServingPortsInjected(t *testing.T) {
 
 	t.Logf("Ensure services exposed by Container '%s' get to Ready state...", ctr.ObjectMeta.Name)
 	for _, svc := range services {
-		waitServiceReady(t, ctx, &svc)
+		waitServiceReady(t, ctx, svc.NamespacedName())
 	}
 }
 
@@ -1200,7 +1201,7 @@ func TestContainerServingAddressInjected(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        testName + "-server",
 			Namespace:   metav1.NamespaceNone,
-			Annotations: map[string]string{"service-producer": spAnn.String()},
+			Annotations: map[string]string{commonapi.ServiceProducerAnnotation: spAnn.String()},
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: testName + "-image",
@@ -1247,7 +1248,7 @@ func TestContainerServingAddressInjected(t *testing.T) {
 	require.Equal(t, updatedCtr.Status.EffectiveArgs[0], expectedArg, "The Container '%s' startup parameters do not include expected address information for service '%s'. The startup parameters are %v", ctr.ObjectMeta.Name, svc.ObjectMeta.Name, updatedCtr.Status.EffectiveArgs)
 
 	t.Logf("Ensure service exposed by Container '%s' gets to Ready state...", ctr.ObjectMeta.Name)
-	waitServiceReady(t, ctx, &svc)
+	waitServiceReady(t, ctx, svc.NamespacedName())
 }
 
 func TestPersistentContainerDeletion(t *testing.T) {

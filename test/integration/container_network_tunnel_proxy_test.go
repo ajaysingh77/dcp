@@ -10,16 +10,21 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	stdproto "google.golang.org/protobuf/proto"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/dcppaths"
 	"github.com/microsoft/usvc-apiserver/internal/dcptun"
+	dcptunproto "github.com/microsoft/usvc-apiserver/internal/dcptun/proto"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	internal_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
+	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
@@ -37,8 +42,8 @@ func TestTunnelProxyCreateDelete(t *testing.T) {
 
 	// Use dedicated test environment because otherwise it is difficult to differentiate
 	// between different server proxy processes running in parallel tests.
-	includedControllers := NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, tpe, _, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
+	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
 	require.NoError(t, startupErr, "Failed to start the API server")
 
 	defer func() {
@@ -63,7 +68,7 @@ func TestTunnelProxyCreateDelete(t *testing.T) {
 	require.NoError(t, err, "Could not create a ContainerNetwork object")
 
 	const serverControlPort int32 = 12393
-	simulateServerProxy(t, serverControlPort, tpe)
+	simulateServerProxy(t, serverControlPort, teInfo.TestProcessExecutor)
 
 	tunnelProxy := apiv1.ContainerNetworkTunnelProxy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -74,8 +79,9 @@ func TestTunnelProxyCreateDelete(t *testing.T) {
 			ContainerNetworkName: network.ObjectMeta.Name,
 			Tunnels: []apiv1.TunnelConfiguration{
 				{
-					Name:       "test-tunnel",
-					ServerPort: 8080,
+					Name:              "test-tunnel",
+					ServerServiceName: "test-server-service",
+					ClientServiceName: "test-client-service",
 				},
 			},
 		},
@@ -111,8 +117,8 @@ func TestTunnelProxyDelayedNetworkCreation(t *testing.T) {
 	const testName = "test-tunnel-proxy-delayed-network-creation"
 	log := testutil.NewLogForTesting(t.Name())
 
-	includedControllers := NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, tpe, _, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
+	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
 	require.NoError(t, startupErr, "Failed to start the API server")
 
 	defer func() {
@@ -135,8 +141,9 @@ func TestTunnelProxyDelayedNetworkCreation(t *testing.T) {
 			ContainerNetworkName: testName + "-network",
 			Tunnels: []apiv1.TunnelConfiguration{
 				{
-					Name:       "test-tunnel",
-					ServerPort: 8080,
+					Name:              "test-tunnel",
+					ServerServiceName: "test-server-service",
+					ClientServiceName: "test-client-service",
 				},
 			},
 		},
@@ -153,7 +160,7 @@ func TestTunnelProxyDelayedNetworkCreation(t *testing.T) {
 	})
 
 	const serverControlPort int32 = 13299
-	simulateServerProxy(t, serverControlPort, tpe)
+	simulateServerProxy(t, serverControlPort, teInfo.TestProcessExecutor)
 
 	// Now create the ContainerNetwork that the tunnel proxy references
 	network := apiv1.ContainerNetwork{
@@ -183,8 +190,8 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	const testName = "test-tunnel-proxy-running-status"
 	log := testutil.NewLogForTesting(t.Name())
 
-	includedControllers := NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, tpe, _, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
+	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
 	require.NoError(t, startupErr, "Failed to start the API server")
 
 	defer func() {
@@ -209,7 +216,7 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	require.NoError(t, err, "Could not create a ContainerNetwork object")
 
 	const serverControlPort int32 = 26444
-	simulateServerProxy(t, serverControlPort, tpe)
+	simulateServerProxy(t, serverControlPort, teInfo.TestProcessExecutor)
 
 	tunnelProxy := apiv1.ContainerNetworkTunnelProxy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -220,8 +227,9 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 			ContainerNetworkName: network.ObjectMeta.Name,
 			Tunnels: []apiv1.TunnelConfiguration{
 				{
-					Name:       "test-tunnel",
-					ServerPort: 8080,
+					Name:              "test-tunnel",
+					ServerServiceName: "test-server-service",
+					ClientServiceName: "test-client-service",
 				},
 			},
 		},
@@ -267,7 +275,7 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	t.Log("Verifying server proxy process has been started...")
 	serverPid, pidErr := process.Int64_ToPidT(*updatedTunnelProxy.Status.ServerProxyProcessID)
 	require.NoError(t, pidErr, "Should be able to convert process ID")
-	pe, found := tpe.FindByPid(serverPid)
+	pe, found := teInfo.TestProcessExecutor.FindByPid(serverPid)
 	require.True(t, found, "Should find server proxy process in test process executor")
 
 	t.Log("Verifying server proxy process has correct launch arguments...")
@@ -288,8 +296,8 @@ func TestTunnelProxyCleanup(t *testing.T) {
 	const testName = "test-tunnel-proxy-cleanup"
 	log := testutil.NewLogForTesting(t.Name())
 
-	controllers := NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, tpe, _, startupErr := StartTestEnvironment(ctx, controllers, t.Name(), t.TempDir(), log)
+	controllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, controllers, t.Name(), t.TempDir(), log)
 	require.NoError(t, startupErr, "Failed to start the API server")
 
 	defer func() {
@@ -314,7 +322,7 @@ func TestTunnelProxyCleanup(t *testing.T) {
 	require.NoError(t, err, "Could not create a ContainerNetwork object")
 
 	const serverControlPort int32 = 34567
-	simulateServerProxy(t, serverControlPort, tpe)
+	simulateServerProxy(t, serverControlPort, teInfo.TestProcessExecutor)
 
 	tunnelProxy := apiv1.ContainerNetworkTunnelProxy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -325,8 +333,9 @@ func TestTunnelProxyCleanup(t *testing.T) {
 			ContainerNetworkName: network.ObjectMeta.Name,
 			Tunnels: []apiv1.TunnelConfiguration{
 				{
-					Name:       "test-tunnel",
-					ServerPort: 8080,
+					Name:              "test-tunnel",
+					ServerServiceName: "test-server-service",
+					ClientServiceName: "test-client-service",
 				},
 			},
 		},
@@ -377,9 +386,157 @@ func TestTunnelProxyCleanup(t *testing.T) {
 	require.ErrorIs(t, inspectErrAfter, containers.ErrNotFound, "Client proxy container should have been removed")
 
 	// For the server process, verify that it was stopped by checking if it has finished in the test process executor
-	processExecution, processFound := tpe.FindByPid(process.Pid_t(*serverProcessID))
+	processExecution, processFound := teInfo.TestProcessExecutor.FindByPid(process.Pid_t(*serverProcessID))
 	require.True(t, processFound, "Server proxy process should be found in test process executor")
 	require.True(t, processExecution.Finished(), "Server proxy process should have been stopped")
+}
+
+// Verifies that a tunnel proxy can be created with a single tunnel, and that this tunnel gets successfully prepared.
+func TestTunnelProxyTunnelCreate(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	dcppaths.EnableTestPathProbing()
+	const testName = "test-tunnel-proxy-tunnel-management"
+	log := testutil.NewLogForTesting(t.Name())
+
+	includedControllers := NetworkController | ContainerNetworkTunnelProxyController | ServiceController
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
+	require.NoError(t, startupErr, "Failed to start the API server")
+
+	defer func() {
+		cancel()
+		select {
+		case <-serverInfo.ApiServerDisposalComplete.Wait():
+		case <-time.After(5 * time.Second):
+			t.Error("Test API server failed to shut down cleanly")
+		}
+	}()
+
+	network := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-network",
+			Namespace: metav1.NamespaceNone,
+		},
+	}
+
+	t.Logf("Creating ContainerNetwork object '%s'", network.ObjectMeta.Name)
+	err := serverInfo.Client.Create(ctx, &network)
+	require.NoError(t, err, "Could not create a ContainerNetwork object")
+
+	const serverControlPort int32 = 32965
+	simulateServerProxy(t, serverControlPort, teInfo.TestProcessExecutor)
+
+	const tunnelCount = 1
+	const serverServicePort int32 = 28270
+	ts := prepareTunnelServices(t, ctx, serverInfo.Client, teInfo.TestTunnelControlClient, 1, testName, serverServicePort)
+	tunnelData := ts[0]
+
+	t.Logf("Creating ContainerNetworkTunnelProxy object '%s'...", testName)
+	tunnelProxy := apiv1.ContainerNetworkTunnelProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerNetworkTunnelProxySpec{
+			ContainerNetworkName: network.ObjectMeta.Name,
+			Tunnels: []apiv1.TunnelConfiguration{
+				{
+					Name:              tunnelData.tunnelName,
+					ServerServiceName: tunnelData.serverServiceName,
+					ClientServiceName: tunnelData.clientServiceName,
+				},
+			},
+		},
+	}
+	err = serverInfo.Client.Create(ctx, &tunnelProxy)
+	require.NoError(t, err, "Could not create a ContainerNetworkTunnelProxy object")
+
+	t.Logf("Waiting for ContainerNetworkTunnelProxy '%s' to transition to Running state and complete tunnel preparation...", tunnelProxy.ObjectMeta.Name)
+	updatedProxy := waitAllTunnelsReady(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), tunnelCount)
+
+	validateTunnel(t, ctx, updatedProxy.Status.TunnelStatuses[0], tunnelData, serverInfo.Client, teInfo.TestTunnelControlClient)
+}
+
+// Verifies that multiple tunnels can be created and deleted for a single ContainerNetworkTunnelProxy object.
+func TestTunnelProxyMultipleTunnels(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	dcppaths.EnableTestPathProbing()
+	const testName = "test-tunnel-proxy-multiple-tunnels"
+	log := testutil.NewLogForTesting(t.Name())
+
+	includedControllers := NetworkController | ContainerNetworkTunnelProxyController | ServiceController
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
+	require.NoError(t, startupErr, "Failed to start the API server")
+
+	defer func() {
+		cancel()
+		select {
+		case <-serverInfo.ApiServerDisposalComplete.Wait():
+		case <-time.After(5 * time.Second):
+			// Best effort; mirror pattern from other tests
+		}
+	}()
+
+	// Create network referenced by tunnel proxy
+	network := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-network",
+			Namespace: metav1.NamespaceNone,
+		},
+	}
+	t.Logf("Creating ContainerNetwork object '%s'", network.ObjectMeta.Name)
+	networkCreateErr := serverInfo.Client.Create(ctx, &network)
+	require.NoError(t, networkCreateErr, "Could not create a ContainerNetwork object")
+
+	// Simulate server proxy process (single process handles tunnel preparation control plane)
+	const serverControlPort int32 = 45890
+	simulateServerProxy(t, serverControlPort, teInfo.TestProcessExecutor)
+
+	const tunnelCount = 3
+	const serverServicePortRangeStart int32 = 40110
+	tunnelData := prepareTunnelServices(t, ctx, serverInfo.Client, teInfo.TestTunnelControlClient, tunnelCount, testName, serverServicePortRangeStart)
+
+	// Create ContainerNetworkTunnelProxy with multiple tunnels
+	tunnelProxy := apiv1.ContainerNetworkTunnelProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerNetworkTunnelProxySpec{
+			ContainerNetworkName: network.ObjectMeta.Name,
+			Tunnels: func() []apiv1.TunnelConfiguration {
+				cfgs := make([]apiv1.TunnelConfiguration, 0, tunnelCount)
+				for _, tunnel := range tunnelData {
+					cfgs = append(cfgs, apiv1.TunnelConfiguration{
+						Name:              tunnel.tunnelName,
+						ServerServiceName: tunnel.serverServiceName,
+						ClientServiceName: tunnel.clientServiceName,
+					})
+				}
+				return cfgs
+			}(),
+		},
+	}
+	t.Logf("Creating ContainerNetworkTunnelProxy '%s' with %d tunnels...", tunnelProxy.ObjectMeta.Name, tunnelCount)
+	createProxyErr := serverInfo.Client.Create(ctx, &tunnelProxy)
+	require.NoError(t, createProxyErr, "Could not create a ContainerNetworkTunnelProxy object")
+
+	// Wait for all tunnels to reach Ready state
+	t.Logf("Waiting for ContainerNetworkTunnelProxy '%s' to be Running with %d ready tunnels...", tunnelProxy.ObjectMeta.Name, tunnelCount)
+	updatedProxy := waitAllTunnelsReady(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), tunnelCount)
+
+	statusByName := maps.SliceToMap(updatedProxy.Status.TunnelStatuses, apiv1.TunnelStatus.KV)
+	require.Len(t, statusByName, tunnelCount, "Should have status entries for all tunnels")
+
+	// Validate each tunnel prepared & endpoint created
+	for _, td := range tunnelData {
+		ts, found := statusByName[td.tunnelName]
+		require.True(t, found, "Missing status for tunnel '%s'", td.tunnelName)
+		validateTunnel(t, ctx, ts, td, serverInfo.Client, teInfo.TestTunnelControlClient)
+	}
 }
 
 // The tunnel controller will try to create a server-side proxy
@@ -410,5 +567,154 @@ func simulateServerProxy(
 			<-pe.Signal
 			return 0
 		},
+	})
+}
+
+type testTunnelData struct {
+	tunnelName                  string
+	serverServiceName           string
+	clientServiceName           string
+	clientServiceNamespacedName types.NamespacedName
+	fingerprint                 dcptunproto.TunnelRequestFingerprint
+}
+
+// Creates Services, Endpoints, and prepares tunnel control client
+// to simulate multiple tunnels for testing.
+func prepareTunnelServices(
+	t *testing.T,
+	ctx context.Context,
+	apiClient ctrl_client.Client,
+	tunnelControlClient *ctrl_testutil.TestTunnelControlClient,
+	count int,
+	testName string,
+	serverServicePortRangeStart int32,
+) []testTunnelData {
+	var tunnels []testTunnelData
+
+	for i := 0; i < count; i++ {
+		tunnelName := fmt.Sprintf("%s-tunnel-%d", testName, i)
+		serverSvcName := fmt.Sprintf("%s-server-service-%d", testName, i)
+		clientSvcName := fmt.Sprintf("%s-client-service-%d", testName, i)
+		serverEndpointName := fmt.Sprintf("%s-server-endpoint-%d", testName, i)
+		serverServicePort := serverServicePortRangeStart + int32(i)
+
+		// Server Service (proxyless address allocation)
+		serverSvc := apiv1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      serverSvcName,
+				Namespace: metav1.NamespaceNone,
+			},
+			Spec: apiv1.ServiceSpec{
+				Protocol:              apiv1.TCP,
+				AddressAllocationMode: apiv1.AddressAllocationModeProxyless,
+			},
+		}
+		t.Logf("Creating server Service '%s' for tunnel %d", serverSvcName, i)
+		createServerSvcErr := apiClient.Create(ctx, &serverSvc)
+		require.NoError(t, createServerSvcErr, "Could not create server Service '%s'", serverSvcName)
+
+		// Server Endpoint (represents server-side listening port)
+		serverEndpoint := apiv1.Endpoint{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      serverEndpointName,
+				Namespace: metav1.NamespaceNone,
+			},
+			Spec: apiv1.EndpointSpec{
+				ServiceName:      serverSvc.ObjectMeta.Name,
+				ServiceNamespace: serverSvc.ObjectMeta.Namespace,
+				Address:          networking.IPv4LocalhostDefaultAddress,
+				Port:             serverServicePort,
+			},
+		}
+		t.Logf("Creating server Endpoint '%s' for tunnel %d", serverEndpointName, i)
+		createServerEndpointErr := apiClient.Create(ctx, &serverEndpoint)
+		require.NoError(t, createServerEndpointErr, "Could not create server Endpoint '%s'", serverEndpointName)
+
+		// Not waiting for server Service to become ready because the tunnel proxy controller SHOULD handle that internally.
+
+		// Client Service
+		clientSvc := apiv1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      clientSvcName,
+				Namespace: metav1.NamespaceNone,
+			},
+			Spec: apiv1.ServiceSpec{Protocol: apiv1.TCP},
+		}
+		t.Logf("Creating client Service '%s' for tunnel %d", clientSvcName, i)
+		createClientSvcErr := apiClient.Create(ctx, &clientSvc)
+		require.NoError(t, createClientSvcErr, "Could not create client Service '%s'", clientSvcName)
+
+		// Enable tunnel in test control client so controller can prepare it
+		tunnelSpec := &dcptunproto.TunnelSpec{
+			ServerAddress: stdproto.String(networking.IPv4LocalhostDefaultAddress),
+			ServerPort:    stdproto.Int32(serverServicePort),
+		}
+		fingerprint := ctrl_testutil.TestFingerprint(tunnelSpec)
+		tunnelControlClient.EnableTunnel(tunnelSpec)
+
+		// Add tunnel data to slice
+		tunnels = append(tunnels, testTunnelData{
+			tunnelName:                  tunnelName,
+			serverServiceName:           serverSvcName,
+			clientServiceName:           clientSvcName,
+			clientServiceNamespacedName: clientSvc.NamespacedName(),
+			fingerprint:                 fingerprint,
+		})
+	}
+
+	return tunnels
+}
+
+func validateTunnel(
+	t *testing.T,
+	ctx context.Context,
+	ts apiv1.TunnelStatus,
+	td testTunnelData,
+	apiClient ctrl_client.Client,
+	tunnelControlClient *ctrl_testutil.TestTunnelControlClient,
+) {
+	require.False(t, ts.Timestamp.IsZero(), "Tunnel '%s' should have timestamp", td.tunnelName)
+	require.ElementsMatch(t, ts.ClientProxyAddresses, []string{networking.IPv4LocalhostDefaultAddress}, "Tunnel '%s' should have expected client proxy address", td.tunnelName)
+
+	// Verify tunnel spec recorded by control client has a valid ID and matches status
+	updatedTunnelSpec := tunnelControlClient.GetTunnelSpec(td.fingerprint)
+	require.NotNil(t, updatedTunnelSpec, "Tunnel spec should exist for '%s'", td.tunnelName)
+	id := updatedTunnelSpec.GetTunnelRef().GetTunnelId()
+	require.True(t, id > ctrl_testutil.InvalidTunnelID, "Tunnel '%s' should have valid tunnel ID", td.tunnelName)
+	require.Equal(t, id, ts.TunnelID, "Tunnel '%s' status should have matching tunnel ID", td.tunnelName)
+
+	// Verify client service endpoint exists and port matches status.ClientProxyPort
+	t.Logf("Verifying client Service endpoint for tunnel '%s' (service '%s')...", td.tunnelName, td.clientServiceName)
+	clientEndpoint := waitEndpointExistsEx(t, ctx, apiClient, "could not find endpoint for service "+td.clientServiceName, func(e *apiv1.Endpoint) (bool, error) {
+		return e.Spec.ServiceName == td.clientServiceName, nil
+	})
+	require.Equal(t, clientEndpoint.Spec.Port, ts.ClientProxyPort, "Client service endpoint should have expected port for tunnel '%s'", td.tunnelName)
+
+	t.Logf("Waiting for Service '%s' to become ready...", td.clientServiceName)
+	_ = waitServiceReadyEx(t, ctx, apiClient, td.clientServiceNamespacedName)
+}
+
+func waitAllTunnelsReady(
+	t *testing.T,
+	ctx context.Context,
+	apiClient ctrl_client.Client,
+	tunnelProxyName types.NamespacedName,
+	expectedCount int,
+) *apiv1.ContainerNetworkTunnelProxy {
+	return waitObjectAssumesStateEx(t, ctx, apiClient, tunnelProxyName, func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+		if tp.Status.State != apiv1.ContainerNetworkTunnelProxyStateRunning {
+			return false, nil
+		}
+
+		// Make sure we have ONLY expectedCount tunnels before checking whether they are all ready
+		if len(tp.Status.TunnelStatuses) != expectedCount {
+			return false, nil
+		}
+
+		allReady := slices.All(tp.Status.TunnelStatuses, func(ts apiv1.TunnelStatus) bool {
+			return ts.State == apiv1.TunnelStateReady
+		})
+
+		return allReady, nil
 	})
 }

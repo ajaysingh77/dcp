@@ -10,13 +10,23 @@ import (
 )
 
 const (
-	serviceProducerAnnotation = "service-producer"
+	ServiceProducerAnnotation = "service-producer"
 )
 
+// DynamicServiceProducer is an object for which the set of produced services can change at run time.
+type DynamicServiceProducer interface {
+	ServicesProduced() []ServiceProducer
+}
+
 func GetServiceProducersForObject(owner DcpModelObject, log logr.Logger) ([]ServiceProducer, error) {
+	dsp, isDsp := owner.(DynamicServiceProducer)
+	if isDsp {
+		return dsp.ServicesProduced(), nil
+	}
+
 	annotations := owner.GetAnnotations()
 
-	spa, found := annotations[serviceProducerAnnotation]
+	spa, found := annotations[ServiceProducerAnnotation]
 	if !found {
 		return nil, nil
 	}

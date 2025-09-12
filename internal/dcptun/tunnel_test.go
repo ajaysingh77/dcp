@@ -216,6 +216,79 @@ func TestTunnelDataThroughput(t *testing.T) {
 	}
 }
 
+// Verifies that multiple calls to PrepareTunnel with the same parameters are idempotent.
+// That is, the same combination of (server address, server port, client proxy address, client proxy port)
+// passed as TunnelReq to PrepareTunnel() results in the same TunnelID.
+func TestTunnelPreparationIdempotency(t *testing.T) {
+	t.Parallel()
+
+	const testTimeout = 30 * time.Second
+	ctx, cancelFunc := testutil.GetTestContext(t, testTimeout)
+	defer cancelFunc()
+	log := testutil.NewLogForTesting(t.Name())
+
+	serverProxyClient, proxyCleanup := createProxyPair(t, ctx, log)
+	defer proxyCleanup()
+
+	const testServerPort = 29307 // Value does not matter, just need a reasonable port number.
+
+	// Define the same tunnel request parameters
+	tunnelReq := &proto.TunnelReq{
+		ServerAddress:      stdproto.String(networking.IPv4LocalhostDefaultAddress),
+		ServerPort:         stdproto.Int32(int32(testServerPort)),
+		ClientProxyAddress: stdproto.String(networking.IPv4LocalhostDefaultAddress),
+		ClientProxyPort:    stdproto.Int32(8080), // Use a fixed port instead of auto-allocate for idempotency
+	}
+
+	// Call PrepareTunnel multiple times with the same parameters
+	var tunnelSpecs []*proto.TunnelSpec
+	const repeatedCalls = 5
+	for i := 0; i < repeatedCalls; i++ {
+		tunnelSpec, prepareTunnelErr := serverProxyClient.PrepareTunnel(ctx, tunnelReq)
+		require.NoError(t, prepareTunnelErr, "PrepareTunnel call %d failed", i+1)
+		require.NotNil(t, tunnelSpec, "TunnelSpec is nil for call %d", i+1)
+		tunnelSpecs = append(tunnelSpecs, tunnelSpec)
+	}
+
+	// Verify that all calls returned the same TunnelID
+	baseTunnelId := tunnelSpecs[0].GetTunnelRef().GetTunnelId()
+	for i, spec := range tunnelSpecs[1:] {
+		require.Equal(t, baseTunnelId, spec.GetTunnelRef().GetTunnelId(),
+			"TunnelID from call %d does not match the first call", i+2)
+	}
+
+	// Also verify that the tunnel specs are functionally equivalent
+	for i, spec := range tunnelSpecs[1:] {
+		require.True(t, tunnelSpecs[0].Same(spec),
+			"TunnelSpec from call %d is not equivalent to the first call", i+2)
+	}
+
+	// Test that a tunnel with different parameters gets a different TunnelID
+	differentTunnelReq := &proto.TunnelReq{
+		ServerAddress:      stdproto.String(networking.IPv4LocalhostDefaultAddress),
+		ServerPort:         stdproto.Int32(int32(testServerPort)),
+		ClientProxyAddress: stdproto.String(networking.IPv4LocalhostDefaultAddress),
+		ClientProxyPort:    stdproto.Int32(8081), // Different port
+	}
+
+	differentTunnelSpec, prepareDifferentErr := serverProxyClient.PrepareTunnel(ctx, differentTunnelReq)
+	require.NoError(t, prepareDifferentErr)
+	require.NotNil(t, differentTunnelSpec)
+
+	// Verify that the different tunnel has a different ID
+	require.NotEqual(t, baseTunnelId, differentTunnelSpec.GetTunnelRef().GetTunnelId(),
+		"Different tunnel parameters should result in different TunnelID")
+
+	// Clean up tunnels
+	tunnelRef := &proto.TunnelRef{TunnelId: tunnelSpecs[0].TunnelRef.TunnelId}
+	_, tunnelDeleteErr := serverProxyClient.DeleteTunnel(ctx, tunnelRef)
+	require.NoError(t, tunnelDeleteErr)
+
+	differentTunnelRef := &proto.TunnelRef{TunnelId: differentTunnelSpec.TunnelRef.TunnelId}
+	_, differentTunnelDeleteErr := serverProxyClient.DeleteTunnel(ctx, differentTunnelRef)
+	require.NoError(t, differentTunnelDeleteErr)
+}
+
 // Runs single round trip to the echo server.
 func doRoundTrip(testContext context.Context, address string, port int32, timeout time.Duration, getMessage func() []byte) error {
 	testMessage := getMessage()

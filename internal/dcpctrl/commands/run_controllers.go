@@ -18,6 +18,7 @@ import (
 	container_flags "github.com/microsoft/usvc-apiserver/internal/containers/flags"
 	"github.com/microsoft/usvc-apiserver/internal/containers/runtimes"
 	"github.com/microsoft/usvc-apiserver/internal/dcpclient"
+	dcptunproto "github.com/microsoft/usvc-apiserver/internal/dcptun/proto"
 	"github.com/microsoft/usvc-apiserver/internal/exerunners"
 	"github.com/microsoft/usvc-apiserver/internal/health"
 	"github.com/microsoft/usvc-apiserver/internal/notifications"
@@ -246,8 +247,9 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			mgr.GetClient(),
 			mgr.GetAPIReader(),
 			controllers.ContainerNetworkTunnelProxyReconcilerConfig{
-				Orchestrator:    containerOrchestrator,
-				ProcessExecutor: processExecutor,
+				Orchestrator:            containerOrchestrator,
+				ProcessExecutor:         processExecutor,
+				MakeTunnelControlClient: dcptunproto.NewTunnelControlClient,
 			},
 			log.WithName("TunnelProxyReconciler"),
 		)
