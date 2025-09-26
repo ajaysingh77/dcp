@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+
 package pointers
 
 // Checks if the values pointed to by two pointers are equal. If either pointer is nil, returns true if both are nil.

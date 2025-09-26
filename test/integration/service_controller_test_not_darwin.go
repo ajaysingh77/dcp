@@ -1,5 +1,7 @@
 //go:build !darwin
 
+// Copyright (c) Microsoft Corporation. All rights reserved.
+
 package integration_test
 
 import (

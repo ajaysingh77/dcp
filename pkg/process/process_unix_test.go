@@ -1,5 +1,7 @@
 //go:build !windows
 
+// Copyright (c) Microsoft Corporation. All rights reserved.
+
 package process_test
 
 import (

@@ -1,5 +1,7 @@
 //go:build !windows && !darwin
 
+// Copyright (c) Microsoft Corporation. All rights reserved.
+
 package networking
 
 import (

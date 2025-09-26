@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+
 // Package syncmap is a generic wrapper over standard library sync.Map
 
 package syncmap

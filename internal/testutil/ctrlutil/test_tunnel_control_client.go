@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+
 package ctrlutil
 
 // An implementation of TunnelControlClient for testing purposes.
