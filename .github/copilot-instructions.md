@@ -55,6 +55,10 @@ Place new code in the correct location according to the project's structure:
 - Use `OpenFile()`, or (for temporary files) `OpenTempFile()` functions from github.com/microsoft/usvc-apiserver/pkg/io package to open files. This function takes care of using appropriate file permissions in a cross-platform way.
 - Always close files after no longer needed, either by calling `Close()` from the method that opened the file (with `defer` statement), or when the lifetime context.Context of the file owner expires.
 
+## Code generation
+- Run `make generate` after making changes to API definitions (files under `api/v1` folder).
+- Run `make generate-grpc` after making changes to protobuf definitions (files with `.proto` extension).
+
 
 # Working inside the repository
 

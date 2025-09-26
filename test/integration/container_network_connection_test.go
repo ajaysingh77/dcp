@@ -222,3 +222,83 @@ func TestContainerNetworkDoesNotStartUntilNetworkExists(t *testing.T) {
 	})
 	require.True(t, found)
 }
+
+// Ensures that network aliases are applied to containers if Container Spec requests them
+func TestContainerNetworkWithAliases(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "test-container-multiple-networks-aliases"
+
+	net1 := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-net1",
+			Namespace: metav1.NamespaceNone,
+		},
+	}
+
+	net2 := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-net2",
+			Namespace: metav1.NamespaceNone,
+		},
+	}
+
+	t.Logf("Creating ContainerNetwork objects '%s' and '%s'", net1.ObjectMeta.Name, net2.ObjectMeta.Name)
+	err := client.Create(ctx, &net1)
+	require.NoError(t, err, "could not create first ContainerNetwork object")
+
+	err = client.Create(ctx, &net2)
+	require.NoError(t, err, "could not create second ContainerNetwork object")
+
+	updatedNetwork1 := ensureNetworkCreated(t, ctx, &net1)
+	updatedNetwork2 := ensureNetworkCreated(t, ctx, &net2)
+
+	const imageName = testName + "-image"
+
+	aliases1 := []string{"web", "frontend"}
+	aliases2 := []string{"api", "backend"}
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+			Networks: &[]apiv1.ContainerNetworkConnectionConfig{
+				{
+					Name:    testName + "-net1",
+					Aliases: aliases1,
+				},
+				{
+					Name:    testName + "-net2",
+					Aliases: aliases2,
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Container object '%s' with multiple networks and aliases", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container object")
+
+	_, inspectedContainer := ensureContainerRunning(t, ctx, &ctr)
+
+	var foundNetwork1, foundNetwork2 *containers.InspectedContainerNetwork
+	for _, network := range inspectedContainer.Networks {
+		switch network.Name {
+		case updatedNetwork1.Status.NetworkName:
+			foundNetwork1 = &network
+		case updatedNetwork2.Status.NetworkName:
+			foundNetwork2 = &network
+		}
+	}
+
+	require.NotNil(t, foundNetwork1, "Expected to find network %s in container networks", updatedNetwork1.Status.NetworkName)
+	require.NotNil(t, foundNetwork2, "Expected to find network %s in container networks", updatedNetwork2.Status.NetworkName)
+
+	require.Equal(t, aliases1, foundNetwork1.Aliases, "Network 1 aliases should match expected values")
+	require.Equal(t, aliases2, foundNetwork2.Aliases, "Network 2 aliases should match expected values")
+}

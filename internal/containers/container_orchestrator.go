@@ -205,6 +205,9 @@ type InspectedContainerNetwork struct {
 
 	// Gateway for the container on this network
 	Gateway string `json:"Gateway,omitempty"`
+
+	// Aliases of the container on this network
+	Aliases []string `json:"Aliases,omitempty"`
 }
 
 type InspectContainersOptions struct {
@@ -269,6 +272,13 @@ type CreateContainerOptions struct {
 	// Note: ContainerSpec.Networks specifies which networks the container will be connected to eventually,
 	//       but that property should not be used at creation time.
 	Network string
+
+	// Network aliases to use for the container _at creation time_.
+	// This is only valid if Network is also specified.
+	//
+	// Note: ContainerSpec.Networks can include network alias information, but that applies to networks
+	//	     that the container will be connected to eventually, and not at creation time.
+	NetworkAliases []string
 
 	// Healthcheck configuration for the container
 	// This is currently only used for testing purposes

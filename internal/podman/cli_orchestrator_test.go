@@ -60,6 +60,7 @@ func TestInspectedContainerDeserialization(t *testing.T) {
 			IPAddress:  "10.88.0.8",
 			Gateway:    "10.88.0.1",
 			MacAddress: "62:c3:4c:66:23:d3",
+			Aliases:    []string{"cf5947988412"},
 		},
 	}, ct.Networks)
 }

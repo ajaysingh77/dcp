@@ -1,11 +1,13 @@
 package integration_test
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	std_slices "slices"
 	"testing"
 	"time"
 
@@ -613,7 +615,7 @@ func TestTunnelProxyServerServiceTransition(t *testing.T) {
 	})
 
 	t.Logf("Waiting for tunnel '%s' to be cleaned up due to server Service being NotReady...", tunnelData.tunnelName)
-	validateTunnelDeleted(t, ctx, tunnelData, serverInfo.Client, teInfo.TestTunnelControlClient)
+	validateTunnelDeleted(t, ctx, serverInfo.Client, tunnelData, teInfo.TestTunnelControlClient)
 
 	t.Logf("Verifying ContainerNetworkTunnelProxy '%s' tunnel is no longer ready...", tunnelProxy.ObjectMeta.Name)
 	_ = waitObjectAssumesStateEx(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
@@ -747,7 +749,81 @@ func TestTunnelProxyMultipleTunnels(t *testing.T) {
 	_ = waitAllTunnelsReady(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), tunnelCount-1)
 
 	t.Logf("Verifying tunnel '%s' has been cleaned up...", tunnelToDelete.tunnelName)
-	validateTunnelDeleted(t, ctx, tunnelToDelete, serverInfo.Client, teInfo.TestTunnelControlClient)
+	validateTunnelDeleted(t, ctx, serverInfo.Client, tunnelToDelete, teInfo.TestTunnelControlClient)
+}
+
+// Verifies that client-side proxy container is created with specified aliases when requested.
+func TestTunnelProxyClientProxyAliases(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	dcppaths.EnableTestPathProbing()
+	const testName = "test-tunnel-proxy-client-proxy-aliases"
+	log := testutil.NewLogForTesting(t.Name())
+
+	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
+	require.NoError(t, startupErr, "Failed to start the API server")
+
+	defer func() {
+		cancel()
+
+		// Wait for the API server cleanup to complete.
+		select {
+		case <-serverInfo.ApiServerDisposalComplete.Wait():
+		case <-time.After(5 * time.Second):
+		}
+	}()
+
+	network := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-network",
+			Namespace: metav1.NamespaceNone,
+		},
+	}
+
+	t.Logf("Creating ContainerNetwork object '%s'", network.ObjectMeta.Name)
+	err := serverInfo.Client.Create(ctx, &network)
+	require.NoError(t, err, "Could not create a ContainerNetwork object")
+
+	const serverControlPort int32 = 14993
+	simulateServerProxy(t, serverControlPort, teInfo.TestProcessExecutor)
+
+	expectedAliases := []string{"web", "frontend", "proxy"}
+
+	tunnelProxy := apiv1.ContainerNetworkTunnelProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerNetworkTunnelProxySpec{
+			ContainerNetworkName: network.ObjectMeta.Name,
+			Aliases:              expectedAliases,
+		},
+	}
+
+	t.Logf("Creating ContainerNetworkTunnelProxy object '%s' with aliases %v", tunnelProxy.ObjectMeta.Name, expectedAliases)
+	err = serverInfo.Client.Create(ctx, &tunnelProxy)
+	require.NoError(t, err, "Could not create a ContainerNetworkTunnelProxy object")
+
+	t.Log("Waiting for ContainerNetworkTunnelProxy to transition to Running state...")
+	updatedTunnelProxy := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+		return tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateRunning && tp.Status.ClientProxyContainerID != "", nil
+	})
+
+	require.NotEmpty(t, updatedTunnelProxy.Status.ClientProxyContainerID, "Client proxy container ID should be set")
+	require.NotEmpty(t, updatedTunnelProxy.Status.ClientProxyContainerImage, "Client proxy container image should be set")
+
+	t.Log("Inspecting client proxy container...")
+	inspected, inspectErr := serverInfo.ContainerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedTunnelProxy.Status.ClientProxyContainerID},
+	})
+	require.NoError(t, inspectErr, "Could not inspect client proxy container")
+	require.Len(t, inspected, 1, "Expected exactly one inspected container")
+
+	clientProxyContainer := inspected[0]
+	require.Equal(t, containers.ContainerStatusRunning, clientProxyContainer.Status, "Client proxy container should be running")
+	require.ElementsMatch(t, sorted(expectedAliases), sorted(clientProxyContainer.Networks[0].Aliases))
 }
 
 // The tunnel controller will try to create a server-side proxy
@@ -910,8 +986,8 @@ func validateTunnel(
 func validateTunnelDeleted(
 	t *testing.T,
 	ctx context.Context,
-	td testTunnelData,
 	apiClient ctrl_client.Client,
+	td testTunnelData,
 	tunnelControlClient *ctrl_testutil.TestTunnelControlClient,
 ) {
 	pollInterval := 200 * time.Millisecond
@@ -977,4 +1053,10 @@ func waitForTunnelFailure(
 
 		return false, nil
 	})
+}
+
+func sorted[S ~[]E, E cmp.Ordered](s S) S {
+	result := std_slices.Clone(s)
+	std_slices.Sort(result)
+	return result
 }

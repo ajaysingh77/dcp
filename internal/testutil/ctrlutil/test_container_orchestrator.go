@@ -631,21 +631,22 @@ type TestContainerPortConfig struct {
 
 type testContainer struct {
 	withId
-	Image       string                               `json:"image"`
-	CreatedAt   time.Time                            `json:"createdAt,omitempty"`
-	StartedAt   time.Time                            `json:"startedAt,omitempty"`
-	FinishedAt  time.Time                            `json:"finishedAt,omitempty"`
-	Status      containers.ContainerStatus           `json:"status"`
-	ExitCode    int32                                `json:"exitCode,omitempty"`
-	Ports       map[string][]TestContainerPortConfig `json:"ports,omitempty"`
-	Networks    []string                             `json:"networks,omitempty"`
-	Args        []string                             `json:"args,omitempty"`
-	Env         map[string]string                    `json:"env,omitempty"`
-	Labels      map[string]string                    `json:"labels,omitempty"`
-	Health      *containers.InspectedContainerHealth `json:"health,omitempty"`
-	healthcheck containers.ContainerHealthcheck
-	stdoutLog   *testutil.BufferWriter
-	stderrLog   *testutil.BufferWriter
+	Image          string                               `json:"image"`
+	CreatedAt      time.Time                            `json:"createdAt,omitempty"`
+	StartedAt      time.Time                            `json:"startedAt,omitempty"`
+	FinishedAt     time.Time                            `json:"finishedAt,omitempty"`
+	Status         containers.ContainerStatus           `json:"status"`
+	ExitCode       int32                                `json:"exitCode,omitempty"`
+	Ports          map[string][]TestContainerPortConfig `json:"ports,omitempty"`
+	Networks       []string                             `json:"networks,omitempty"`
+	NetworkAliases map[string][]string                  `json:"networkAliases,omitempty"`
+	Args           []string                             `json:"args,omitempty"`
+	Env            map[string]string                    `json:"env,omitempty"`
+	Labels         map[string]string                    `json:"labels,omitempty"`
+	Health         *containers.InspectedContainerHealth `json:"health,omitempty"`
+	healthcheck    containers.ContainerHealthcheck
+	stdoutLog      *testutil.BufferWriter
+	stderrLog      *testutil.BufferWriter
 }
 
 type testImage struct {
@@ -919,11 +920,16 @@ func (to *TestContainerOrchestrator) InspectNetworks(ctx context.Context, option
 				var connectedContainers []containers.InspectedNetworkContainer
 
 				for _, id := range network.containers {
-					if _, containerFound := to.containers[id]; containerFound {
-						connectedContainers = append(connectedContainers, containers.InspectedNetworkContainer{
-							Id:   id,
-							Name: to.containers[id].Name,
-						})
+					if container, containerFound := to.containers[id]; containerFound {
+						// Strange but true: network inspection will not include connected containers that are not running or paused.
+						// This is the case for both Docker and Podman.
+						// Container inspection for the same container will report they are connected to the network.
+						if container.Status == containers.ContainerStatusRunning || container.Status == containers.ContainerStatusPaused {
+							connectedContainers = append(connectedContainers, containers.InspectedNetworkContainer{
+								Id:   id,
+								Name: to.containers[id].Name,
+							})
+						}
 					}
 				}
 
@@ -969,7 +975,7 @@ func (to *TestContainerOrchestrator) ConnectNetwork(ctx context.Context, options
 		if network.matches(options.Network) {
 			for _, container := range to.containers {
 				if container.matches(options.Container) {
-					return to.doConnectNetwork(ctx, network, container)
+					return to.doConnectNetwork(ctx, network, container, options)
 				}
 			}
 
@@ -980,7 +986,7 @@ func (to *TestContainerOrchestrator) ConnectNetwork(ctx context.Context, options
 	return errors.Join(containers.ErrNotFound, fmt.Errorf("network not found"))
 }
 
-func (to *TestContainerOrchestrator) doConnectNetwork(ctx context.Context, network *containerNetwork, container *testContainer) error {
+func (to *TestContainerOrchestrator) doConnectNetwork(ctx context.Context, network *containerNetwork, container *testContainer, options containers.ConnectNetworkOptions) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -988,6 +994,10 @@ func (to *TestContainerOrchestrator) doConnectNetwork(ctx context.Context, netwo
 	if !slices.Contains(network.containers, container.ID) {
 		network.containers = append(network.containers, container.ID)
 		container.Networks = append(container.Networks, network.Name)
+		if len(options.Aliases) > 0 {
+			container.NetworkAliases[network.Name] = make([]string, len(options.Aliases))
+			copy(container.NetworkAliases[network.Name], options.Aliases)
+		}
 
 		// Notify listeners that we've connected the container to the network
 		to.networkEventsWatcher.Notify(containers.EventMessage{
@@ -1023,6 +1033,8 @@ func (to *TestContainerOrchestrator) DisconnectNetwork(ctx context.Context, opti
 					container.Networks = slices.Select(container.Networks, func(name string) bool {
 						return network.Name != name
 					})
+					delete(container.NetworkAliases, network.Name)
+
 					to.networks[network.Name] = network
 					to.containers[container.ID] = container
 
@@ -1286,7 +1298,14 @@ func (to *TestContainerOrchestrator) CreateContainer(ctx context.Context, option
 	if i < 0 {
 		return "", errors.Join(containers.ErrNotFound, fmt.Errorf("network %s not found", effectiveNetwork))
 	}
-	if err = to.doConnectNetwork(ctx, allNetworks[i], container); err != nil {
+	net := allNetworks[i]
+
+	connectOpts := containers.ConnectNetworkOptions{
+		Network:   net.ID,
+		Container: container.ID,
+		Aliases:   options.NetworkAliases,
+	}
+	if err = to.doConnectNetwork(ctx, net, container, connectOpts); err != nil {
 		return container.ID, err
 	}
 
@@ -1316,18 +1335,19 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, opti
 	id := newId(name)
 
 	container := testContainer{
-		withId:      id,
-		Image:       options.Image,
-		CreatedAt:   time.Now().UTC(),
-		Status:      containers.ContainerStatusCreated,
-		Networks:    []string{},
-		Ports:       map[string][]TestContainerPortConfig{},
-		Args:        options.Args,
-		Env:         map[string]string{},
-		Labels:      map[string]string{},
-		healthcheck: options.Healthcheck,
-		stdoutLog:   testutil.NewBufferWriter(),
-		stderrLog:   testutil.NewBufferWriter(),
+		withId:         id,
+		Image:          options.Image,
+		CreatedAt:      time.Now().UTC(),
+		Status:         containers.ContainerStatusCreated,
+		Networks:       []string{},
+		NetworkAliases: map[string][]string{},
+		Ports:          map[string][]TestContainerPortConfig{},
+		Args:           options.Args,
+		Env:            map[string]string{},
+		Labels:         map[string]string{},
+		healthcheck:    options.Healthcheck,
+		stdoutLog:      testutil.NewBufferWriter(),
+		stderrLog:      testutil.NewBufferWriter(),
 	}
 
 	for ctr, healthcheck := range to.containersToHealthcheck {
@@ -1530,7 +1550,14 @@ func (to *TestContainerOrchestrator) RunContainer(ctx context.Context, options c
 	if i < 0 {
 		return "", errors.Join(containers.ErrNotFound, fmt.Errorf("network %s not found", effectiveNetwork))
 	}
-	if err = to.doConnectNetwork(ctx, allNetworks[i], container); err != nil {
+	net := allNetworks[i]
+
+	connectOpts := containers.ConnectNetworkOptions{
+		Network:   net.ID,
+		Container: container.ID,
+		Aliases:   options.NetworkAliases,
+	}
+	if err = to.doConnectNetwork(ctx, net, container, connectOpts); err != nil {
 		return container.ID, err
 	}
 
@@ -1892,12 +1919,15 @@ func (to *TestContainerOrchestrator) InspectContainers(ctx context.Context, opti
 
 				for _, networkName := range container.Networks {
 					network := to.networks[networkName]
+					aliases := container.NetworkAliases[networkName]
+
 					inspectedContainer.Networks = append(inspectedContainer.Networks, containers.InspectedContainerNetwork{
 						Id:         network.ID,
 						Name:       network.Name,
 						IPAddress:  networking.IPv4LocalhostDefaultAddress,
 						MacAddress: "00:00:00:00:00:00",
 						Gateway:    networking.IPv4LocalhostDefaultAddress,
+						Aliases:    aliases,
 					})
 				}
 

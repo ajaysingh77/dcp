@@ -1265,6 +1265,26 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxySpec(ref 
 							Format:      "",
 						},
 					},
+					"aliases": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Aliases (DNS names) that can be used to reach the client proxy container on the container network.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
 					"tunnels": {
 						VendorExtensible: spec.VendorExtensible{
 							Extensions: spec.Extensions{

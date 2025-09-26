@@ -470,6 +470,12 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 
 	if options.Network != "" {
 		args = append(args, "--network", options.Network)
+
+		if len(options.NetworkAliases) > 0 {
+			for _, alias := range options.NetworkAliases {
+				args = append(args, "--network-alias", alias)
+			}
+		}
 	}
 
 	for _, mount := range options.VolumeMounts {
@@ -1243,7 +1249,7 @@ func makeDockerCommand(args ...string) *exec.Cmd {
 }
 
 // Docker CLI returns JSON lines for most output, so split the lines before unmarshaling.
-// This function can parshally succeed, so it returns a slice of successfully unmarshaled
+// This function can partially succeed, so it returns a slice of successfully unmarshaled
 // objects and a slice of all errors that occurred during unmarshaling.
 func asObjects[T any](b *bytes.Buffer, unmarshalFn func([]byte, *T) error) ([]T, error) {
 	if b == nil {
@@ -1427,6 +1433,7 @@ func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
 				IPAddress:  network.IPAddress,
 				Gateway:    network.Gateway,
 				MacAddress: network.MacAddress,
+				Aliases:    network.Aliases,
 			},
 		)
 	}
@@ -1555,10 +1562,11 @@ type dockerInspectedContainerNetworkSettings struct {
 }
 
 type dockerInspectedContainerNetworkSettingsNetwork struct {
-	NetworkID  string `json:"NetworkID"`
-	IPAddress  string `json:"IPAddress,omitempty"`
-	Gateway    string `json:"Gateway,omitempty"`
-	MacAddress string `json:"MacAddress,omitempty"`
+	NetworkID  string   `json:"NetworkID"`
+	IPAddress  string   `json:"IPAddress,omitempty"`
+	Gateway    string   `json:"Gateway,omitempty"`
+	MacAddress string   `json:"MacAddress,omitempty"`
+	Aliases    []string `json:"Aliases,omitempty"`
 }
 
 type dockerInspectedNetwork struct {

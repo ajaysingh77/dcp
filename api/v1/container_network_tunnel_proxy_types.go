@@ -143,6 +143,10 @@ type ContainerNetworkTunnelProxySpec struct {
 	// This field is required and must reference an existing ContainerNetwork resource.
 	ContainerNetworkName string `json:"containerNetworkName"`
 
+	// Aliases (DNS names) that can be used to reach the client proxy container on the container network.
+	// +listType=set
+	Aliases []string `json:"aliases,omitempty"`
+
 	// List of tunnels to prepare. Each tunnel enables clients on the container network
 	// to connect to a server on the host (establish a tunnel stream).
 	// +listType=atomic
@@ -307,6 +311,13 @@ func (cntp *ContainerNetworkTunnelProxy) ValidateUpdate(ctx context.Context, obj
 	// BaseImage, if set, cannot change during object lifetime
 	if oldProxy.Spec.BaseImage != cntp.Spec.BaseImage {
 		errorList = append(errorList, field.Invalid(field.NewPath("spec", "baseImage"), cntp.Spec.BaseImage, "Base image cannot be changed after ContainerNetworkTunnelProxy is created"))
+	}
+
+	// Aliases cannot be changed during object lifetime
+	oldAliases := std_slices.Sorted(std_slices.Values(oldProxy.Spec.Aliases))
+	newAliases := std_slices.Sorted(std_slices.Values(cntp.Spec.Aliases))
+	if !std_slices.Equal(oldAliases, newAliases) {
+		errorList = append(errorList, field.Invalid(field.NewPath("spec", "aliases"), cntp.Spec.Aliases, "Aliases cannot be changed after ContainerNetworkTunnelProxy is created"))
 	}
 
 	// New tunnels can be added and existing tunnels can be removed,

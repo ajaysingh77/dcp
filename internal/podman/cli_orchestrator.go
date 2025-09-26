@@ -455,6 +455,12 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 
 	if options.Network != "" {
 		args = append(args, "--network", options.Network)
+
+		if len(options.NetworkAliases) > 0 {
+			for _, alias := range options.NetworkAliases {
+				args = append(args, "--network-alias", alias)
+			}
+		}
 	}
 
 	for _, mount := range options.VolumeMounts {
@@ -1402,6 +1408,7 @@ func unmarshalContainer(pci *podmanInspectedContainer, ic *containers.InspectedC
 				IPAddress:  network.IPAddress,
 				Gateway:    network.Gateway,
 				MacAddress: network.MacAddress,
+				Aliases:    network.Aliases,
 			},
 		)
 	}
@@ -1482,6 +1489,7 @@ type podmanListedContainer struct {
 
 // podmanInspectedContainerXxx correspond to data returned by "podman container inspect" command.
 // The definition only includes data that we care about.
+// For reference see https://github.com/containers/podman/blob/main/libpod/define/container_inspect.go
 type podmanInspectedContainer struct {
 	Id              string                                  `json:"Id"`
 	Name            string                                  `json:"Name,omitempty"`
@@ -1548,10 +1556,11 @@ type podmanInspectedContainerNetworkSettings struct {
 }
 
 type podmanInspectedContainerNetworkSettingsNetwork struct {
-	NetworkID  string `json:"NetworkID"`
-	IPAddress  string `json:"IPAddress,omitempty"`
-	Gateway    string `json:"Gateway,omitempty"`
-	MacAddress string `json:"MacAddress,omitempty"`
+	NetworkID  string   `json:"NetworkID"`
+	IPAddress  string   `json:"IPAddress,omitempty"`
+	Gateway    string   `json:"Gateway,omitempty"`
+	MacAddress string   `json:"MacAddress,omitempty"`
+	Aliases    []string `json:"Aliases,omitempty"`
 }
 
 type podmanInspectedNetwork struct {

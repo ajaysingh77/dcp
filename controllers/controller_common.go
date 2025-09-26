@@ -39,6 +39,7 @@ const (
 	PersistentLabel              = "com.microsoft.developer.usvc-dev.persistent"
 	CreatorProcessIdLabel        = "com.microsoft.developer.usvc-dev.creatorProcessId"
 	CreatorProcessStartTimeLabel = "com.microsoft.developer.usvc-dev.creatorProcessStartTime"
+	ContainerIdLabel             = "com.microsoft.developer.usvc-dev.containerId"
 
 	MaxConcurrentReconciles = 6
 

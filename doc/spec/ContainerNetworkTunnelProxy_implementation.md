@@ -38,11 +38,11 @@
 
 ## Phase 5: Support for DNS names ("aliases") for container-side proxy.
 
-- [ ] Add facility for specifying multiple aliases for a new container in generic container orchestrator interfaces.
-- [ ] Implement support for container aliases in Docker and Podman container orchestrators.
+- [x] Add facility for specifying multiple aliases for a new container in generic container orchestrator interfaces.
+- [x] Implement support for container aliases in Docker and Podman container orchestrators.
 - [ ] Modify ContainerNetworkTunnelProxy spec to include ability to specify aliases for client-side (container) proxy.
-- [ ] Change ContainerNetworkTunnelProxy controller so that it uses aliases in the spec when creating client-side (container) proxy.
-- [ ] Write automated integration tests that verifies the controller applies aliases to client-side proxy when requested by ContainerNetworkTunnelProxy spec.
+- [x] Change ContainerNetworkTunnelProxy controller so that it uses aliases in the spec when creating client-side proxy container.
+- [x] Write automated integration tests that verifies the controller applies aliases to client-side proxy container when requested by ContainerNetworkTunnelProxy spec.
 
 ## Phase 6: Failure handling
 
