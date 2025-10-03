@@ -66,8 +66,9 @@ func (s ideNotificationHandlerState) String() string {
 
 type ideNotificationRecevier interface {
 	HandleSessionChange(pcn ideRunSessionProcessChangedNotification)
-	HandleSessionTermination(pcn ideRunSessionTerminatedNotification)
+	HandleSessionTermination(stn ideRunSessionTerminatedNotification)
 	HandleServiceLogs(log ideSessionLogNotification)
+	HandleSessionMessage(smn ideSessionMessageNotification)
 }
 
 // The IDE notification handler takes care of handling IDE run session notifications arriving via a WebSocket connection.
@@ -108,11 +109,12 @@ func (nh *ideNotificationHandler) WaitConnected(ctx context.Context) error {
 	const errDisposed = "the IDE session endpoint is not available"
 
 	nhState := nh.getState()
-	if nhState == handlerStateConnected {
+	switch nhState {
+	case handlerStateConnected:
 		return nil
-	} else if nhState == handlerStateDisposed {
+	case handlerStateDisposed:
 		return errors.New(errDisposed)
-	} else {
+	default:
 		go nh.tryConnecting()
 	}
 
@@ -321,7 +323,7 @@ func (nh *ideNotificationHandler) receiveNotifications(wsConn *websocket.Conn) {
 				var pcn ideRunSessionProcessChangedNotification
 				unmarshalErr = json.Unmarshal(msg, &pcn)
 				if unmarshalErr != nil {
-					reportErrorAndReconnect(unmarshalErr, "Invalid IDE run session notification received, recycling connection...")
+					reportErrorAndReconnect(unmarshalErr, "Invalid IDE run session process change notification received, recycling connection...")
 					return
 				} else {
 					nh.notificationReceiver.HandleSessionChange(pcn)
@@ -331,7 +333,7 @@ func (nh *ideNotificationHandler) receiveNotifications(wsConn *websocket.Conn) {
 				var stn ideRunSessionTerminatedNotification
 				unmarshalErr = json.Unmarshal(msg, &stn)
 				if unmarshalErr != nil {
-					reportErrorAndReconnect(unmarshalErr, "Invalid IDE run session notification received, recycling connection...")
+					reportErrorAndReconnect(unmarshalErr, "Invalid IDE run session termination notification received, recycling connection...")
 					return
 				} else {
 					nh.notificationReceiver.HandleSessionTermination(stn)
@@ -341,10 +343,20 @@ func (nh *ideNotificationHandler) receiveNotifications(wsConn *websocket.Conn) {
 				var nsl ideSessionLogNotification
 				unmarshalErr = json.Unmarshal(msg, &nsl)
 				if unmarshalErr != nil {
-					reportErrorAndReconnect(unmarshalErr, "Invalid IDE run session notification received, recycling connection...")
+					reportErrorAndReconnect(unmarshalErr, "Invalid IDE run session logs notification received, recycling connection...")
 					return
 				} else {
 					nh.notificationReceiver.HandleServiceLogs(nsl)
+				}
+
+			case notificationTypeSessionMessage:
+				var smn ideSessionMessageNotification
+				unmarshalErr = json.Unmarshal(msg, &smn)
+				if unmarshalErr != nil {
+					reportErrorAndReconnect(unmarshalErr, "Invalid IDE run session message notification received, recycling connection...")
+					return
+				} else {
+					nh.notificationReceiver.HandleSessionMessage(smn)
 				}
 			}
 

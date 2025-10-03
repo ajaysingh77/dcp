@@ -19,6 +19,7 @@ const (
 	notificationTypeProcessRestarted  notificationType = "processRestarted"
 	notificationTypeSessionTerminated notificationType = "sessionTerminated"
 	notificationTypeServiceLogs       notificationType = "serviceLogs"
+	notificationTypeSessionMessage    notificationType = "sessionMessage"
 )
 
 type ideSessionNotificationBase struct {
@@ -29,6 +30,15 @@ type ideSessionNotificationBase struct {
 type ideRunSessionProcessChangedNotification struct {
 	ideSessionNotificationBase
 	PID process.Pid_t `json:"pid,omitempty"`
+}
+
+func (pcn *ideRunSessionProcessChangedNotification) ToString() string {
+	maybePID := ""
+	if pcn.PID != 0 {
+		maybePID = fmt.Sprintf(" (PID: %d)", pcn.PID)
+	}
+	retval := fmt.Sprintf("Session %s: %s%s", pcn.SessionID, pcn.NotificationType, maybePID)
+	return retval
 }
 
 type ideRunSessionTerminatedNotification struct {
@@ -42,13 +52,20 @@ type ideSessionLogNotification struct {
 	LogMessage string `json:"log_message"`
 }
 
-func (pcn *ideRunSessionProcessChangedNotification) ToString() string {
-	maybePID := ""
-	if pcn.PID != 0 {
-		maybePID = fmt.Sprintf(" (PID: %d)", pcn.PID)
-	}
-	retval := fmt.Sprintf("Session %s: %s%s", pcn.SessionID, pcn.NotificationType, maybePID)
-	return retval
+type sessionMessageLevel string
+
+const (
+	sessionMessageLevelInfo  sessionMessageLevel = "info"
+	sessionMessageLevelDebug sessionMessageLevel = "debug"
+	sessionMessageLevelError sessionMessageLevel = "error"
+)
+
+type ideSessionMessageNotification struct {
+	ideSessionNotificationBase
+	Message string              `json:"message"`
+	Level   sessionMessageLevel `json:"level"`
+	Code    string              `json:"code,omitempty"`    // only for level=error
+	Details []errorDetail       `json:"details,omitempty"` // only for level=error
 }
 
 type ideRunSessionRequestV1 struct {
@@ -60,6 +77,10 @@ type ideRunSessionRequestV1 struct {
 
 	Env  []apiv1.EnvVar `json:"env,omitempty"`
 	Args []string       `json:"args,omitempty"`
+}
+
+type launchConfigurationBase struct {
+	Type string `json:"type"`
 }
 
 type errorDetail struct {
@@ -100,7 +121,8 @@ func (ed *errorDetail) writeDetails(b *strings.Builder, indent []byte) {
 }
 
 type infoResponse struct {
-	ProtocolsSupported []apiVersion `json:"protocols_supported"`
+	ProtocolsSupported                []apiVersion `json:"protocols_supported"`
+	SupportedLaunchConfigurationTypes []string     `json:"supported_launch_configurations,omitempty"`
 }
 
 type apiVersion string
@@ -118,8 +140,12 @@ const (
 
 	version20240303      apiVersion = "2024-03-03"
 	version20240423      apiVersion = "2024-04-23"
+	version20251001      apiVersion = "2025-10-01"
 	queryParamApiVersion            = "api-version"
 	instanceIdHeader                = "Microsoft-Developer-DCP-Instance-ID"
+
+	// Well-known launch configurations
+	vsProjectLaunchConfiguration = "project"
 
 	DCP_IDE_REQUEST_TIMEOUT_SECONDS        = "DCP_IDE_REQUEST_TIMEOUT_SECONDS"
 	DCP_IDE_NOTIFICATION_TIMEOUT_SECONDS   = "DCP_IDE_NOTIFICATION_TIMEOUT_SECONDS"

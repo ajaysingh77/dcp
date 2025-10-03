@@ -30,8 +30,11 @@ type ideConnectionInfo struct {
 	webSocketScheme string // The scheme to use when connecting to the IDE via websockets (ws or wss)
 	instanceId      string // The DCP instance ID to use when connecting to the IDE
 
-	// The value of the api-version parameter, indicating protocol version the runner is using when talking tot the IDE
+	// The API version we will use to communicate with the IDE (the highest version that both sides support)
 	apiVersion apiVersion
+
+	supportedApiVersions          []apiVersion // The list of API versions supported by the IDE
+	supportedLaunchConfigurations []string     // The list of launch configurations supported by the IDE
 
 	httpClient *http.Client      // The client to make HTTP requests to the IDE
 	wsDialer   *websocket.Dialer // The dialer to use when connecting to the IDE via WebSocket protocol
@@ -116,19 +119,36 @@ func NewIdeConnectionInfo(lifetimeCtx context.Context, log logr.Logger) (*ideCon
 	defer reqCancel()
 
 	clientResp, reqErr := client.Do(req)
+	if clientResp != nil && clientResp.Body != nil {
+		defer clientResp.Body.Close()
+	}
 
 	if reqErr == nil && clientResp.StatusCode == http.StatusOK {
-		defer clientResp.Body.Close()
 		respBody, bodyReadErr := io.ReadAll(clientResp.Body)
 		if bodyReadErr == nil {
 			var info infoResponse
 			unmarshalErr := json.Unmarshal(respBody, &info)
 			if unmarshalErr != nil {
 				log.Error(unmarshalErr, "Failed to parse IDE info response")
-			} else if slices.Contains(info.ProtocolsSupported, version20240423) {
-				connInfo.apiVersion = version20240423
-			} else if slices.Contains(info.ProtocolsSupported, version20240303) {
-				connInfo.apiVersion = version20240303
+			} else {
+				connInfo.supportedApiVersions = info.ProtocolsSupported
+
+				// We will use the IDE endpoint ONLY IF we support at least one common API version
+				if slices.Contains(info.ProtocolsSupported, version20251001) {
+					connInfo.apiVersion = version20251001
+				} else if slices.Contains(info.ProtocolsSupported, version20240423) {
+					connInfo.apiVersion = version20240423
+				} else if slices.Contains(info.ProtocolsSupported, version20240303) {
+					connInfo.apiVersion = version20240303
+				}
+
+				if len(info.SupportedLaunchConfigurationTypes) > 0 {
+					connInfo.supportedLaunchConfigurations = info.SupportedLaunchConfigurationTypes
+				} else {
+					// For backward compatibility, assume that if the IDE does not report supported launch configurations,
+					// it supports "project" configuration.
+					connInfo.supportedLaunchConfigurations = []string{vsProjectLaunchConfiguration}
+				}
 			}
 		}
 	}

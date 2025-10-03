@@ -111,6 +111,23 @@ func (rs *runData) NotifyRunCompletedAsync(locker sync.Locker) {
 	})
 }
 
+func (rs *runData) SendRunMessageAsync(locker sync.Locker, message string, level controllers.RunMessageLevel) {
+	_ = rs.changeNotifyQueue.Enqueue(func(_ context.Context) {
+		locker.Lock()
+		if rs.changeHandler == nil {
+			// We might get some notifications during startup sequence, and then the startup may fail, leaving us with no change handler.
+			locker.Unlock()
+			return
+		}
+
+		ch := rs.changeHandler
+		runID := rs.runID
+		locker.Unlock()
+
+		ch.OnRunMessage(runID, level, message)
+	})
+}
+
 func (rs *runData) IncreaseChangeHandlerReadiness() {
 	rs.changeHandlerWG.Done()
 }

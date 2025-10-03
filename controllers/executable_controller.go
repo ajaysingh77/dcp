@@ -545,6 +545,37 @@ func (r *ExecutableReconciler) OnStartupCompleted(
 	r.ScheduleReconciliation(exeName)
 }
 
+// Handles run message notifications from the Executable runner.
+func (r *ExecutableReconciler) OnRunMessage(runID RunID, level RunMessageLevel, message string) {
+	name, runInfo := r.runs.BorrowByStateKey(runID)
+	if runInfo == nil {
+		// Not tracking this run anymore (or it is not our run at all).
+		return
+	}
+
+	log := r.Log.WithValues(
+		logger.RESOURCE_LOG_STREAM_ID, runInfo.GetResourceId(),
+		"Executable", name.String(),
+		"RunID", runID,
+	)
+
+	switch level {
+
+	case RunMessageLevelInfo:
+		log.Info(message)
+
+	case RunMessageLevelDebug:
+		log.V(1).Info(message)
+
+	case RunMessageLevelError:
+		log.Error(fmt.Errorf("Executable run encountered an error"), message)
+
+	default:
+		// Should never happen
+		log.V(1).Info("Executable runner emitted a message with unrecognized level", "Level", level, "Message", message)
+	}
+}
+
 // Stops the underlying Executable run, if any.
 // The Executable data update related to stopped run is handled by the caller.
 // The passed runInfo is a copy that the method can modify

@@ -42,6 +42,14 @@ type ExecutableRunner interface {
 	StopRun(ctx context.Context, runID RunID, log logr.Logger) error
 }
 
+type RunMessageLevel string
+
+const (
+	RunMessageLevelInfo  RunMessageLevel = "info"
+	RunMessageLevelDebug RunMessageLevel = "debug"
+	RunMessageLevelError RunMessageLevel = "error"
+)
+
 type RunChangeHandler interface {
 	// Called when the main process of the run changes (is started or re-started).
 	//
@@ -64,4 +72,7 @@ type RunChangeHandler interface {
 	//
 	// In case of synchronous startup, this method will be called before ExecutableRunner.StartRun() returns.
 	OnStartupCompleted(name types.NamespacedName, startedRunInfo *ExecutableRunInfo, startWaitForRunCompletion func())
+
+	// Called when the runner needs to emit a user-targeted diagnostic message about a run.
+	OnRunMessage(runID RunID, level RunMessageLevel, message string)
 }

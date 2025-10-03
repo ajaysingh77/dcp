@@ -26,7 +26,7 @@ import (
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
-
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 
@@ -341,6 +341,18 @@ func (r *IdeExecutableRunner) prepareRunRequestV1(exe *apiv1.Executable) ([]byte
 			return nil, fmt.Errorf("Executable cannot be run because its launch configuration is invalid: %w", unmarshalErr)
 		}
 
+		// Check if at least one launch configuration is of a supported type
+		var lcs []launchConfigurationBase
+		unmarshalErr = json.Unmarshal(launchConfigs, &lcs)
+		if unmarshalErr != nil {
+			return nil, fmt.Errorf("Executable cannot be run because its launch configuration is invalid: %w", unmarshalErr)
+		}
+		requestedConfigurations := slices.Map[launchConfigurationBase, string](lcs, func(lc launchConfigurationBase) string { return lc.Type })
+		if len(slices.Intersect(r.connectionInfo.supportedLaunchConfigurations, requestedConfigurations)) == 0 {
+			return nil, fmt.Errorf("Executable cannot be run because its launch configuration type is not supported by the connected IDE; supported types: %v, requested types: %v",
+				r.connectionInfo.supportedLaunchConfigurations, requestedConfigurations)
+		}
+
 		isr := ideRunSessionRequestV1{
 			LaunchConfigurations: json.RawMessage(launchConfigs),
 			Env:                  exe.Status.EffectiveEnv,
@@ -412,17 +424,52 @@ func (r *IdeExecutableRunner) HandleSessionTermination(stn ideRunSessionTerminat
 func (r *IdeExecutableRunner) HandleServiceLogs(nsl ideSessionLogNotification) {
 	runID := controllers.RunID(nsl.SessionID)
 
-	runState := r.ensureRunData(runID)
+	rd := r.ensureRunData(runID)
 	var err error
 	msg := osutil.WithNewline([]byte(nsl.LogMessage))
 	if nsl.IsStdErr {
-		_, err = runState.stdErr.Write(msg)
+		_, err = rd.stdErr.Write(msg)
 	} else {
-		_, err = runState.stdOut.Write(msg)
+		_, err = rd.stdOut.Write(msg)
 	}
 
 	if err != nil {
 		r.log.Error(err, "Failed to persist a log message")
+	}
+}
+
+func (r *IdeExecutableRunner) HandleSessionMessage(smn ideSessionMessageNotification) {
+	runID := controllers.RunID(smn.SessionID)
+	log := r.log.WithValues("RunID", runID)
+
+	msg := strings.TrimSpace(smn.Message)
+	if msg == "" {
+		log.V(1).Info("Received empty IDE session message, ignoring")
+		return
+	}
+
+	rd := r.ensureRunData(runID)
+
+	switch smn.Level {
+
+	case sessionMessageLevelInfo:
+		rd.SendRunMessageAsync(r.lock, msg, controllers.RunMessageLevelInfo)
+
+	case sessionMessageLevelDebug:
+		rd.SendRunMessageAsync(r.lock, msg, controllers.RunMessageLevelDebug)
+
+	case sessionMessageLevelError:
+		er := errorResponse{
+			Error: errorDetail{
+				Code:    smn.Code,
+				Message: smn.Message,
+				Details: smn.Details,
+			},
+		}
+		rd.SendRunMessageAsync(r.lock, er.String(), controllers.RunMessageLevelError)
+
+	default:
+		log.V(1).Info("Received IDE session message with unexpected severity level", "Level", smn.Level, "Message", smn.Message)
 	}
 }
 
