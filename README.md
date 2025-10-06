@@ -174,15 +174,15 @@ If you need to learn morea about Go debugging in VS Code, [VS Code Go debugging 
 
 ### I need to debug DCP controllers in the context of an Aspire (Visual Studio-based) application run
 
-The following procedure can be used to debug DCP controllers when an application is run from Visual Studio:
+The following procedure can be used to debug DCP controllers when an application is run from Visual Studio or Visual Studio Code (with C# DevKit installed):
 
-1. Open the solution with your application in Visual Studio.
+1. Open the solution with your application in Visual Studio or Visual Studio Code.
 1. See the section above for "I need to test a local build of `dcp` with Aspire tooling".
-1. Set a breakpoint in `ApplicationExecutor.RunApplicationAsync` method. The class is in `Aspire.Hosting.Dcp` namespace (a "Function Breakpoint" that refers to the fully-qualified name of the method will work fine, you do not need to have `Aspire.Hosting` project in your solution).
-1. Open `usvc-apiserver` repository in Visual Studio Code.
+1. Set a breakpoint in the `DcpExecutor.RunApplicationAsync` method. The class is in the `Aspire.Hosting.Dcp` namespace. You can use a "Function Breakpoint" that refers to the fully-qualified name of the method; you do not need to have the `Aspire.Hosting` project in your solution. **Do not forget to disable the "Just My Code" option in debugger settings**.
+1. Open `usvc-apiserver` repository in a separate instance of Visual Studio Code.
 1. Run the application. When the breakpoint is hit, the DCP API server and controller host should already be started, but no workload objects have been created yet.
-1. Switch to Visual Studio Code, select `attach to controllers process` debug configuration and start debugging. When prompted, select the `dcpctrl` process (there should be just one). Set breakpoints in controller code as necessary.
-1. Switch back to Visual Studio and continue (F5). The workload definition will be created by the `ApplicationExecutor` and sent to DCP for execution.
+1. Switch to Visual Studio Code instance that has DCP sources open, select `attach to controllers process` debug configuration and start debugging. When prompted, select the `dcpctrl` process (there should be just one). Set breakpoints in controller code as necessary.
+1. Switch back to your application IDE and continue (F5). The application workload definition will be created by the `ApplicationExecutor` and sent to DCP for execution.
 
 The same steps can also be used to:
 - Debug `ApplicationExecutor` (in Visual Studio) if you suspect that the workload that DCP receives is set up incorrectly.
