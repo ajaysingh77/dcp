@@ -12,6 +12,15 @@ var (
 	DcpTempDir func() string
 )
 
+func CreateTempFolder(name string, perm os.FileMode) (string, error) {
+	err := os.MkdirAll(filepath.Join(DcpTempDir(), name), perm)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(DcpTempDir(), name), nil
+}
+
 func OpenTempFile(name string, flag int, perm os.FileMode) (*os.File, error) {
 	return OpenFile(filepath.Join(DcpTempDir(), name), flag, perm)
 }

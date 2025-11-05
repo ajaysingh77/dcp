@@ -4,10 +4,13 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 
 	"github.com/go-logr/logr"
@@ -351,6 +354,89 @@ func (r *ExecutableReconciler) startExecutable(ctx context.Context, exe *apiv1.E
 		return statusChanged
 	}
 
+	if exe.Spec.PemCertificates != nil {
+		certsTempFolder, certsTempFolderErr := usvc_io.CreateTempFolder(filepath.Join(exe.Name, "certs"), osutil.PermissionOnlyOwnerReadWrite)
+		if certsTempFolderErr != nil {
+			if !errors.Is(certsTempFolderErr, os.ErrExist) {
+				if exe.Spec.PemCertificates.ContinueOnError {
+					log.Info("Could not create temporary folder for processing PEM certificates, continuing...", "Error", certsTempFolderErr.Error())
+				} else {
+					log.Error(certsTempFolderErr, "Could not create temporary folder for processing PEM certificates")
+					r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+					return statusChanged
+				}
+			}
+		} else {
+			bundle := []string{}
+			fingerprints := []string{}
+			for _, cert := range exe.Spec.PemCertificates.Certificates {
+				fingerprint, fingerprintErr := cert.OpenSSLFingerprint()
+				if fingerprintErr != nil {
+					if exe.Spec.PemCertificates.ContinueOnError {
+						log.Info("Could not compute certificate fingerprint, skipping certificate", "Thumbprint", cert.Thumbprint, "Error", fingerprintErr.Error())
+						continue
+					}
+					log.Error(fingerprintErr, "Could not compute certificate fingerprint", "Thumbprint", cert.Thumbprint)
+					r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+					return statusChanged
+				}
+
+				certFilepath := filepath.Join(certsTempFolder, fmt.Sprintf("%s.pem", cert.Thumbprint))
+				certWriteErr := usvc_io.WriteFile(certFilepath, []byte(cert.Contents), osutil.PermissionOnlyOwnerReadWrite)
+				if certWriteErr != nil {
+					if exe.Spec.PemCertificates.ContinueOnError {
+						log.Info("Could not write certificate to temporary folder, skipping certificate...", "Thumbprint", cert.Thumbprint, "Error", certWriteErr.Error())
+						continue
+					}
+
+					log.Error(certWriteErr, "Could not write certificate to temporary folder", "Thumbprint", cert.Thumbprint)
+					r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+					return statusChanged
+				}
+
+				collisions := 0
+				for _, existingFingerprint := range fingerprints {
+					if existingFingerprint == fingerprint {
+						collisions++
+					}
+				}
+
+				if runtime.GOOS == "windows" {
+					certWriteErr = usvc_io.WriteFile(filepath.Join(certsTempFolder, fmt.Sprintf("%s.%d", fingerprint, collisions)), []byte(cert.Contents), osutil.PermissionOnlyOwnerReadWrite)
+				} else {
+					// Create an OpenSSL style symlink for the certificate
+					certWriteErr = os.Symlink(certFilepath, filepath.Join(certsTempFolder, fmt.Sprintf("%s.%d", fingerprint, collisions)))
+				}
+
+				if certWriteErr != nil {
+					if exe.Spec.PemCertificates.ContinueOnError {
+						log.Info("Could not create fingerprint symlink for certificate, skipping certificate...", "Thumbprint", cert.Thumbprint, "Error", certWriteErr.Error())
+						continue
+					}
+
+					log.Error(certWriteErr, "Could not create fingerprint symlink for certificate", "Thumbprint", cert.Thumbprint)
+					r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+					return statusChanged
+				} else {
+					fingerprints = append(fingerprints, fingerprint)
+				}
+
+				bundle = append(bundle, cert.Contents)
+			}
+
+			bundleWriteErr := usvc_io.WriteFile(filepath.Join(usvc_io.DcpTempDir(), exe.Name, "cert.pem"), []byte(strings.Join(bundle, "\n")), osutil.PermissionOnlyOwnerReadWrite)
+			if bundleWriteErr != nil {
+				if exe.Spec.PemCertificates.ContinueOnError {
+					log.Info("Could not write certificate bundle to temporary folder, continuing...", "Error", bundleWriteErr.Error())
+				} else {
+					log.Error(bundleWriteErr, "Could not write certificate bundle to temporary folder")
+					r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+					return statusChanged
+				}
+			}
+		}
+	}
+
 	// Ports reserved for services that the Executable implements without specifying the desired port to use (via service-producer annotation).
 	reservedServicePorts := make(map[types.NamespacedName]int32)
 
@@ -629,6 +715,7 @@ func (r *ExecutableReconciler) getExecutableRunner(exe *apiv1.Executable) (Execu
 func (r *ExecutableReconciler) releaseExecutableResources(ctx context.Context, exe *apiv1.Executable, log logr.Logger) {
 	r.disableEndpointsAndHealthProbes(ctx, exe, nil, log)
 	r.deleteOutputFiles(exe, log)
+	r.deleteCertificateFiles(exe, log)
 	logger.ReleaseResourceLog(exe.GetResourceId())
 }
 
@@ -697,6 +784,22 @@ func (r *ExecutableReconciler) deleteOutputFiles(exe *apiv1.Executable, log logr
 					"Path", path)
 			}
 		})
+	}
+}
+
+func (r *ExecutableReconciler) deleteCertificateFiles(exe *apiv1.Executable, log logr.Logger) {
+	// Do not bother updating the Executable object--this method is called when the object is being deleted.
+
+	if osutil.EnvVarSwitchEnabled(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS) {
+		return
+	}
+
+	if exe.Spec.PemCertificates != nil {
+		certsPath := filepath.Join(usvc_io.DcpTempDir(), exe.Name)
+		removeErr := os.RemoveAll(certsPath)
+		if removeErr != nil {
+			log.Error(removeErr, "Could not remove temporary folder for PEM certificates", "Path", certsPath)
+		}
 	}
 }
 

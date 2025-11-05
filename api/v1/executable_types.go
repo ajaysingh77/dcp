@@ -154,6 +154,57 @@ func (et ExecutableTemplate) Equal(other ExecutableTemplate) bool {
 	return et.Spec.Equal(other.Spec)
 }
 
+// Represents a collection of PEM formatted certificates to be written for the executable
+// +k8s:openapi-gen=true
+type ExecutablePemCertificates struct {
+	// The individual certificates in PEM format.
+	// +listType=atomic
+	Certificates []PemCertificate `json:"certificates,omitempty"`
+
+	// If true, any invalid certificates in the Certificates list will be skipped, but any valid certificates will still be written.
+	// If false, the entire operation will fail if any invalid certificates are found.
+	ContinueOnError bool `json:"continueOnError,omitempty"`
+}
+
+func (pc *ExecutablePemCertificates) Equal(other *ExecutablePemCertificates) bool {
+	if pc == other {
+		return true
+	}
+
+	if pc == nil || other == nil {
+		return false
+	}
+
+	if !stdslices.EqualFunc(pc.Certificates, other.Certificates, func(c1, c2 PemCertificate) bool {
+		return c1.Equal(&c2)
+	}) {
+		return false
+	}
+
+	if pc.ContinueOnError != other.ContinueOnError {
+		return false
+	}
+
+	return true
+}
+
+func (pc *ExecutablePemCertificates) Validate(fieldPath *field.Path) field.ErrorList {
+	if pc == nil {
+		return nil
+	}
+
+	var errorList field.ErrorList
+	if len(pc.Certificates) == 0 {
+		errorList = append(errorList, field.Required(fieldPath.Child("certificates"), "at least one certificate must be specified"))
+	}
+
+	for i, cert := range pc.Certificates {
+		errorList = append(errorList, cert.Validate(fieldPath.Child("certificates").Index(i))...)
+	}
+
+	return errorList
+}
+
 // ExecutableSpec defines the desired state of an Executable
 // +k8s:openapi-gen=true
 type ExecutableSpec struct {
@@ -190,6 +241,10 @@ type ExecutableSpec struct {
 	// Health probe configuration for the Executable
 	// +listType=atomic
 	HealthProbes []HealthProbe `json:"healthProbes,omitempty"`
+
+	// PEM formatted certificates to be written for the Executable
+	// +optional
+	PemCertificates *ExecutablePemCertificates `json:"pemCertificates,omitempty"`
 }
 
 func (es ExecutableSpec) Equal(other ExecutableSpec) bool {
@@ -235,6 +290,10 @@ func (es ExecutableSpec) Equal(other ExecutableSpec) bool {
 		}
 	}
 
+	if !es.PemCertificates.Equal(other.PemCertificates) {
+		return false
+	}
+
 	return true
 }
 
@@ -261,6 +320,8 @@ func (es ExecutableSpec) Validate(specPath *field.Path) field.ErrorList {
 	for i, probe := range es.HealthProbes {
 		errorList = append(errorList, probe.Validate(healthProbesPath.Index(i))...)
 	}
+
+	errorList = append(errorList, es.PemCertificates.Validate(specPath.Child("pemCertificates"))...)
 
 	return errorList
 }
@@ -435,6 +496,10 @@ func (e *Executable) ValidateUpdate(ctx context.Context, obj runtime.Object) fie
 				errorList = append(errorList, field.Forbidden(field.NewPath("spec", "healthProbes").Index(i), "Health probes cannot be changed once an Executable is created."))
 			}
 		}
+	}
+
+	if !oldExe.Spec.PemCertificates.Equal(e.Spec.PemCertificates) {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "pemCertificates"), "pemCertificates cannot be changed once an Executable is created."))
 	}
 
 	return errorList

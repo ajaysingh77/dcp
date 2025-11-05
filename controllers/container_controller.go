@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -52,16 +53,17 @@ const (
 	stopContainerTimeoutSeconds = 10
 	containerInspectionTimeout  = 6 * time.Second
 
-	ownerKey          = ".metadata.controllerOwner" // client index key for child ContainerNetworkConnections
-	dcpBuildLabel     = "com.microsoft.developer.usvc-dev.build"
-	groupVersionLabel = "com.microsoft.developer.usvc-dev.group-version"
-	nameLabel         = "com.microsoft.developer.usvc-dev.name"
-	uidLabel          = "com.microsoft.developer.usvc-dev.uid"
-	lifecycleKeyLabel = "com.microsoft.developer.usvc-dev.lifecycle-key"
-	envLabel          = "com.microsoft.developer.usvc-dev.env"
-	mountsLabel       = "com.microsoft.developer.usvc-dev.mountsLabel"
-	portsLabel        = "com.microsoft.developer.usvc-dev.ports"
-	createFilesLabel  = "com.microsoft.developer.usvc-dev.createFiles"
+	ownerKey             = ".metadata.controllerOwner" // client index key for child ContainerNetworkConnections
+	dcpBuildLabel        = "com.microsoft.developer.usvc-dev.build"
+	groupVersionLabel    = "com.microsoft.developer.usvc-dev.group-version"
+	nameLabel            = "com.microsoft.developer.usvc-dev.name"
+	uidLabel             = "com.microsoft.developer.usvc-dev.uid"
+	lifecycleKeyLabel    = "com.microsoft.developer.usvc-dev.lifecycle-key"
+	envLabel             = "com.microsoft.developer.usvc-dev.env"
+	mountsLabel          = "com.microsoft.developer.usvc-dev.mountsLabel"
+	portsLabel           = "com.microsoft.developer.usvc-dev.ports"
+	createFilesLabel     = "com.microsoft.developer.usvc-dev.createFiles"
+	pemCertificatesLabel = "com.microsoft.developer.usvc-dev.pemCertificates"
 )
 
 var (
@@ -1057,12 +1059,39 @@ func calculatePersistentContainerChanges(rcd *runningContainerData, inspected *c
 		}
 	}
 
-	if createFilesLabelHash, found := inspected.Labels[createFilesLabel]; found && len(rcd.runSpec.CreateFiles) > 0 {
-		specCreateFilesHash := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%v", rcd.runSpec.CreateFiles))))
-
-		if createFilesLabelHash != specCreateFilesHash {
+	// Check that create files match the previous configuration
+	if createFilesLabelHash, found := inspected.Labels[createFilesLabel]; found {
+		if len(rcd.runSpec.CreateFiles) == 0 {
+			// The previous container had create files entries, but the new one doesn't
 			changeList = append(changeList, "Container create files entries changed")
+		} else {
+			specCreateFilesHash := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%v", rcd.runSpec.CreateFiles))))
+
+			if createFilesLabelHash != specCreateFilesHash {
+				// The contents of the create files entries have changed
+				changeList = append(changeList, "Container create files entries changed")
+			}
 		}
+	} else if len(rcd.runSpec.CreateFiles) > 0 {
+		// The previous container didn't have any create files entries, but the new one does
+		changeList = append(changeList, "Container create files entries changed")
+	}
+
+	// Check that PEM certificates match the previous configuration
+	if pemCertificatesLabelHash, found := inspected.Labels[pemCertificatesLabel]; found {
+		if rcd.runSpec.PemCertificates == nil {
+			// The previous container had PEM certificates entries, but the new one doesn't
+			changeList = append(changeList, "Container PEM certificates entries changed")
+		} else {
+			specPemCertificatesHash := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%v", rcd.runSpec.PemCertificates))))
+			if pemCertificatesLabelHash != specPemCertificatesHash {
+				// The contents of the PEM certificates entries have changed
+				changeList = append(changeList, "Container PEM certificates entries changed")
+			}
+		}
+	} else if rcd.runSpec.PemCertificates != nil {
+		// The previous container didn't have any PEM certificates entries, but the new one does
+		changeList = append(changeList, "Container PEM certificates entries changed")
 	}
 
 	return maps.Keys(changedMounts), maps.Keys(changedPorts), maps.Keys(changedEnv), changeList
@@ -1108,7 +1137,6 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 					isValid := filepath.IsAbs(volume.Source)
 					if runtime.GOOS == "windows" {
 						isValid = isValid && !winNamedPipeRegex.MatchString(volume.Source)
-
 					}
 					if !isValid {
 						// This seems to be an invalid bind mount or a named pipe, so don't try to create it
@@ -1223,6 +1251,13 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				})
 			}
 
+			if rcd.runSpec.PemCertificates != nil {
+				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+					Key:   pemCertificatesLabel,
+					Value: fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%v", rcd.runSpec.PemCertificates)))),
+				})
+			}
+
 			startupStdoutWriter, startupStderrWriter := rcd.getStartupLogWriters()
 			streamOptions := containers.StreamCommandOptions{
 				StdOutStream: startupStdoutWriter,
@@ -1246,6 +1281,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			log.V(1).Info("Container created")
 			rcd.updateFromInspectedContainer(inspected)
 
+			fileModTime := time.Now()
 			for _, createFileRequest := range rcd.runSpec.CreateFiles {
 				umask := osutil.DefaultUmaskBitmask
 				if createFileRequest.Umask != nil {
@@ -1259,7 +1295,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 					DefaultOwner: createFileRequest.DefaultOwner,
 					DefaultGroup: createFileRequest.DefaultGroup,
 					Umask:        umask,
-					ModTime:      time.Now(),
+					ModTime:      fileModTime,
 				}
 
 				copyErr := r.orchestrator.CreateFiles(startupCtx, createFilesOptions)
@@ -1269,6 +1305,104 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				}
 
 				log.V(1).Info("Files copied to the container", "Destination", createFileRequest.Destination)
+			}
+
+			if rcd.runSpec.PemCertificates != nil {
+				fingerprints := []string{}
+				certFiles := []apiv1.FileSystemEntry{}
+				bundle := []string{}
+				for _, cert := range rcd.runSpec.PemCertificates.Certificates {
+					fingerprint, fingerprintErr := cert.OpenSSLFingerprint()
+					if fingerprintErr != nil {
+						if rcd.runSpec.PemCertificates.ContinueOnError {
+							log.Info("Could not compute certificate fingerprint, skipping certificate", "Thumbprint", cert.Thumbprint, "Error", fingerprintErr.Error())
+							continue
+						}
+
+						return fingerprintErr
+					}
+
+					collisions := 0
+					for _, existingFingerprint := range fingerprints {
+						if existingFingerprint == fingerprint {
+							collisions++
+						}
+					}
+
+					fingerprints = append(fingerprints, fingerprint)
+
+					certFiles = append(
+						certFiles,
+						apiv1.FileSystemEntry{
+							Name:            fmt.Sprintf("%s.pem", cert.Thumbprint),
+							Contents:        cert.Contents,
+							ContinueOnError: rcd.runSpec.PemCertificates.ContinueOnError,
+						},
+						apiv1.FileSystemEntry{
+							Name:            fmt.Sprintf("%s.%d", fingerprint, collisions),
+							Type:            apiv1.FileSystemEntryTypeSymlink,
+							Target:          fmt.Sprintf("./%s.pem", cert.Thumbprint),
+							ContinueOnError: rcd.runSpec.PemCertificates.ContinueOnError,
+						})
+
+					bundle = append(bundle, cert.Contents)
+				}
+
+				createFilesOptions := containers.CreateFilesOptions{
+					Container:   inspected.Id,
+					Destination: rcd.runSpec.PemCertificates.Destination,
+					Entries: []apiv1.FileSystemEntry{
+						{
+							Name:     "cert.pem",
+							Contents: strings.Join(bundle, "\n"),
+						},
+						{
+							Name:    "certs",
+							Type:    apiv1.FileSystemEntryTypeDir,
+							Entries: certFiles,
+						},
+					},
+					Umask:   osutil.DefaultUmaskBitmask,
+					ModTime: fileModTime,
+				}
+
+				copyErr := r.orchestrator.CreateFiles(startupCtx, createFilesOptions)
+				if copyErr != nil {
+					log.Error(copyErr, "Could not copy certificates to the container", "Destination", createFilesOptions.Destination)
+					return copyErr
+				}
+
+				overwritePaths := slices.GroupBy[[]string, string](rcd.runSpec.PemCertificates.OverwriteBundlePaths, func(bundlePath string) string {
+					return path.Dir(bundlePath)
+				})
+
+				for bundleDir, files := range overwritePaths {
+					bundleCreateFilesOptions := containers.CreateFilesOptions{
+						Container:   inspected.Id,
+						Destination: bundleDir,
+						Entries: slices.Map[string, apiv1.FileSystemEntry](files, func(file string) apiv1.FileSystemEntry {
+							return apiv1.FileSystemEntry{
+								Name:            path.Base(file),
+								Contents:        strings.Join(bundle, "\n"),
+								ContinueOnError: rcd.runSpec.PemCertificates.ContinueOnError,
+							}
+						}),
+						Umask:   osutil.DefaultUmaskBitmask,
+						ModTime: fileModTime,
+					}
+
+					bundleCopyErr := r.orchestrator.CreateFiles(startupCtx, bundleCreateFilesOptions)
+					if bundleCopyErr != nil {
+						if rcd.runSpec.PemCertificates.ContinueOnError {
+							log.Info("Could not overwrite certificate bundle in the container, continuing...", "Destination", bundleDir, "Error", bundleCopyErr.Error())
+						} else {
+							log.Error(bundleCopyErr, "Could not overwrite certificate bundle in the container", "Destination", bundleDir)
+							return bundleCopyErr
+						}
+					}
+				}
+
+				log.V(1).Info("Certificates copied to the container", "Destination", createFilesOptions.Destination)
 			}
 
 			if rcd.runSpec.Networks == nil {

@@ -391,6 +391,87 @@ func (cf *CreateFileSystem) Equal(other *CreateFileSystem) bool {
 	return true
 }
 
+// Represents a collection of PEM formatted certificates to be written into the container
+// +k8s:openapi-gen=true
+type ContainerPemCertificates struct {
+	// The individual certificates in PEM format.
+	// +listType=atomic
+	Certificates []PemCertificate `json:"certificates,omitempty"`
+
+	// The base destination path in the container where the certificates will be written. Must be an absolute path.
+	// This path will be created if it does not already exist. Individual certificate files will be created
+	// in a subfolder named "certs" under this path along with OpenSSL thumbprint symlinks to each of them.
+	// The certificate bundle will be created in a file named "cert.pem" under this path.
+	Destination string `json:"destination,omitempty"`
+
+	// Optional list of bundle files to overwrite with the generated certificate bundle.
+	// Each path in the list must be an absolute path to a file in the container.
+	// Any existing file at these paths will be overwritten with the generated certificate bundle or created if it does not exist.
+	// +listType=set
+	OverwriteBundlePaths []string `json:"overwriteBundlePaths,omitempty"`
+
+	// If true, any invalid certificates in the Certificates list will be skipped, but any valid certificates will still be written.
+	// If false, the entire operation will fail if any invalid certificates are found.
+	ContinueOnError bool `json:"continueOnError,omitempty"`
+}
+
+func (pc *ContainerPemCertificates) Equal(other *ContainerPemCertificates) bool {
+	if pc == other {
+		return true
+	}
+
+	if pc == nil || other == nil {
+		return false
+	}
+
+	if !slices.EqualFunc(pc.Certificates, other.Certificates, func(c1, c2 PemCertificate) bool {
+		return c1.Equal(&c2)
+	}) {
+		return false
+	}
+
+	if pc.Destination != other.Destination {
+		return false
+	}
+
+	if !slices.Equal(pc.OverwriteBundlePaths, other.OverwriteBundlePaths) {
+		return false
+	}
+
+	if pc.ContinueOnError != other.ContinueOnError {
+		return false
+	}
+
+	return true
+}
+
+func (pc *ContainerPemCertificates) Validate(fieldPath *field.Path) field.ErrorList {
+	if pc == nil {
+		return nil
+	}
+
+	var errorList field.ErrorList
+	if len(pc.Certificates) == 0 {
+		errorList = append(errorList, field.Required(fieldPath.Child("certificates"), "at least one certificate must be specified"))
+	}
+
+	if !path.IsAbs(pc.Destination) {
+		errorList = append(errorList, field.Invalid(fieldPath.Child("destination"), pc.Destination, "destination must be an absolute path"))
+	}
+
+	for i, bundlePath := range pc.OverwriteBundlePaths {
+		if !path.IsAbs(bundlePath) {
+			errorList = append(errorList, field.Invalid(fieldPath.Child("overwriteBundlePaths").Index(i), bundlePath, "each overwrite bundle path must be an absolute path"))
+		}
+	}
+
+	for i, cert := range pc.Certificates {
+		errorList = append(errorList, cert.Validate(fieldPath.Child("certificates").Index(i))...)
+	}
+
+	return errorList
+}
+
 // ContainerSpec defines the desired state of a Container
 // +k8s:openapi-gen=true
 type ContainerSpec struct {
@@ -471,6 +552,10 @@ type ContainerSpec struct {
 	// Files to create in the container before starting it
 	// +listType=atomic
 	CreateFiles []CreateFileSystem `json:"createFiles,omitempty"`
+
+	// PEM formatted public certificates to be created in the container
+	// +optional
+	PemCertificates *ContainerPemCertificates `json:"pemCertificates,omitempty"`
 }
 
 func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
@@ -570,6 +655,10 @@ func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
 		return false
 	}
 
+	if !cs.PemCertificates.Equal(other.PemCertificates) {
+		return false
+	}
+
 	return true
 }
 
@@ -586,6 +675,7 @@ func initializeHashEncoder() {
 	_ = initEncoder.Encode(ContainerPort{})
 	_ = initEncoder.Encode(EnvVar{})
 	_ = initEncoder.Encode(CreateFileSystem{})
+	_ = initEncoder.Encode(ContainerPemCertificates{})
 }
 
 func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
@@ -656,14 +746,15 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 
 			for i := range sortedSecrets {
 				hashErr = errors.Join(hashErr, encoder.Encode(sortedSecrets[i]))
-				if sortedSecrets[i].Type == "" || sortedSecrets[i].Type == FileSecret {
+				switch sortedSecrets[i].Type {
+				case "", FileSecret:
 					// For file type secrets, track the contents of the file as part of the hash
 					fileContents, secretFileReadErr := os.ReadFile(sortedSecrets[i].Source)
 					if secretFileReadErr == nil {
 						_, writeErr = fnvHash.Write(fileContents)
 						hashErr = errors.Join(hashErr, writeErr)
 					}
-				} else if sortedSecrets[i].Type == EnvSecret {
+				case EnvSecret:
 					// For env type secrets, track the value of the environment variable
 					value := os.Getenv(sortedSecrets[i].Source)
 					_, writeErr = fnvHash.Write([]byte(value))
@@ -744,6 +835,26 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 
 		for i := range sortedCreateFiles {
 			hashErr = errors.Join(hashErr, encoder.Encode(sortedCreateFiles[i]))
+		}
+	}
+
+	if cs.PemCertificates != nil {
+		// Add the PEM certificates to the hash
+		sortedPemCertificates := slices.Clone(cs.PemCertificates.Certificates)
+		slices.SortFunc(sortedPemCertificates, func(c1, c2 PemCertificate) int {
+			return strings.Compare(c1.Thumbprint, c2.Thumbprint)
+		})
+
+		for i := range sortedPemCertificates {
+			hashErr = errors.Join(hashErr, encoder.Encode(sortedPemCertificates[i]))
+		}
+
+		hashErr = errors.Join(hashErr, encoder.Encode(cs.PemCertificates.Destination))
+
+		sortedOverwritePaths := slices.Clone(cs.PemCertificates.OverwriteBundlePaths)
+		slices.Sort(sortedOverwritePaths)
+		for i := range sortedOverwritePaths {
+			hashErr = errors.Join(hashErr, encoder.Encode(sortedOverwritePaths[i]))
 		}
 	}
 
@@ -1036,6 +1147,9 @@ func (c *Container) Validate(ctx context.Context) field.ErrorList {
 		}
 	}
 
+	// Validate PEM certificates configuration
+	errorList = append(errorList, c.Spec.PemCertificates.Validate(field.NewPath("spec", "pemCertificates"))...)
+
 	return errorList
 }
 
@@ -1108,6 +1222,10 @@ func (c *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 				errorList = append(errorList, field.Forbidden(field.NewPath("spec", "createFiles").Index(i), "created files cannot be changed once a Container is created."))
 			}
 		}
+	}
+
+	if !oldContainer.Spec.PemCertificates.Equal(c.Spec.PemCertificates) {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "pemCertificates"), "pemCertificates cannot be changed once a Container is created."))
 	}
 
 	return errorList

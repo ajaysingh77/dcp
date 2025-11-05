@@ -37,6 +37,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkTunnelProxyList":   schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxyList(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkTunnelProxySpec":   schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxySpec(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkTunnelProxyStatus": schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxyStatus(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerPemCertificates":          schema_microsoft_usvc_apiserver_api_v1_ContainerPemCertificates(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerPort":                     schema_microsoft_usvc_apiserver_api_v1_ContainerPort(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerSpec":                     schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerStatus":                   schema_microsoft_usvc_apiserver_api_v1_ContainerStatus(ref),
@@ -52,6 +53,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/microsoft/usvc-apiserver/api/v1.EnvVar":                            schema_microsoft_usvc_apiserver_api_v1_EnvVar(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.Executable":                        schema_microsoft_usvc_apiserver_api_v1_Executable(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableList":                    schema_microsoft_usvc_apiserver_api_v1_ExecutableList(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ExecutablePemCertificates":         schema_microsoft_usvc_apiserver_api_v1_ExecutablePemCertificates(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableProbe":                   schema_microsoft_usvc_apiserver_api_v1_ExecutableProbe(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSet":              schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSet(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSetList":          schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetList(ref),
@@ -68,6 +70,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/microsoft/usvc-apiserver/api/v1.HttpProbe":                         schema_microsoft_usvc_apiserver_api_v1_HttpProbe(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.LogOptions":                        schema_microsoft_usvc_apiserver_api_v1_LogOptions(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.LogStreamer":                       schema_microsoft_usvc_apiserver_api_v1_LogStreamer(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.PemCertificate":                    schema_microsoft_usvc_apiserver_api_v1_PemCertificate(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.Service":                           schema_microsoft_usvc_apiserver_api_v1_Service(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ServiceList":                       schema_microsoft_usvc_apiserver_api_v1_ServiceList(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ServiceSpec":                       schema_microsoft_usvc_apiserver_api_v1_ServiceSpec(ref),
@@ -1430,6 +1433,74 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxyStatus(re
 	}
 }
 
+func schema_microsoft_usvc_apiserver_api_v1_ContainerPemCertificates(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Represents a collection of PEM formatted certificates to be written into the container",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"certificates": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "The individual certificates in PEM format.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.PemCertificate"),
+									},
+								},
+							},
+						},
+					},
+					"destination": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The base destination path in the container where the certificates will be written. Must be an absolute path. This path will be created if it does not already exist. Individual certificate files will be created in a subfolder named \"certs\" under this path along with OpenSSL thumbprint symlinks to each of them. The certificate bundle will be created in a file named \"cert.pem\" under this path.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"overwriteBundlePaths": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Optional list of bundle files to overwrite with the generated certificate bundle. Each path in the list must be an absolute path to a file in the container. Any existing file at these paths will be overwritten with the generated certificate bundle or created if it does not exist.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"continueOnError": {
+						SchemaProps: spec.SchemaProps{
+							Description: "If true, any invalid certificates in the Certificates list will be skipped, but any valid certificates will still be written. If false, the entire operation will fail if any invalid certificates are found.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.PemCertificate"},
+	}
+}
+
 func schema_microsoft_usvc_apiserver_api_v1_ContainerPort(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -1747,11 +1818,17 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 							},
 						},
 					},
+					"pemCertificates": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PEM formatted public certificates to be created in the container",
+							Ref:         ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerPemCertificates"),
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildContext", "github.com/microsoft/usvc-apiserver/api/v1.ContainerLabel", "github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionConfig", "github.com/microsoft/usvc-apiserver/api/v1.ContainerPort", "github.com/microsoft/usvc-apiserver/api/v1.CreateFileSystem", "github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.HealthProbe", "github.com/microsoft/usvc-apiserver/api/v1.VolumeMount"},
+			"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildContext", "github.com/microsoft/usvc-apiserver/api/v1.ContainerLabel", "github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionConfig", "github.com/microsoft/usvc-apiserver/api/v1.ContainerPemCertificates", "github.com/microsoft/usvc-apiserver/api/v1.ContainerPort", "github.com/microsoft/usvc-apiserver/api/v1.CreateFileSystem", "github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.HealthProbe", "github.com/microsoft/usvc-apiserver/api/v1.VolumeMount"},
 	}
 }
 
@@ -2414,6 +2491,47 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableList(ref common.ReferenceC
 	}
 }
 
+func schema_microsoft_usvc_apiserver_api_v1_ExecutablePemCertificates(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Represents a collection of PEM formatted certificates to be written for the executable",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"certificates": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "The individual certificates in PEM format.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.PemCertificate"),
+									},
+								},
+							},
+						},
+					},
+					"continueOnError": {
+						SchemaProps: spec.SchemaProps{
+							Description: "If true, any invalid certificates in the Certificates list will be skipped, but any valid certificates will still be written. If false, the entire operation will fail if any invalid certificates are found.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.PemCertificate"},
+	}
+}
+
 func schema_microsoft_usvc_apiserver_api_v1_ExecutableProbe(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -2756,12 +2874,18 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref common.ReferenceC
 							},
 						},
 					},
+					"pemCertificates": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PEM formatted certificates to be written for the Executable",
+							Ref:         ref("github.com/microsoft/usvc-apiserver/api/v1.ExecutablePemCertificates"),
+						},
+					},
 				},
 				Required: []string{"executablePath"},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.AmbientEnvironment", "github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.HealthProbe"},
+			"github.com/microsoft/usvc-apiserver/api/v1.AmbientEnvironment", "github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.ExecutablePemCertificates", "github.com/microsoft/usvc-apiserver/api/v1.HealthProbe"},
 	}
 }
 
@@ -3404,6 +3528,36 @@ func schema_microsoft_usvc_apiserver_api_v1_LogStreamer(ref common.ReferenceCall
 		},
 		Dependencies: []string{
 			"k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_PemCertificate(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PemCertificate represents a PEM encoded (public) certificate",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"thumbprint": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The certificate thumbprint",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"contents": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The PEM encoded certificate data",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"thumbprint", "contents"},
+			},
+		},
 	}
 }
 
