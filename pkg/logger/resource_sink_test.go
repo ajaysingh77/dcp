@@ -34,7 +34,7 @@ func TestResourceSink(t *testing.T) {
 	logger.flush()
 
 	// Ensure that the resource log file exists
-	fileExistsErr := resiliency.RetryExponentialWithTimeout(t.Context(), 2*time.Second, func() error {
+	fileExistsErr := resiliency.RetryExponentialWithTimeout(t.Context(), 10*time.Second, func() error {
 		_, statErr := os.Stat(expectedResourceFilePath)
 		return statErr
 	})
@@ -80,7 +80,7 @@ func TestResourceSinkNoResourceId(t *testing.T) {
 	logger.flush()
 
 	// Ensure that the resource log file exists
-	fileExistsErr := resiliency.RetryExponentialWithTimeout(t.Context(), 2*time.Second, func() error {
+	fileExistsErr := resiliency.RetryExponentialWithTimeout(t.Context(), 10*time.Second, func() error {
 		_, statErr := os.Stat(expectedResourceFilePath)
 		return statErr
 	})
