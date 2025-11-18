@@ -9,16 +9,20 @@ import (
 	"testing"
 	"time"
 
-	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
-	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
+	"github.com/microsoft/usvc-apiserver/pkg/randdata"
+	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 )
 
 func TestResourceSink(t *testing.T) {
 	t.Parallel()
 
-	resourceId := "resource-sink-test"
+	resourceIdSuffix, suffixErr := randdata.MakeRandomString(8)
+	require.NoError(t, suffixErr)
+	resourceId := "resource-sink-test" + string(resourceIdSuffix)
 	expectedResourceFilePath := GetResourceLogPath(resourceId)
 
 	logger := New("resource-sink-log").WithResourceSink().WithName("resource-sink-log")
@@ -44,7 +48,10 @@ func TestResourceSink(t *testing.T) {
 
 	file, fileErr := usvc_io.OpenFile(expectedResourceFilePath, os.O_RDONLY, 0)
 	require.NoError(t, fileErr)
-	defer file.Close()
+	defer func() {
+		file.Close()
+		_ = os.Remove(expectedResourceFilePath)
+	}()
 
 	// logger.flush() does not guarantee that subsequent reads will see all the data immediately
 	require.EventuallyWithTf(t, func(c *assert.CollectT) {
@@ -59,7 +66,9 @@ func TestResourceSink(t *testing.T) {
 func TestResourceSinkNoResourceId(t *testing.T) {
 	t.Parallel()
 
-	resourceId := "resource-sink-no-resource-id-test"
+	resourceIdSuffix, suffixErr := randdata.MakeRandomString(8)
+	require.NoError(t, suffixErr)
+	resourceId := "resource-sink-no-resource-id-test" + string(resourceIdSuffix)
 	expectedResourceFilePath := GetResourceLogPath(resourceId)
 
 	logger := New("resource-sink-no-resource-id-log").WithResourceSink().WithName("resource-sink-no-resource-id-log")
@@ -88,7 +97,10 @@ func TestResourceSinkNoResourceId(t *testing.T) {
 
 	file, fileErr := usvc_io.OpenFile(expectedResourceFilePath, os.O_RDONLY, 0)
 	require.NoError(t, fileErr)
-	defer file.Close()
+	defer func() {
+		file.Close()
+		_ = os.Remove(expectedResourceFilePath)
+	}()
 
 	// logger.flush() does not guarantee that subsequent reads will see all the data immediately
 	require.EventuallyWithTf(t, func(c *assert.CollectT) {
@@ -98,22 +110,4 @@ func TestResourceSinkNoResourceId(t *testing.T) {
 		require.Contains(c, string(contents), "info\tresource-sink-no-resource-id-log\tThis is a resource with an id\t{\"Key1\": \"Value1\", \"Key2\": \"Value2\"}")
 		require.Contains(c, string(contents), "error\tresource-sink-no-resource-id-log\tThis is an error record\t{\"Key1\": \"Value1\", \"error\": \"error of some sort\"}")
 	}, 10*time.Second, 200*time.Millisecond, "Expected to find a data and a log entry in resource log file")
-}
-
-func TestMain(m *testing.M) {
-	previousTempDir := tempDir
-	newTempDir, err := os.MkdirTemp(os.TempDir(), "resource-sink-test-")
-	if err != nil {
-		panic(err)
-	}
-	tempDir = newTempDir
-	defer func() { tempDir = previousTempDir }()
-
-	code := m.Run()
-
-	if code == 0 {
-		os.RemoveAll(tempDir)
-	}
-
-	os.Exit(code)
 }
