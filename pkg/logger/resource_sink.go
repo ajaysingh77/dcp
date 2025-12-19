@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	stdslices "slices"
 	"sync"
 	"sync/atomic"
 
@@ -66,12 +67,12 @@ func ReleaseAllResourceLogs() {
 
 	resourceLoggerDisabled.Store(true)
 
-	resources := sync.WaitGroup{}
+	wg := &sync.WaitGroup{}
+	wg.Add(len(resourceSinks))
 
 	for resourceId, sink := range resourceSinks {
-		resources.Add(1)
 		go func(resourceId string, sink *resourceFileSink) {
-			defer resources.Done()
+			defer wg.Done()
 			// Flush any buffered log entries to the file
 			sink.flush()
 			// We're making a best effort to close the file, but don't care if the operation failed
@@ -82,7 +83,7 @@ func ReleaseAllResourceLogs() {
 	// Clear out all resource sinks
 	resourceSinks = map[string]*resourceFileSink{}
 
-	resources.Wait()
+	wg.Wait()
 }
 
 type resourceSink struct {
@@ -95,11 +96,29 @@ type resourceSink struct {
 
 func newResourceSink(atomicLevel zap.AtomicLevel, innerSink logr.LogSink) *resourceSink {
 	sink := &resourceSink{
-		atomicLevel: atomicLevel,
+		atomicLevel: zap.NewAtomicLevel(),
 		innerSink:   innerSink,
 	}
+	sink.atomicLevel.SetLevel(atomicLevel.Level())
 
 	return sink
+}
+
+func (s *resourceSink) Flush() {
+	resourceLoggerLock.Lock()
+	defer resourceLoggerLock.Unlock()
+
+	wg := &sync.WaitGroup{}
+	wg.Add(len(resourceSinks))
+
+	for _, sink := range resourceSinks {
+		go func(rfs *resourceFileSink) {
+			defer wg.Done()
+			rfs.flush()
+		}(sink)
+	}
+
+	wg.Wait()
 }
 
 // Enabled implements logr.LogSink.
@@ -132,13 +151,16 @@ func (s *resourceSink) WithName(name string) logr.LogSink {
 		name = s.resourceName + "." + name
 	}
 
-	return &resourceSink{
+	newSink := &resourceSink{
 		resourceName: name,
 		resourceId:   s.resourceId,
 		values:       s.values,
-		atomicLevel:  s.atomicLevel,
+		atomicLevel:  zap.NewAtomicLevel(),
 		innerSink:    s.innerSink.WithName(name),
 	}
+	newSink.atomicLevel.SetLevel(s.atomicLevel.Level())
+
+	return newSink
 }
 
 // WithValues implements logr.LogSink.
@@ -151,20 +173,25 @@ func (s *resourceSink) WithValues(keysAndValues ...any) logr.LogSink {
 		keysAndValues = keysAndValues[2:]
 	}
 
-	return &resourceSink{
+	newSink := resourceSink{
 		resourceName: s.resourceName,
 		resourceId:   resourceId,
-		values:       append(s.values, keysAndValues...),
-		atomicLevel:  s.atomicLevel,
+		atomicLevel:  zap.NewAtomicLevel(),
 		innerSink:    s.innerSink.WithValues(keysAndValues...),
 	}
+	newSink.atomicLevel.SetLevel(s.atomicLevel.Level())
+	values := stdslices.Clone(s.values)
+	values = append(values, keysAndValues...)
+	newSink.values = values
+
+	return &newSink
 }
 
 func (s *resourceSink) writeResourceError(resourceId string, err error, msg string, keysAndValues ...any) {
 	sink := s.getSink(resourceId)
 
 	if sink != nil {
-		sink.logger.GetSink().WithValues(s.values...).Error(err, msg, keysAndValues...)
+		sink.logger.WithValues(s.values...).GetSink().Error(err, msg, keysAndValues...)
 	}
 }
 
@@ -172,7 +199,7 @@ func (s *resourceSink) writeResourceInfo(resourceId string, level int, msg strin
 	sink := s.getSink(resourceId)
 
 	if sink != nil {
-		sink.logger.GetSink().WithValues(s.values...).Info(level, msg, keysAndValues...)
+		sink.logger.WithValues(s.values...).GetSink().Info(level, msg, keysAndValues...)
 	}
 }
 
@@ -223,7 +250,7 @@ func (s *resourceSink) newResourceFileSink(resourceId string) (*resourceFileSink
 	}
 	consoleEncoder := zapcore.NewConsoleEncoder(encoderConfig)
 
-	zapLogger := zap.New(zapcore.NewCore(consoleEncoder, zapcore.AddSync(file), s.atomicLevel))
+	zapLogger := zap.New(zapcore.NewCore(consoleEncoder, zapcore.Lock(file), s.atomicLevel))
 
 	return &resourceFileSink{
 		file:   file,

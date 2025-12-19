@@ -276,8 +276,8 @@ func TestExecutableStopState(t *testing.T) {
 				runEnded := func(_ context.Context) (bool, error) {
 					endedRuns := ideRunner.FindAll(exe.Spec.ExecutablePath, func(run ctrl_testutil.TestIdeRun) bool {
 						return run.Finished() &&
-							run.RunInfo.ExitCode != nil &&
-							*run.RunInfo.ExitCode == internal_testutil.KilledProcessExitCode
+							run.ExitCode != nil &&
+							*run.ExitCode == internal_testutil.KilledProcessExitCode
 					})
 					return len(endedRuns) == 1, nil
 				}
@@ -391,8 +391,8 @@ func TestExecutableDeletion(t *testing.T) {
 				runEnded := func(_ context.Context) (bool, error) {
 					endedRuns := ideRunner.FindAll(exe.Spec.ExecutablePath, func(run ctrl_testutil.TestIdeRun) bool {
 						return run.Finished() &&
-							run.RunInfo.ExitCode != nil &&
-							*run.RunInfo.ExitCode == internal_testutil.KilledProcessExitCode
+							run.ExitCode != nil &&
+							*run.ExitCode == internal_testutil.KilledProcessExitCode
 					})
 					return len(endedRuns) == 1, nil
 				}
@@ -405,8 +405,6 @@ func TestExecutableDeletion(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range testcases {
-		tc := tc // capture range variable for use in closures/goroutines
-
 		t.Run(tc.description, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -522,6 +520,106 @@ func TestExecutableStartupFailureIDE(t *testing.T) {
 	})
 }
 
+func TestExecutableStartupFallbackAllAttemptsFail(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const exeName = "executable-startup-fallback-all-fail"
+	exePath := "/path/to/" + exeName
+
+	psc := internal_testutil.ProcessSearchCriteria{
+		Command: []string{exePath},
+	}
+	testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: psc,
+		StartupError: func(_ *internal_testutil.ProcessExecution) error {
+			return fmt.Errorf("simulated process startup failure for Executable '%s'", exeName)
+		},
+	})
+	defer testProcessExecutor.RemoveAutoExecution(psc)
+
+	exe := &apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      exeName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath:         exePath,
+			ExecutionType:          apiv1.ExecutionTypeIDE,
+			FallbackExecutionTypes: []apiv1.ExecutionType{apiv1.ExecutionTypeProcess},
+		},
+	}
+
+	t.Logf("Creating Executable '%s'...", exeName)
+	require.NoError(t, client.Create(ctx, exe), "Could not create Executable '%s'", exeName)
+
+	t.Logf("Simulating IDE startup failure for Executable '%s'...", exeName)
+	_, ideRunErr := findIdeRun(ctx, exe.Spec.ExecutablePath)
+	require.NoError(t, ideRunErr, "IDE run session for Executable '%s' could not be found", exeName)
+	ideRunErr = ideRunner.SimulateFailedRunStart(exe.NamespacedName(), fmt.Errorf("simulated IDE startup failure for Executable '%s'", exeName))
+	require.NoError(t, ideRunErr, "Could not simulate IDE startup failure for Executable '%s'", exeName)
+
+	t.Logf("Waiting for process fallback attempt for Executable '%s'...", exeName)
+	processAttemptErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
+		attempts := testProcessExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", nil)
+		return len(attempts) > 0, nil
+	})
+	require.NoError(t, processAttemptErr, "Process fallback attempt for Executable '%s' was not observed", exeName)
+
+	t.Logf("Waiting for Executable '%s' to end up in 'failed to start' state after all attempts...", exeName)
+	finalExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(exe), func(currentExe *apiv1.Executable) (bool, error) {
+		stateFailedToStart := currentExe.Status.State == apiv1.ExecutableStateFailedToStart
+		finishTimestampSet := !currentExe.Status.FinishTimestamp.IsZero()
+		return stateFailedToStart && finishTimestampSet, nil
+	})
+	require.Empty(t, finalExe.Status.ExecutionID, "Executable '%s' should not expose an execution ID after all startup attempts failed", exeName)
+	require.Nil(t, finalExe.Status.PID, "Executable '%s' should not have a PID if execution failed", exeName)
+	require.Nil(t, finalExe.Status.ExitCode, "Executable '%s' should not have an exit code if execution failed", exeName)
+}
+
+func TestExecutableStartupFallbackSucceeds(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const exeName = "executable-startup-fallback-process-succeeds"
+	exePath := "/path/to/" + exeName
+
+	exe := &apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      exeName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath:         exePath,
+			ExecutionType:          apiv1.ExecutionTypeIDE,
+			FallbackExecutionTypes: []apiv1.ExecutionType{apiv1.ExecutionTypeProcess},
+		},
+	}
+
+	t.Logf("Creating Executable '%s'...", exeName)
+	require.NoError(t, client.Create(ctx, exe), "Could not create Executable '%s'", exeName)
+
+	t.Logf("Simulating IDE startup failure for Executable '%s' to trigger fallback...", exeName)
+	_, ideRunErr := findIdeRun(ctx, exe.Spec.ExecutablePath)
+	require.NoError(t, ideRunErr, "IDE run session for Executable '%s' could not be found", exeName)
+	ideRunErr = ideRunner.SimulateFailedRunStart(exe.NamespacedName(), fmt.Errorf("simulated IDE startup failure for Executable '%s'", exeName))
+	require.NoError(t, ideRunErr, "Could not simulate IDE startup failure for Executable '%s'", exeName)
+
+	t.Logf("Waiting for process fallback to start for Executable '%s'...", exeName)
+	pid, err := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
+	require.NoError(t, err, "Process fallback could not be started for Executable '%s'", exeName)
+
+	t.Logf("Waiting for Executable '%s' to reach Running state after fallback...", exeName)
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateRunning, nil
+	})
+	require.Equal(t, strconv.Itoa(int(pid)), updatedExe.Status.ExecutionID, "Executable '%s' should expose the process execution ID after fallback", exeName)
+}
+
 // Verify ports are injected into Executable environment variables via portForServing template function.
 // Service ports are specified via service-producer annotation.
 func TestExecutableServingPortInjected(t *testing.T) {
@@ -579,7 +677,7 @@ func TestExecutableServingPortInjected(t *testing.T) {
 	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 		return len(currentExe.Status.EffectiveEnv) > 0, nil
 	})
-	effectiveEnv := slices.Map[apiv1.EnvVar, string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
 	require.True(t, slices.Contains(effectiveEnv, "SVC_PORT=7733"), "The Executable '%s' effective environment does not contain expected port information. The effective environment is %v", exe.ObjectMeta.Name, effectiveEnv)
@@ -664,7 +762,7 @@ func TestExecutableServingPortAllocatedAndInjected(t *testing.T) {
 	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 		return len(currentExe.Status.EffectiveEnv) > 0, nil
 	})
-	effectiveEnv := slices.Map[apiv1.EnvVar, string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
 	expectedEnvVar := fmt.Sprintf("SVC_PORT=%d", port)
@@ -943,7 +1041,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 		return len(currentExe.Status.EffectiveEnv) > 0, nil
 	})
-	effectiveEnv := slices.Map[apiv1.EnvVar, string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
 	expectedEnvVar := fmt.Sprintf("SVC_A_PORT=%d", svcAExpectedPort)
@@ -1006,7 +1104,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 
 	// VALIDATION PART 3: validate endpoints
 
-	endpoints := slices.MapConcurrent[apiv1.Service, *apiv1.Endpoint](maps.Values(services), func(svc apiv1.Service) *apiv1.Endpoint {
+	endpoints := slices.MapConcurrent[*apiv1.Endpoint](maps.Values(services), func(svc apiv1.Service) *apiv1.Endpoint {
 		executableEndpoint := waitEndpointExists(t, ctx,
 			fmt.Sprintf("Ensure that all expected Endpoints for Executable '%s' are created...", exe.ObjectMeta.Name),
 			func(e *apiv1.Endpoint) (bool, error) {
@@ -1028,7 +1126,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 	})
 
 	expectedPorts := []int32{svcAPort, svcBExpectedPort, svcCPort, svcDPort}
-	actualPorts := slices.Map[*apiv1.Endpoint, int32](endpoints, func(e *apiv1.Endpoint) int32 { return e.Spec.Port })
+	actualPorts := slices.Map[int32](endpoints, func(e *apiv1.Endpoint) int32 { return e.Spec.Port })
 	require.ElementsMatch(t, expectedPorts, actualPorts, "Some ports used by Endpoints of Executable '%s' are not matching what was injected into the Executable", exe.ObjectMeta.Name)
 
 	t.Logf("Ensure services exposed by Executable '%s' gets to Ready state...", exe.ObjectMeta.Name)
@@ -1089,7 +1187,7 @@ func TestClientExecutablePortForInjected(t *testing.T) {
 	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 		return len(currentExe.Status.EffectiveEnv) > 0, nil
 	})
-	effectiveEnv := slices.Map[apiv1.EnvVar, string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
 	expectedEnvVar := fmt.Sprintf("UPSTREAM_SVC_PORT=%d", expectedPort)
@@ -1172,7 +1270,7 @@ func TestExecutablePortsInjectedAfterServiceCreated(t *testing.T) {
 	})
 
 	t.Logf("Ensure the Executable.Status.EffectiveEnv contains injected ports...")
-	effectiveEnv := slices.Map[apiv1.EnvVar, string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
 	require.True(t, slices.Contains(effectiveEnv, "PRODUCED_SVC_PORT=26020"), "The Executable '%s' effective environment does not contain expected port information (PRODUCED_SVC_PORT variable). The effective environment is %v", exe.ObjectMeta.Name, effectiveEnv)
@@ -1229,7 +1327,7 @@ func TestExecutableTemplatedEnvVarsInjected(t *testing.T) {
 	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 		return len(currentExe.Status.EffectiveEnv) > 0, nil
 	})
-	effectiveEnv := slices.Map[apiv1.EnvVar, string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
 	expectedEnvVar := fmt.Sprintf("EXE_NAME=%s", updatedExe.Name)
@@ -1522,7 +1620,7 @@ func TestExecutableServingAddressInjected(t *testing.T) {
 	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&server), func(currentExe *apiv1.Executable) (bool, error) {
 		return len(currentExe.Status.EffectiveEnv) > 0, nil
 	})
-	effectiveEnv := slices.Map[apiv1.EnvVar, string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
 	expectedEnvVar := fmt.Sprintf("ADDRESS=%s", IPAddr)
@@ -1573,7 +1671,7 @@ func TestExecutableStatusUpdatedByIdeRunner(t *testing.T) {
 	type testcase struct {
 		description    string
 		exe            *apiv1.Executable
-		performStartup func(*ctrl_testutil.TestIdeRun)
+		performStartup func(*ctrl_testutil.TestIdeRun, *controllers.ExecutableStartResult)
 		verifyExe      func(*apiv1.Executable) (bool, error)
 	}
 
@@ -1627,16 +1725,17 @@ func TestExecutableStatusUpdatedByIdeRunner(t *testing.T) {
 					ExecutionType:  apiv1.ExecutionTypeIDE,
 				},
 			},
-			performStartup: func(r *ctrl_testutil.TestIdeRun) {
-				r.RunInfo.Pid = desiredSuccessfulExeStatus.PID
-				r.RunInfo.ExeState = desiredSuccessfulExeStatus.State
-				r.RunInfo.StdOutFile = desiredSuccessfulExeStatus.StdOutFile
-				r.RunInfo.StdErrFile = desiredSuccessfulExeStatus.StdErrFile
-				r.RunInfo.StartupTimestamp = metav1.NowMicro()
+			performStartup: func(_ *ctrl_testutil.TestIdeRun, result *controllers.ExecutableStartResult) {
+				result.RunID = controllers.RunID(strconv.FormatInt(*desiredSuccessfulExeStatus.PID, 10))
+				result.Pid = desiredSuccessfulExeStatus.PID
+				result.ExeState = desiredSuccessfulExeStatus.State
+				result.StdOutFile = desiredSuccessfulExeStatus.StdOutFile
+				result.StdErrFile = desiredSuccessfulExeStatus.StdErrFile
+				result.CompletionTimestamp = metav1.NowMicro()
 
 				// Timestamps are only known at test run time, so we need to set them on the desired status,
 				// so that the verification of the Executable object can be done correctly.
-				desiredSuccessfulExeStatus.StartupTimestamp = r.RunInfo.StartupTimestamp
+				desiredSuccessfulExeStatus.StartupTimestamp = result.CompletionTimestamp
 			},
 			verifyExe: func(currentExe *apiv1.Executable) (bool, error) {
 				return verifyExeStatus(currentExe, &desiredSuccessfulExeStatus)
@@ -1654,17 +1753,17 @@ func TestExecutableStatusUpdatedByIdeRunner(t *testing.T) {
 					ExecutionType:  apiv1.ExecutionTypeIDE,
 				},
 			},
-			performStartup: func(r *ctrl_testutil.TestIdeRun) {
-				r.ID = controllers.UnknownRunID
-				r.RunInfo.Pid = desiredFailedExeStatus.PID
-				r.RunInfo.ExeState = desiredFailedExeStatus.State
-				r.RunInfo.StartupTimestamp = metav1.NowMicro()
-				r.RunInfo.FinishTimestamp = metav1.NowMicro()
+			performStartup: func(run *ctrl_testutil.TestIdeRun, result *controllers.ExecutableStartResult) {
+				run.ID = controllers.UnknownRunID
+				result.RunID = controllers.UnknownRunID
+				result.Pid = desiredFailedExeStatus.PID
+				result.ExeState = desiredFailedExeStatus.State
+				result.CompletionTimestamp = metav1.NowMicro()
 
 				// Timestamps are only known at test run time, so we need to set them on the desired status,
 				// so that the verification of the Executable object can be done correctly.
-				desiredFailedExeStatus.StartupTimestamp = r.RunInfo.StartupTimestamp
-				desiredFailedExeStatus.FinishTimestamp = r.RunInfo.FinishTimestamp
+				desiredFailedExeStatus.StartupTimestamp = result.CompletionTimestamp
+				desiredFailedExeStatus.FinishTimestamp = result.CompletionTimestamp
 			},
 			verifyExe: func(currentExe *apiv1.Executable) (bool, error) {
 				return verifyExeStatus(currentExe, &desiredFailedExeStatus)
@@ -1675,8 +1774,6 @@ func TestExecutableStatusUpdatedByIdeRunner(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range testcases {
-		tc := tc
-
 		t.Run(tc.description, func(t *testing.T) {
 			t.Parallel()
 
@@ -2207,7 +2304,7 @@ func TestExecutableLogsFollowTail(t *testing.T) {
 
 	getExpectedLines := func(batches []writeBatch, tc int) [][]byte {
 		allLinesOf := func(bb []writeBatch) [][]byte {
-			return slices.Accumulate[writeBatch, [][]byte](
+			return slices.Accumulate[[][]byte](
 				bb,
 				func(lines [][]byte, wb writeBatch) [][]byte {
 					return std_slices.Concat(lines, wb.lines)

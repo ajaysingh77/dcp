@@ -29,7 +29,8 @@ const AutoStartExecutableAnnotation = "test.usvc-dev.developer.microsoft.com/aut
 type TestIdeRun struct {
 	ID                   controllers.RunID
 	Exe                  *apiv1.Executable
-	RunInfo              *controllers.ExecutableRunInfo
+	FinishTimestamp      metav1.MicroTime
+	ExitCode             *int32
 	StartWaitingCalled   bool
 	startWaitingChan     chan struct{}
 	ChangeHandler        controllers.RunChangeHandler
@@ -37,10 +38,10 @@ type TestIdeRun struct {
 }
 
 func (r *TestIdeRun) Running() bool {
-	return r.RunInfo.FinishTimestamp.IsZero()
+	return r.FinishTimestamp.IsZero()
 }
 func (r *TestIdeRun) Finished() bool {
-	return !r.RunInfo.FinishTimestamp.IsZero()
+	return !r.FinishTimestamp.IsZero()
 }
 
 type TestIdeRunner struct {
@@ -61,10 +62,9 @@ func NewTestIdeRunner(lifetimeCtx context.Context) *TestIdeRunner {
 func (r *TestIdeRunner) StartRun(
 	_ context.Context,
 	exe *apiv1.Executable,
-	startingRunInfo *controllers.ExecutableRunInfo,
 	runChangeHandler controllers.RunChangeHandler,
 	log logr.Logger,
-) error {
+) *controllers.ExecutableStartResult {
 	r.m.Lock()
 	defer r.m.Unlock()
 
@@ -72,13 +72,9 @@ func (r *TestIdeRunner) StartRun(
 
 	runID := controllers.RunID("run_" + strconv.Itoa(int(atomic.AddInt32(&r.nextRunID, 1))))
 
-	startingRunInfo.ExeState = apiv1.ExecutableStateStarting
-	startingRunInfo.RunID = runID
-
 	run := &TestIdeRun{
-		ID:      runID,
-		Exe:     exe,
-		RunInfo: startingRunInfo.Clone(),
+		ID:  runID,
+		Exe: exe,
 		StartWaitingCallback: func() {
 			r.m.Lock()
 			defer r.m.Unlock()
@@ -100,13 +96,16 @@ func (r *TestIdeRunner) StartRun(
 	}
 
 	r.Runs.Store(namespacedName, run)
+	result := controllers.NewExecutableStartResult()
 
 	if exe.Annotations != nil {
 		if asea, ok := exe.Annotations[AutoStartExecutableAnnotation]; ok && asea == "true" {
 			pid, err := randdata.MakeRandomInt64(math.MaxInt64 - 1)
 			if err != nil {
 				log.Error(err, "Failed to generate random PID for run")
-				return err
+				result.ExeState = apiv1.ExecutableStateFailedToStart
+				result.StartupError = err
+				return result
 			}
 
 			pid = pid + 1 // Ensure that the PID is positive
@@ -120,7 +119,9 @@ func (r *TestIdeRunner) StartRun(
 
 	}
 
-	return nil
+	result.ExeState = apiv1.ExecutableStateStarting
+	result.RunID = runID
+	return result
 }
 
 func (r *TestIdeRunner) StopRun(_ context.Context, runID controllers.RunID, _ logr.Logger) error {
@@ -130,11 +131,11 @@ func (r *TestIdeRunner) StopRun(_ context.Context, runID controllers.RunID, _ lo
 func (r *TestIdeRunner) SimulateSuccessfulRunStart(runID controllers.RunID, pid process.Pid_t) error {
 	return r.SimulateRunStart(
 		func(_ types.NamespacedName, run *TestIdeRun) bool { return run.ID == runID },
-		func(run *TestIdeRun) {
-			pointers.SetValue(&run.RunInfo.Pid, int64(pid))
-			run.RunInfo.RunID = runID
-			run.RunInfo.ExeState = apiv1.ExecutableStateRunning
-			run.RunInfo.StartupTimestamp = metav1.NowMicro()
+		func(run *TestIdeRun, result *controllers.ExecutableStartResult) {
+			pointers.SetValue(&result.Pid, int64(pid))
+			result.RunID = runID
+			result.ExeState = apiv1.ExecutableStateRunning
+			result.CompletionTimestamp = metav1.NowMicro()
 		},
 	)
 }
@@ -142,21 +143,26 @@ func (r *TestIdeRunner) SimulateSuccessfulRunStart(runID controllers.RunID, pid 
 func (r *TestIdeRunner) SimulateFailedRunStart(exeName types.NamespacedName, startupError error) error {
 	return r.SimulateRunStart(
 		func(objName types.NamespacedName, run *TestIdeRun) bool { return objName == exeName },
-		func(run *TestIdeRun) {
+		func(run *TestIdeRun, result *controllers.ExecutableStartResult) {
 			run.ID = controllers.UnknownRunID
-			run.RunInfo.Pid = apiv1.UnknownPID
-			run.RunInfo.ExeState = apiv1.ExecutableStateFailedToStart
-			run.RunInfo.StartupTimestamp = metav1.NowMicro()
-			run.RunInfo.FinishTimestamp = metav1.NowMicro()
+			result.RunID = controllers.UnknownRunID
+			result.Pid = apiv1.UnknownPID
+			result.ExeState = apiv1.ExecutableStateFailedToStart
+			result.CompletionTimestamp = metav1.NowMicro()
 		},
 	)
 }
 
 func (r *TestIdeRunner) SimulateRunStart(
 	isDesiredRun func(types.NamespacedName, *TestIdeRun) bool,
-	changeToStarted func(*TestIdeRun),
+	changeToStarted func(*TestIdeRun, *controllers.ExecutableStartResult),
 ) error {
-	run, found := r.findAndChangeRun(isDesiredRun, changeToStarted)
+	// Do not take a lock here. findAndChangeRun() will take a lock internally for the duration of its working.
+
+	var result controllers.ExecutableStartResult
+	run, found := r.findAndChangeRun(isDesiredRun, func(run *TestIdeRun) {
+		changeToStarted(run, &result)
+	})
 	if !found {
 		return fmt.Errorf("run for Executable '%s' was not found", run.Exe.NamespacedName().String())
 	}
@@ -165,7 +171,8 @@ func (r *TestIdeRunner) SimulateRunStart(
 		// Make sure OnStartupCompleted is called before we return and let the test proceed.
 		done := make(chan struct{})
 		go func() {
-			run.ChangeHandler.OnStartupCompleted(run.Exe.NamespacedName(), run.RunInfo.Clone(), run.StartWaitingCallback)
+			result.StartWaitForRunCompletion = run.StartWaitingCallback
+			run.ChangeHandler.OnStartupCompleted(run.Exe.NamespacedName(), &result)
 
 			close(done)
 		}()
@@ -201,8 +208,8 @@ func (r *TestIdeRunner) doStopRun(runID controllers.RunID, exitCode int32) error
 	var run, found = r.findAndChangeRun(
 		func(_ types.NamespacedName, run *TestIdeRun) bool { return run.ID == runID },
 		func(run *TestIdeRun) {
-			run.RunInfo.FinishTimestamp = metav1.NowMicro()
-			pointers.SetValue(&run.RunInfo.ExitCode, int32(exitCode))
+			run.FinishTimestamp = metav1.NowMicro()
+			pointers.SetValue(&run.ExitCode, int32(exitCode))
 		},
 	)
 

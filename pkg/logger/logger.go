@@ -84,7 +84,7 @@ func New(name string) *Logger {
 		conn, err := dialer.DialContext(context.Background(), "unix", dcpLogSocket)
 		if err == nil {
 			// If we're able to connect to the socket, use that for console formatted log output
-			consoleLog = zapcore.AddSync(conn)
+			consoleLog = zapcore.Lock(zapcore.AddSync(conn))
 		} else {
 			fmt.Fprintf(os.Stderr, "the logs should have been written to a Unix domain socket '%s' but an error occcurred when trying to connect: %s\n", dcpLogSocket, err.Error())
 		}
@@ -132,7 +132,13 @@ func (l *Logger) WithName(name string) *Logger {
 }
 
 func (l *Logger) WithResourceSink() *Logger {
-	l.Logger = l.Logger.WithSink(newResourceSink(l.atomicLevel, l.Logger.GetSink()))
+	resourceSink := newResourceSink(l.atomicLevel, l.Logger.GetSink())
+	l.Logger = l.Logger.WithSink(resourceSink)
+	flushInner := l.flush
+	l.flush = func() {
+		flushInner()
+		resourceSink.Flush()
+	}
 	return l
 }
 
@@ -202,7 +208,7 @@ func getDiagnosticsLogCore(name string, encoderConfig zapcore.EncoderConfig) (za
 	logEncoder := zapcore.NewJSONEncoder(encoderConfig)
 
 	// Return a new log core for the debug log
-	return zapcore.NewCore(logEncoder, zapcore.AddSync(logOutput), zap.NewAtomicLevelAt(logLevel)), nil
+	return zapcore.NewCore(logEncoder, zapcore.Lock(logOutput), zap.NewAtomicLevelAt(logLevel)), nil
 }
 
 // Returns the folder for diagnostics logs (and perf traces).

@@ -13,17 +13,18 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
 	"github.com/microsoft/usvc-apiserver/internal/dcpproc"
+	"github.com/microsoft/usvc-apiserver/internal/logs"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/pointers"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type processRunState struct {
@@ -48,10 +49,9 @@ func NewProcessExecutableRunner(pe process.Executor) *ProcessExecutableRunner {
 func (r *ProcessExecutableRunner) StartRun(
 	ctx context.Context,
 	exe *apiv1.Executable,
-	runInfo *controllers.ExecutableRunInfo,
 	runChangeHandler controllers.RunChangeHandler,
 	log logr.Logger,
-) error {
+) *controllers.ExecutableStartResult {
 	cmd := makeCommand(exe)
 	if osutil.IsWindows() {
 		// On Windows we have seen some apps (e.g. Python uvicorn runner) sending Ctrl-C to the whole console group
@@ -63,13 +63,14 @@ func (r *ProcessExecutableRunner) StartRun(
 	startLog := log.WithValues("Cmd", cmd.Path, "Args", cmd.Args[1:])
 	startLog.Info("Starting process...")
 	startLog.V(1).Info("Process details", "Env", cmd.Env, "Cwd", cmd.Dir)
+	result := controllers.NewExecutableStartResult()
 
 	stdOutFile, stdOutFileErr := usvc_io.OpenTempFile(fmt.Sprintf("%s_out_%s", exe.Name, exe.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
 	if stdOutFileErr != nil {
 		startLog.Error(stdOutFileErr, "Failed to create temporary file for capturing process standard output data")
 	} else {
 		cmd.Stdout = usvc_io.NewTimestampWriter(stdOutFile)
-		runInfo.StdOutFile = stdOutFile.Name()
+		result.StdOutFile = stdOutFile.Name()
 	}
 
 	stdErrFile, stdErrFileErr := usvc_io.OpenTempFile(fmt.Sprintf("%s_err_%s", exe.Name, exe.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
@@ -77,7 +78,7 @@ func (r *ProcessExecutableRunner) StartRun(
 		startLog.Error(stdErrFileErr, "Failed to create temporary file for capturing process standard error data")
 	} else {
 		cmd.Stderr = usvc_io.NewTimestampWriter(stdErrFile)
-		runInfo.StdErrFile = stdErrFile.Name()
+		result.StdErrFile = stdErrFile.Name()
 	}
 
 	var processExitHandler = process.ProcessExitHandlerFunc(func(pid process.Pid_t, exitCode int32, err error) {
@@ -105,35 +106,43 @@ func (r *ProcessExecutableRunner) StartRun(
 	pid, processIdentityTime, startWaitForProcessExit, startErr := r.pe.StartProcess(ctx, cmd, processExitHandler, process.CreationFlagEnsureKillOnDispose)
 	if startErr != nil {
 		startLog.Error(startErr, "Failed to start a process")
-		runInfo.FinishTimestamp = metav1.NowMicro()
-		runInfo.ExeState = apiv1.ExecutableStateFailedToStart
+		result.CompletionTimestamp = metav1.NowMicro()
+		result.ExeState = apiv1.ExecutableStateFailedToStart
 		if stdOutFile != nil {
 			_ = stdOutFile.Close()
+			_ = logs.RemoveWithRetry(ctx, result.StdOutFile)
+			result.StdOutFile = ""
 		}
 		if stdErrFile != nil {
 			_ = stdErrFile.Close()
+			_ = logs.RemoveWithRetry(ctx, result.StdErrFile)
+			result.StdErrFile = ""
 		}
-		return startErr
+
+		runChangeHandler.OnStartupCompleted(exe.NamespacedName(), result)
+		result.StartupError = startErr
+		return result
+	} else {
+		// Use original log here, the watcher is a different process.
+		dcpproc.RunProcessWatcher(r.pe, pid, processIdentityTime, log)
+
+		r.runningProcesses.Store(pidToRunID(pid), &processRunState{
+			identityTime: processIdentityTime,
+			stdOutFile:   stdOutFile,
+			stdErrFile:   stdErrFile,
+			cmdInfo:      cmd.String(),
+		})
+
+		result.RunID = pidToRunID(pid)
+		pointers.SetValue(&result.Pid, int64(pid))
+		result.ExeState = apiv1.ExecutableStateRunning
+		result.CompletionTimestamp = metav1.NewMicroTime(process.StartTimeForProcess(pid))
+		result.StartWaitForRunCompletion = startWaitForProcessExit
+
+		runChangeHandler.OnStartupCompleted(exe.NamespacedName(), result)
+
+		return result
 	}
-
-	// Use original log here, the watcher is a different process.
-	dcpproc.RunProcessWatcher(r.pe, pid, processIdentityTime, log)
-
-	r.runningProcesses.Store(pidToRunID(pid), &processRunState{
-		identityTime: processIdentityTime,
-		stdOutFile:   stdOutFile,
-		stdErrFile:   stdErrFile,
-		cmdInfo:      cmd.String(),
-	})
-
-	runInfo.RunID = pidToRunID(pid)
-	pointers.SetValue(&runInfo.Pid, int64(pid))
-	runInfo.ExeState = apiv1.ExecutableStateRunning
-	runInfo.StartupTimestamp = metav1.NewMicroTime(process.StartTimeForProcess(pid))
-
-	runChangeHandler.OnStartupCompleted(exe.NamespacedName(), runInfo, startWaitForProcessExit)
-
-	return nil
 }
 
 func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
@@ -193,7 +202,7 @@ func makeCommand(exe *apiv1.Executable) *exec.Cmd {
 	cmd := exec.Command(exe.Spec.ExecutablePath)
 	cmd.Args = append([]string{exe.Spec.ExecutablePath}, exe.Status.EffectiveArgs...)
 
-	cmd.Env = slices.Map[apiv1.EnvVar, string](exe.Status.EffectiveEnv, func(e apiv1.EnvVar) string { return fmt.Sprintf("%s=%s", e.Name, e.Value) })
+	cmd.Env = slices.Map[string](exe.Status.EffectiveEnv, func(e apiv1.EnvVar) string { return fmt.Sprintf("%s=%s", e.Name, e.Value) })
 
 	cmd.Dir = exe.Spec.WorkingDirectory
 

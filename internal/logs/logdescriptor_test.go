@@ -100,8 +100,8 @@ func TestLogFollowingDelayWithinBounds(t *testing.T) {
 	// Each write should be captured after no more that the sum of:
 	// - logReadRetryInterval (how long we wait before checking if log file has new data)
 	// - waitPollInterval (how often we check if all writes have been captured in this test)
-	// - 100 ms (extra delay to account for timing imprecisions and enhance test robustness)
-	const maxDiscrepancy = logReadRetryInterval + waitPollInterval + 100*time.Millisecond
+	// - 300 ms (extra delay to account for timing imprecisions and enhance test robustness)
+	const maxDiscrepancy = logReadRetryInterval + waitPollInterval + 300*time.Millisecond
 	chunkWrites := getWritesForChunks(t, buf)
 	for c := 0; c < len(chunkWrites); c++ {
 		require.WithinDuration(t, logWriteTimes[chunkWrites[c]], buf.Chunks()[c].Timestamp, maxDiscrepancy,

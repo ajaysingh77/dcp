@@ -22,6 +22,7 @@ import (
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
 
 	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
 type ExecutableState string
@@ -111,6 +112,14 @@ const (
 	// Executable will be run via an IDE such as VS or VS Code.
 	ExecutionTypeIDE ExecutionType = "IDE"
 )
+
+func (et ExecutionType) IsValid() bool {
+	return et == ExecutionTypeProcess || et == ExecutionTypeIDE
+}
+
+func (et ExecutionType) IsValidOrDefault() bool {
+	return et == "" || et.IsValid()
+}
 
 type EnvironmentBehavior string
 
@@ -231,6 +240,10 @@ type ExecutableSpec struct {
 	// +kubebuilder:default:=Process
 	ExecutionType ExecutionType `json:"executionType,omitempty"`
 
+	// Fallback execution types in case the primary execution type is not supported or startup fails.
+	// +listType=atomic
+	FallbackExecutionTypes []ExecutionType `json:"fallbackExecutionTypes,omitempty"`
+
 	// Controls behavior of environment variables inherited from the controller process.
 	AmbientEnvironment AmbientEnvironment `json:"ambientEnvironment,omitempty"`
 
@@ -272,6 +285,10 @@ func (es ExecutableSpec) Equal(other ExecutableSpec) bool {
 		return false
 	}
 
+	if !stdslices.Equal(es.FallbackExecutionTypes, other.FallbackExecutionTypes) {
+		return false
+	}
+
 	if es.AmbientEnvironment != other.AmbientEnvironment {
 		return false
 	}
@@ -304,9 +321,21 @@ func (es ExecutableSpec) Validate(specPath *field.Path) field.ErrorList {
 		errorList = append(errorList, field.Invalid(specPath.Child("executablePath"), es.ExecutablePath, "Executable path is required."))
 	}
 
-	invalidExecutionType := es.ExecutionType != "" && es.ExecutionType != ExecutionTypeProcess && es.ExecutionType != ExecutionTypeIDE
-	if invalidExecutionType {
+	if !es.ExecutionType.IsValidOrDefault() {
 		errorList = append(errorList, field.Invalid(specPath.Child("executionType"), es.ExecutionType, "Execution type must be either Process or IDE."))
+	}
+
+	if len(es.FallbackExecutionTypes) > 0 {
+		// Must be unique and different from the primary execution type
+		if !stdslices.Equal(slices.Unique(es.FallbackExecutionTypes), es.FallbackExecutionTypes) {
+			errorList = append(errorList, field.Invalid(specPath.Child("fallbackExecutionTypes"), es.FallbackExecutionTypes, "Fallback execution types must be unique."))
+		}
+		if slices.Contains(es.FallbackExecutionTypes, es.ExecutionType) {
+			errorList = append(errorList, field.Invalid(specPath.Child("fallbackExecutionTypes"), es.FallbackExecutionTypes, "Fallback execution types cannot contain the primary execution type."))
+		}
+		if !slices.All(es.FallbackExecutionTypes, ExecutionType.IsValid) {
+			errorList = append(errorList, field.Invalid(specPath.Child("fallbackExecutionTypes"), es.FallbackExecutionTypes, "At least one of the fallback execution types is invalid."))
+		}
 	}
 
 	invalidAmbientEnvironmentBehavior := es.AmbientEnvironment.Behavior != "" &&

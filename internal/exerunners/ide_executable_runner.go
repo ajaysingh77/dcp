@@ -80,76 +80,79 @@ func NewIdeExecutableRunner(lifetimeCtx context.Context, log logr.Logger) (*IdeE
 func (r *IdeExecutableRunner) StartRun(
 	ctx context.Context,
 	exe *apiv1.Executable,
-	runInfo *controllers.ExecutableRunInfo,
 	runChangeHandler controllers.RunChangeHandler,
 	log logr.Logger,
-) error {
+) *controllers.ExecutableStartResult {
+	result := controllers.NewExecutableStartResult()
+
 	if runChangeHandler == nil {
-		return fmt.Errorf(runSessionCouldNotBeStarted + "missing required runChangeHandler")
+		result.ExeState = apiv1.ExecutableStateFailedToStart
+		result.StartupError = fmt.Errorf(runSessionCouldNotBeStarted + "missing required runChangeHandler")
+		return result
 	}
 
 	ideConnErr := r.notificationHandler.WaitConnected(ctx)
 	if ideConnErr != nil {
-		return fmt.Errorf(runSessionCouldNotBeStarted+"%w", ideConnErr)
+		result.ExeState = apiv1.ExecutableStateFailedToStart
+		result.StartupError = fmt.Errorf(runSessionCouldNotBeStarted+"%w", ideConnErr)
+		return result
 	}
 
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
 	workEnqueueErr := r.startupQueue.Enqueue(func(_ context.Context) {
-		r.doStartRun(ctx, exe, runInfo.Clone(), runChangeHandler, log)
+		r.doStartRun(ctx, exe, runChangeHandler, log)
 	})
 
 	if workEnqueueErr != nil {
-		log.Error(workEnqueueErr, "Could not enqueue ide executable start operation; workload is shutting down")
-		runInfo.ExeState = apiv1.ExecutableStateFailedToStart
-		runInfo.FinishTimestamp = metav1.NowMicro()
+		log.Error(workEnqueueErr, "Could not enqueue Executable start operation for IDE-based run")
+		result.ExeState = apiv1.ExecutableStateFailedToStart
+		result.StartupError = fmt.Errorf(runSessionCouldNotBeStarted+"%w", workEnqueueErr)
+		return result
 	} else {
 		log.V(1).Info("Executable is starting...")
-		runInfo.ExeState = apiv1.ExecutableStateStarting
+		result.ExeState = apiv1.ExecutableStateStarting
+		return result
 	}
-
-	return nil
 }
 
 func (r *IdeExecutableRunner) doStartRun(
 	ctx context.Context,
 	exe *apiv1.Executable,
-	runInfo *controllers.ExecutableRunInfo,
 	runChangeHandler controllers.RunChangeHandler,
 	log logr.Logger,
 ) {
 	var stdOutFile, stdErrFile *os.File
 	namespacedName := exe.NamespacedName()
-	runInfo.RunID = controllers.UnknownRunID
+	result := controllers.NewExecutableStartResult()
 
-	reportRunCompletion := func(exeState apiv1.ExecutableState) {
+	reportRunCompletion := func(exeState apiv1.ExecutableState, startupError error) {
 		r.lock.Lock()
 		defer r.lock.Unlock()
 
-		now := metav1.NowMicro()
-		runInfo.StartupTimestamp = now
-		runInfo.FinishTimestamp = now
-		runInfo.ExeState = exeState
+		result.CompletionTimestamp = metav1.NowMicro()
+		result.ExeState = exeState
+		result.StartupError = startupError
 
 		if stdOutFile != nil {
 			_ = stdOutFile.Close()
-			_ = logs.RemoveWithRetry(ctx, runInfo.StdOutFile)
-			runInfo.StdOutFile = ""
+			_ = logs.RemoveWithRetry(ctx, result.StdOutFile)
+			result.StdOutFile = ""
 		}
 		if stdErrFile != nil {
 			_ = stdErrFile.Close()
-			_ = logs.RemoveWithRetry(ctx, runInfo.StdErrFile)
-			runInfo.StdErrFile = ""
+			_ = logs.RemoveWithRetry(ctx, result.StdErrFile)
+			result.StdErrFile = ""
 		}
 
-		runChangeHandler.OnStartupCompleted(namespacedName, runInfo, func() {})
+		runChangeHandler.OnStartupCompleted(namespacedName, result)
 	}
 
 	req, reqCancel, err := r.prepareRunRequest(exe)
 	if err != nil {
 		log.Error(err, runSessionCouldNotBeStarted+"failed to prepare run session request")
-		reportRunCompletion(apiv1.ExecutableStateFailedToStart)
+		reportRunCompletion(apiv1.ExecutableStateFailedToStart, err)
 		return
 	}
 	defer reqCancel()
@@ -162,7 +165,7 @@ func (r *IdeExecutableRunner) doStartRun(
 		log.Error(err, "Failed to create temporary file for capturing standard output data")
 		stdOutFile = nil
 	} else {
-		runInfo.StdOutFile = stdOutFile.Name()
+		result.StdOutFile = stdOutFile.Name()
 	}
 
 	stdErrFile, err = usvc_io.OpenTempFile(fmt.Sprintf("%s_err_%s", exe.Name, exe.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
@@ -170,7 +173,7 @@ func (r *IdeExecutableRunner) doStartRun(
 		log.Error(err, "Failed to create temporary file for capturing standard error data")
 		stdErrFile = nil
 	} else {
-		runInfo.StdErrFile = stdErrFile.Name()
+		result.StdErrFile = stdErrFile.Name()
 	}
 
 	if rawRequest, dumpRequestErr := httputil.DumpRequest(req, true); dumpRequestErr == nil {
@@ -187,8 +190,7 @@ func (r *IdeExecutableRunner) doStartRun(
 		} else {
 			log.Error(err, runSessionCouldNotBeStarted+"request round-trip failed")
 		}
-
-		reportRunCompletion(apiv1.ExecutableStateFailedToStart)
+		reportRunCompletion(apiv1.ExecutableStateFailedToStart, err)
 		return
 	}
 	defer resp.Body.Close()
@@ -201,24 +203,25 @@ func (r *IdeExecutableRunner) doStartRun(
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body) // Best effort to get as much data about the error as possible
-		log.Error(err, runSessionCouldNotBeStarted+"IDE returned a response indicating failure",
+		respErr := fmt.Errorf(runSessionCouldNotBeStarted+"IDE returned unexpected status code for Executable run request: %s", resp.Status)
+		log.Error(respErr, runSessionCouldNotBeStarted+"IDE returned a response indicating failure",
 			"Status", resp.Status,
 			"Body", parseResponseBody(respBody),
 		)
-		reportRunCompletion(apiv1.ExecutableStateFailedToStart) // The IDE refused to run this Executable
+		reportRunCompletion(apiv1.ExecutableStateFailedToStart, respErr)
 		return
 	}
 
 	sessionURL := resp.Header.Get("Location")
 	if sessionURL == "" {
-		reportRunCompletion(apiv1.ExecutableStateFailedToStart)
+		reportRunCompletion(apiv1.ExecutableStateFailedToStart, errors.New("IDE run session response is missing required 'Location' header"))
 		return
 	}
 
 	var rid string
 	rid, err = getLastUrlPathSegment(sessionURL)
 	if err != nil {
-		reportRunCompletion(apiv1.ExecutableStateFailedToStart)
+		reportRunCompletion(apiv1.ExecutableStateFailedToStart, err)
 		return
 	}
 
@@ -236,11 +239,14 @@ func (r *IdeExecutableRunner) doStartRun(
 		r.lock.Unlock()
 
 		if rd.state == runStateFailedToStart {
-			runInfo.ExeState = apiv1.ExecutableStateFailedToStart
+			result.ExeState = apiv1.ExecutableStateFailedToStart
 		} else {
-			runInfo.ExeState = apiv1.ExecutableStateFinished
+			result.ExeState = apiv1.ExecutableStateFinished
 		}
-		reportRunCompletion(runInfo.ExeState)
+
+		// In case of a failure we do not have an error to report here, but the IDE might have sent
+		// some error messages via notifications, which would be already sent to the run change handler.
+		reportRunCompletion(result.ExeState, nil)
 
 		return
 	}
@@ -253,18 +259,18 @@ func (r *IdeExecutableRunner) doStartRun(
 		log.Error(err, "Failed to set output writers to capture stdout/stderr") // Should never happen
 	}
 	rd.changeHandler = runChangeHandler
-	startWaitForRunCompletion := func() {
-		rd.IncreaseChangeHandlerReadiness()
-	}
 	rd.startRunMethodCompleted = true
 
 	r.lock.Unlock()
 
 	log.V(1).Info("IDE run session started", "RunID", runID)
-	runInfo.RunID = runID
-	runInfo.StartupTimestamp = metav1.NowMicro()
-	runInfo.ExeState = apiv1.ExecutableStateRunning
-	runChangeHandler.OnStartupCompleted(namespacedName, runInfo, startWaitForRunCompletion)
+	result.RunID = runID
+	result.CompletionTimestamp = metav1.NowMicro()
+	result.ExeState = apiv1.ExecutableStateRunning
+	result.StartWaitForRunCompletion = func() {
+		rd.IncreaseChangeHandlerReadiness()
+	}
+	runChangeHandler.OnStartupCompleted(namespacedName, result)
 }
 
 func (r *IdeExecutableRunner) StopRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
@@ -348,7 +354,7 @@ func (r *IdeExecutableRunner) prepareRunRequestV1(exe *apiv1.Executable) ([]byte
 		if unmarshalErr != nil {
 			return nil, fmt.Errorf("Executable cannot be run because its launch configuration is invalid: %w", unmarshalErr)
 		}
-		requestedConfigurations := slices.Map[launchConfigurationBase, string](lcs, func(lc launchConfigurationBase) string { return lc.Type })
+		requestedConfigurations := slices.Map[string](lcs, func(lc launchConfigurationBase) string { return lc.Type })
 		if len(slices.Intersect(r.connectionInfo.supportedLaunchConfigurations, requestedConfigurations)) == 0 {
 			return nil, fmt.Errorf("Executable cannot be run because its launch configuration type is not supported by the connected IDE; supported types: %v, requested types: %v",
 				r.connectionInfo.supportedLaunchConfigurations, requestedConfigurations)

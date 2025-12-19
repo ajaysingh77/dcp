@@ -59,7 +59,7 @@ type tunnelProxyStateInitializerFunc = stateInitializerFunc[
 
 // In case of ContainerNetworkTunnelProxy, the "state key" for its ObjectStateMap is the ContainerNetworkTunnelProxy's namespaced name;
 // we do not use the state key for manipulating the tunnel proxy data, but it must be unique for each tunnel proxy.
-type tunnelProxyDataMap = ObjectStateMap[types.NamespacedName, containerNetworkTunnelProxyData, *containerNetworkTunnelProxyData]
+type tunnelProxyDataMap = ObjectStateMap[types.NamespacedName, containerNetworkTunnelProxyData, *containerNetworkTunnelProxyData, *apiv1.ContainerNetworkTunnelProxy]
 
 const (
 	containerNetworkNameKey = ".metadata.containerNetworkName"
@@ -152,7 +152,7 @@ func NewContainerNetworkTunnelProxyReconciler(
 		ReconcilerBase:   base,
 		ContainerWatcher: containerWatcher,
 		config:           config,
-		proxyData:        NewObjectStateMap[types.NamespacedName, containerNetworkTunnelProxyData](),
+		proxyData:        NewObjectStateMap[types.NamespacedName, containerNetworkTunnelProxyData, *containerNetworkTunnelProxyData, *apiv1.ContainerNetworkTunnelProxy](),
 		workQueue:        resiliency.NewWorkQueue(lifetimeCtx, resiliency.DefaultConcurrency),
 	}
 	containerWatcher.ProcessContainerEvent = r.processContainerEvent
@@ -182,8 +182,8 @@ func (r *ContainerNetworkTunnelProxyReconciler) SetupWithManager(mgr ctrl.Manage
 			return nil
 		}
 
-		serverServiceNames := slices.Map[apiv1.TunnelConfiguration, string](cntp.Spec.Tunnels, func(t apiv1.TunnelConfiguration) string { return t.ServerServiceName })
-		clientServiceNames := slices.Map[apiv1.TunnelConfiguration, string](cntp.Spec.Tunnels, func(t apiv1.TunnelConfiguration) string { return t.ClientServiceName })
+		serverServiceNames := slices.Map[string](cntp.Spec.Tunnels, func(t apiv1.TunnelConfiguration) string { return t.ServerServiceName })
+		clientServiceNames := slices.Map[string](cntp.Spec.Tunnels, func(t apiv1.TunnelConfiguration) string { return t.ClientServiceName })
 
 		svcUsed := slices.Unique(append(serverServiceNames, clientServiceNames...))
 		return svcUsed
@@ -219,12 +219,12 @@ func (r *ContainerNetworkTunnelProxyReconciler) reconcileProxiesUsingNetwork(ctx
 		return nil
 	}
 
-	requests := slices.Map[apiv1.ContainerNetworkTunnelProxy, reconcile.Request](tunnelProxies.Items, func(tunnelProxy apiv1.ContainerNetworkTunnelProxy) reconcile.Request {
+	requests := slices.Map[reconcile.Request](tunnelProxies.Items, func(tunnelProxy apiv1.ContainerNetworkTunnelProxy) reconcile.Request {
 		return reconcile.Request{NamespacedName: tunnelProxy.NamespacedName()}
 	})
 
 	if len(requests) > 0 {
-		proxyNames := slices.Map[reconcile.Request, string](requests, func(req reconcile.Request) string { return req.NamespacedName.String() })
+		proxyNames := slices.Map[string](requests, func(req reconcile.Request) string { return req.NamespacedName.String() })
 		r.Log.V(1).Info("Enqueuing ContainerNetworkTunnelProxy reconciliation requests due to ContainerNetwork change",
 			"ContainerNetwork", network.Name,
 			"AffectedTunnelProxies", proxyNames,
@@ -248,12 +248,12 @@ func (r *ContainerNetworkTunnelProxyReconciler) reconcileProxiesUsingService(ctx
 		return nil
 	}
 
-	requests := slices.Map[apiv1.ContainerNetworkTunnelProxy, reconcile.Request](tunnelProxies.Items, func(tunnelProxy apiv1.ContainerNetworkTunnelProxy) reconcile.Request {
+	requests := slices.Map[reconcile.Request](tunnelProxies.Items, func(tunnelProxy apiv1.ContainerNetworkTunnelProxy) reconcile.Request {
 		return reconcile.Request{NamespacedName: tunnelProxy.NamespacedName()}
 	})
 
 	if len(requests) > 0 {
-		proxyNames := slices.Map[reconcile.Request, string](requests, func(req reconcile.Request) string { return req.NamespacedName.String() })
+		proxyNames := slices.Map[string](requests, func(req reconcile.Request) string { return req.NamespacedName.String() })
 		r.Log.V(1).Info("Enqueuing ContainerNetworkTunnelProxy reconciliation requests due to Service change",
 			"Service", service.Name,
 			"AffectedTunnelProxies", proxyNames,
@@ -288,7 +288,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) Reconcile(ctx context.Context, r
 		getSucceededCounter.Add(ctx, 1)
 	}
 
-	r.proxyData.RunDeferredOps(req.NamespacedName)
+	r.proxyData.RunDeferredOps(req.NamespacedName, &tproxy)
 
 	var change objectChange
 	patch := ctrl_client.MergeFromWithOptions(tproxy.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
@@ -883,7 +883,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) ensureContainerProxyImage(
 
 		nn := tunnelProxy.NamespacedName()
 		pdMap := r.proxyData
-		pdMap.QueueDeferredOp(nn, func(_ types.NamespacedName, _ types.NamespacedName) {
+		pdMap.QueueDeferredOp(nn, func(types.NamespacedName, types.NamespacedName, *apiv1.ContainerNetworkTunnelProxy) {
 			pdMap.Update(nn, nn, pd)
 		})
 		r.ScheduleReconciliation(nn)
@@ -924,7 +924,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startProxyPair(
 
 		pd.startupScheduled = false // Reset startupScheduled flag to allow retries
 		pdMap := r.proxyData
-		pdMap.QueueDeferredOp(nn, func(_ types.NamespacedName, _ types.NamespacedName) {
+		pdMap.QueueDeferredOp(nn, func(types.NamespacedName, types.NamespacedName, *apiv1.ContainerNetworkTunnelProxy) {
 			pdMap.Update(nn, nn, pd)
 		})
 		r.ScheduleReconciliationWithDelay(nn, reconciliationDelay)
@@ -1336,7 +1336,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startProxyPairCleanup(
 		log.V(1).Info("Completed cleanup of ContainerNetworkTunnelProxy proxy pair")
 		nn := tunnelProxy.NamespacedName()
 		pdMap := r.proxyData
-		pdMap.QueueDeferredOp(nn, func(_ types.NamespacedName, _ types.NamespacedName) {
+		pdMap.QueueDeferredOp(nn, func(types.NamespacedName, types.NamespacedName, *apiv1.ContainerNetworkTunnelProxy) {
 			pdMap.Update(nn, nn, pd)
 		})
 		r.ScheduleReconciliation(nn)
@@ -1450,7 +1450,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) onServerProcessExit(
 	}
 
 	pdMap := r.proxyData
-	pdMap.QueueDeferredOp(pName, func(_ types.NamespacedName, _ types.NamespacedName) {
+	pdMap.QueueDeferredOp(pName, func(types.NamespacedName, types.NamespacedName, *apiv1.ContainerNetworkTunnelProxy) {
 		_, pd := pdMap.BorrowByNamespacedName(pName)
 		if pd == nil {
 			return // ContainerNetworkTunnelProxy object has been deleted, nothing to do
@@ -1482,7 +1482,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) processContainerEvent(em contain
 			if pd.ClientProxyContainerID == containerID {
 				r.Log.Error(fmt.Errorf("client proxy container stopped unexpectedly"), "Container network proxy has failed", "ContainerID", containerID)
 				pdMap := r.proxyData
-				pdMap.QueueDeferredOp(pName, func(_ types.NamespacedName, _ types.NamespacedName) {
+				pdMap.QueueDeferredOp(pName, func(types.NamespacedName, types.NamespacedName, *apiv1.ContainerNetworkTunnelProxy) {
 					_, pd = pdMap.BorrowByNamespacedName(pName)
 					pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
 					pdMap.Update(pName, pName, pd)

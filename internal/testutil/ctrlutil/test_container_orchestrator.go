@@ -1098,7 +1098,7 @@ func (to *TestContainerOrchestrator) ListNetworks(ctx context.Context, options c
 		return false
 	})
 
-	return slices.Map[*containerNetwork, containers.ListedNetwork](
+	return slices.Map[containers.ListedNetwork](
 		filteredNetworks,
 		func(network *containerNetwork) containers.ListedNetwork {
 			return containers.ListedNetwork{
@@ -1851,7 +1851,7 @@ func (to *TestContainerOrchestrator) ListContainers(ctx context.Context, options
 		return false
 	})
 
-	return slices.Map[*testContainer, containers.ListedContainer](
+	return slices.Map[containers.ListedContainer](
 		filteredContainers,
 		func(container *testContainer) containers.ListedContainer {
 			return containers.ListedContainer{

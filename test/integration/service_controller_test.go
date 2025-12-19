@@ -413,7 +413,7 @@ func TestServiceConsumableAfterLatePortAllocation(t *testing.T) {
 	t.Logf("Ensure Executable '%s' is running and has the Service port injected...", exe.ObjectMeta.Name)
 	expectedEnvVar := fmt.Sprintf("PORT=%d", pConsumableAfterLatePortAllocation)
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
-		effectiveEnv := slices.Map[apiv1.EnvVar, string](currentExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+		effectiveEnv := slices.Map[string](currentExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
 			return fmt.Sprintf("%s=%s", v.Name, v.Value)
 		})
 		running := currentExe.Status.State == apiv1.ExecutableStateRunning
@@ -423,7 +423,7 @@ func TestServiceConsumableAfterLatePortAllocation(t *testing.T) {
 
 	t.Logf("Ensure Container '%s' is running and has the Service port injected...", ctr.ObjectMeta.Name)
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {
-		effectiveEnv := slices.Map[apiv1.EnvVar, string](currentCtr.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+		effectiveEnv := slices.Map[string](currentCtr.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
 			return fmt.Sprintf("%s=%s", v.Name, v.Value)
 		})
 		running := currentCtr.Status.State == apiv1.ContainerStateRunning

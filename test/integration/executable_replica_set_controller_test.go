@@ -525,7 +525,7 @@ func TestExecutableReplicaSetInjectsPortsIntoReplicas(t *testing.T) {
 			return updatedExe.Status.State == apiv1.ExecutableStateRunning, nil
 		})
 
-		effectiveEnv := slices.Map[apiv1.EnvVar, string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+		effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
 			return fmt.Sprintf("%s=%s", v.Name, v.Value)
 		})
 

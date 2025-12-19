@@ -438,7 +438,7 @@ func subscriberHasResults(
 	subscriptionReports := slices.Select(*reports, func(rws *healthProbeReportWithSubscription) bool {
 		return rws.Subscription == subscription
 	})
-	err := VerifyHealthReports(expected, slices.Map[healthProbeReportWithSubscription, HealthProbeReport](
+	err := VerifyHealthReports(expected, slices.Map[HealthProbeReport](
 		subscriptionReports, func(rws *healthProbeReportWithSubscription) HealthProbeReport { return rws.Report },
 	))
 	return err

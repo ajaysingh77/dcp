@@ -333,7 +333,7 @@ func (e *OSExecutor) stopProcessInternal(pid Pid_t, processStartTime time.Time, 
 	}
 
 	procTreeLog.V(1).Info("Make sure children of the root processes are gone...")
-	childStoppingErrors := slices.MapConcurrent[ProcessTreeItem, error](tree, func(p ProcessTreeItem) error {
+	childStoppingErrors := slices.MapConcurrent[error](tree, func(p ProcessTreeItem) error {
 		// Retry stopping the child process as we occasionally see transient "Access Denied" errors.
 		const childStopTimeout = 2 * time.Second
 		childLog := procTreeLog.WithValues("Child", p.Pid)

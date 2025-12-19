@@ -82,7 +82,7 @@ func (c *TestContainerOrchestratorClient) CaptureContainerLogs(
 		}
 		return nil
 	} else {
-		jobErrors := slices.MapConcurrent[job, error](jobs, func(j job) error {
+		jobErrors := slices.MapConcurrent[error](jobs, func(j job) error {
 			return c.getLogStream(ctx, container, options, j.sink, j.source)
 		}, slices.MaxConcurrency)
 		return errors.Join(jobErrors...)

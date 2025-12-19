@@ -9,6 +9,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/stretchr/testify/require"
+
+	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 )
 
 type testObjectState struct {
@@ -39,13 +41,11 @@ func (t *testObjectState) UpdateFrom(other *testObjectState) bool {
 var _ Cloner[*testObjectState] = (*testObjectState)(nil)
 var _ UpdateableFrom[*testObjectState] = (*testObjectState)(nil)
 
-type testObjectStateMap = ObjectStateMap[string, testObjectState, *testObjectState]
-
 // Should be possible to borrow using either key.
 func TestObjectStateMapBorrowing(t *testing.T) {
 	t.Parallel()
 
-	m := NewObjectStateMap[string, testObjectState]()
+	m := NewObjectStateMap[string, testObjectState, *testObjectState, *apiv1.Executable]()
 
 	m.Store(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}, "one", &testObjectState{tag: "uno", count: 1})
 
@@ -73,70 +73,70 @@ func TestObjectStateMapBorrowing(t *testing.T) {
 func TestObjectStateMapUpdating(t *testing.T) {
 	t.Parallel()
 
-	type testcase struct {
-		description    string
-		update         func(*testObjectStateMap, types.NamespacedName, string, string, *testObjectState) bool
-		verifyStateKey func(string)
-	}
+	m := NewObjectStateMap[string, testObjectState, *testObjectState, *apiv1.Executable]()
 
-	testcases := []testcase{
-		{
-			description: "regular update",
-			update: func(m *testObjectStateMap, ns types.NamespacedName, stateKey string, _ string, os *testObjectState) bool {
-				return m.Update(ns, stateKey, os)
-			},
-			verifyStateKey: func(stateKey string) {
-				require.Equal(t, "one", stateKey)
-			},
-		},
-		{
-			description: "update with changed state key",
-			update: func(m *testObjectStateMap, ns types.NamespacedName, stateKey string, newStateKey string, os *testObjectState) bool {
-				return m.UpdateChangingStateKey(ns, stateKey, newStateKey, os)
-			},
-			verifyStateKey: func(stateKey string) {
-				require.Equal(t, "two", stateKey)
-			},
-		},
-	}
+	m.Store(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}, "one", &testObjectState{tag: "uno", count: 1})
 
-	for _, tc := range testcases {
-		t.Run(tc.description, func(t *testing.T) {
-			t.Parallel()
+	// Update with non-existing key(s) should be a no-op
+	updated := m.Update(types.NamespacedName{Name: "not-there", Namespace: metav1.NamespaceNone}, "one", &testObjectState{tag: "uno", count: 2})
+	require.False(t, updated)
+	updated = m.Update(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}, "not-there", &testObjectState{tag: "uno", count: 2})
+	require.False(t, updated)
 
-			m := NewObjectStateMap[string, testObjectState]()
+	// Update with no changes should be a no-op
+	updated = m.Update(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}, "one", &testObjectState{tag: "uno", count: 1})
+	require.False(t, updated)
 
-			m.Store(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}, "one", &testObjectState{tag: "uno", count: 1})
+	// Update with changes should succeed
+	updated = m.Update(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}, "one", &testObjectState{tag: "uno", count: 2})
+	require.True(t, updated)
 
-			// Update with non-existing key(s) should be a no-op
-			updated := tc.update(m, types.NamespacedName{Name: "not-there", Namespace: metav1.NamespaceNone}, "one", "two", &testObjectState{tag: "uno", count: 2})
-			require.False(t, updated)
-			updated = tc.update(m, types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}, "not-there", "two", &testObjectState{tag: "uno", count: 2})
-			require.False(t, updated)
+	// Borrowing the updated object should return the updated values
+	key, os := m.BorrowByNamespacedName(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone})
+	require.NotNil(t, os)
+	require.Equal(t, "one", key)
+	require.Equal(t, "uno", os.tag)
+	require.Equal(t, 2, os.count)
+}
 
-			// Update with no changes should be a no-op
-			updated = tc.update(m, types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}, "one", "two", &testObjectState{tag: "uno", count: 1})
-			require.False(t, updated)
+func TestObjectStateMapUpdatingChangingStateKey(t *testing.T) {
+	t.Parallel()
 
-			// Update with changes should succeed
-			updated = tc.update(m, types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}, "one", "two", &testObjectState{tag: "uno", count: 2})
-			require.True(t, updated)
+	m := NewObjectStateMap[string, testObjectState, *testObjectState, *apiv1.Executable]()
 
-			// Borrowing the updated object should return the updated values
-			key, os := m.BorrowByNamespacedName(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone})
-			require.NotNil(t, os)
-			tc.verifyStateKey(key)
-			require.Equal(t, "uno", os.tag)
-			require.Equal(t, 2, os.count)
-		})
-	}
+	m.Store(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}, "one", &testObjectState{tag: "uno", count: 1})
+
+	// Update with non-existing key(s) should be a no-op
+	updated := m.UpdateChangingStateKey(types.NamespacedName{Name: "not-there", Namespace: metav1.NamespaceNone}, "one", "two", &testObjectState{tag: "uno", count: 2})
+	require.False(t, updated)
+	updated = m.UpdateChangingStateKey(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}, "not-there", "two", &testObjectState{tag: "uno", count: 2})
+	require.False(t, updated)
+
+	// Update with no changes should be a no-op
+	updated = m.UpdateChangingStateKey(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}, "one", "two", &testObjectState{tag: "uno", count: 1})
+	require.False(t, updated)
+
+	// Update with changes should succeed
+	updated = m.UpdateChangingStateKey(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}, "one", "two", &testObjectState{tag: "uno", count: 2})
+	require.True(t, updated)
+
+	// Update without changing state key should succeed as long as there are changes
+	updated = m.UpdateChangingStateKey(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}, "two", "two", &testObjectState{tag: "uno", count: 3})
+	require.True(t, updated)
+
+	// Borrowing the updated object should return the updated values
+	key, os := m.BorrowByNamespacedName(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone})
+	require.NotNil(t, os)
+	require.Equal(t, "two", key)
+	require.Equal(t, "uno", os.tag)
+	require.Equal(t, 3, os.count)
 }
 
 // Should be able to delete by either key.
 func TestObjectStateMapDeleting(t *testing.T) {
 	t.Parallel()
 
-	m := NewObjectStateMap[string, testObjectState]()
+	m := NewObjectStateMap[string, testObjectState, *testObjectState, *apiv1.Executable]()
 
 	m.Store(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}, "one", &testObjectState{tag: "uno", count: 1})
 	m.Store(types.NamespacedName{Name: "zwei", Namespace: metav1.NamespaceNone}, "two", &testObjectState{tag: "dos", count: 1})
@@ -197,13 +197,13 @@ func TestObjectStateMapDeleting(t *testing.T) {
 func TestObjectStateMapDeferredOps(t *testing.T) {
 	t.Parallel()
 
-	m := NewObjectStateMap[string, testObjectState]()
+	m := NewObjectStateMap[string, testObjectState, *testObjectState, *apiv1.Executable]()
 
 	m.Store(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}, "one", &testObjectState{tag: "uno", count: 1})
 	m.Store(types.NamespacedName{Name: "zwei", Namespace: metav1.NamespaceNone}, "two", &testObjectState{tag: "dos", count: 1})
 
 	// Queue update of the first object state
-	m.QueueDeferredOp(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}, func(name types.NamespacedName, stateKey string) {
+	m.QueueDeferredOp(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}, func(name types.NamespacedName, stateKey string, _ *apiv1.Executable) {
 		_, os := m.BorrowByNamespacedName(name)
 		require.NotNil(t, os)
 		os.tag = "uno-updated"
@@ -211,14 +211,14 @@ func TestObjectStateMapDeferredOps(t *testing.T) {
 	})
 
 	// Queue another update of the first object state
-	m.QueueDeferredOp(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}, func(name types.NamespacedName, stateKey string) {
+	m.QueueDeferredOp(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}, func(name types.NamespacedName, stateKey string, _ *apiv1.Executable) {
 		_, os := m.BorrowByNamespacedName(name)
 		require.NotNil(t, os)
 		os.count = 2
 		m.Update(name, stateKey, os)
 	})
 
-	m.RunDeferredOps(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone})
+	m.RunDeferredOps(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}, nil)
 
 	// Borrowing the updated object should return the updated values
 	stateKey, os := m.BorrowByNamespacedName(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone})
@@ -228,12 +228,12 @@ func TestObjectStateMapDeferredOps(t *testing.T) {
 	require.Equal(t, 2, os.count)
 
 	require.NotPanics(t, func() {
-		m.RunDeferredOps(types.NamespacedName{Name: "not-there", Namespace: metav1.NamespaceNone})
+		m.RunDeferredOps(types.NamespacedName{Name: "not-there", Namespace: metav1.NamespaceNone}, nil)
 	})
 
 	// There were no deferred operations for the second object state, so the values should be unchanged
 	// after running deferred operations for it.
-	m.RunDeferredOps(types.NamespacedName{Name: "zwei", Namespace: metav1.NamespaceNone})
+	m.RunDeferredOps(types.NamespacedName{Name: "zwei", Namespace: metav1.NamespaceNone}, nil)
 
 	stateKey, os = m.BorrowByNamespacedName(types.NamespacedName{Name: "zwei", Namespace: metav1.NamespaceNone})
 	require.NotNil(t, os)

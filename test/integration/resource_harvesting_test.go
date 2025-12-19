@@ -276,7 +276,7 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 
 	remaining, listNetworksErr := co.ListNetworks(ctx, containers.ListNetworksOptions{})
 	require.NoError(t, listNetworksErr, "could not list networks")
-	remainingNames := slices.Map[containers.ListedNetwork, string](remaining, func(n containers.ListedNetwork) string {
+	remainingNames := slices.Map[string](remaining, func(n containers.ListedNetwork) string {
 		return n.Name
 	})
 	require.ElementsMatch(t, []string{

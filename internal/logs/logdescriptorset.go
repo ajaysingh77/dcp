@@ -55,7 +55,7 @@ func (lds *LogDescriptorSet) Dispose() error {
 	clear(lds.descriptors)
 	lds.lock.Unlock()
 
-	ldDisposeErrors := slices.MapConcurrent[*LogDescriptor, error](allDescriptors, func(ld *LogDescriptor) error {
+	ldDisposeErrors := slices.MapConcurrent[error](allDescriptors, func(ld *LogDescriptor) error {
 		if ld.IsDisposed() {
 			return nil // Dispose() on a disposed descriptor is a no-op, but let's not do it anyway.
 		}

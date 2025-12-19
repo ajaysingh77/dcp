@@ -99,7 +99,7 @@ type containerStateInitializerFunc = stateInitializerFunc[
 	runningContainerData, *runningContainerData,
 ]
 
-type runningContainersMap = ObjectStateMap[containerID, runningContainerData, *runningContainerData]
+type runningContainersMap = ObjectStateMap[containerID, runningContainerData, *runningContainerData, *apiv1.Container]
 
 type ContainerReconciler struct {
 	*ReconcilerBase[apiv1.Container, *apiv1.Container]
@@ -146,7 +146,7 @@ func NewContainerReconciler(
 		ReconcilerBase:    base,
 		ContainerWatcher:  containerWatcher,
 		orchestrator:      orchestrator,
-		runningContainers: NewObjectStateMap[containerID, runningContainerData](),
+		runningContainers: NewObjectStateMap[containerID, runningContainerData, *runningContainerData, *apiv1.Container](),
 		startupQueue:      resiliency.NewWorkQueue(lifetimeCtx, config.MaxParallelContainerStarts),
 		hpSet:             healthProbeSet,
 		healthProbeCh:     concurrency.NewUnboundedChan[health.HealthProbeReport](lifetimeCtx),
@@ -237,7 +237,7 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		log = log.WithValues("ContainerName", strings.TrimSpace(container.Spec.ContainerName))
 	}
 
-	r.runningContainers.RunDeferredOps(req.NamespacedName)
+	r.runningContainers.RunDeferredOps(req.NamespacedName, &container)
 
 	var change objectChange
 	patch := ctrl_client.MergeFromWithOptions(container.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
@@ -924,7 +924,7 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 		}
 
 		rcMap := r.runningContainers
-		r.runningContainers.QueueDeferredOp(container.NamespacedName(), func(containerObjectName types.NamespacedName, id containerID) {
+		r.runningContainers.QueueDeferredOp(container.NamespacedName(), func(containerObjectName types.NamespacedName, id containerID, _ *apiv1.Container) {
 			rcMap.Update(containerObjectName, id, rcd)
 		})
 		r.ScheduleReconciliation(container.NamespacedName())
@@ -1216,7 +1216,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			if len(rcd.runSpec.Env) > 0 {
 				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
 					Key: envLabel,
-					Value: strings.Join(slices.Map[apiv1.EnvVar, string](rcd.runSpec.Env, func(env apiv1.EnvVar) string {
+					Value: strings.Join(slices.Map[string](rcd.runSpec.Env, func(env apiv1.EnvVar) string {
 						return env.Name
 					}), "\n"),
 				})
@@ -1225,7 +1225,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			if len(rcd.runSpec.Ports) > 0 {
 				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
 					Key: portsLabel,
-					Value: strings.Join(slices.Map[apiv1.ContainerPort, string](rcd.runSpec.Ports, func(port apiv1.ContainerPort) string {
+					Value: strings.Join(slices.Map[string](rcd.runSpec.Ports, func(port apiv1.ContainerPort) string {
 						protocol := "tcp"
 						if port.Protocol != "" {
 							protocol = strings.ToLower(string(port.Protocol))
@@ -1238,7 +1238,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			if len(rcd.runSpec.VolumeMounts) > 0 {
 				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
 					Key: mountsLabel,
-					Value: strings.Join(slices.Map[apiv1.VolumeMount, string](rcd.runSpec.VolumeMounts, func(mount apiv1.VolumeMount) string {
+					Value: strings.Join(slices.Map[string](rcd.runSpec.VolumeMounts, func(mount apiv1.VolumeMount) string {
 						return fmt.Sprintf("type=%s,src=%s", mount.Type, mount.Source)
 					}), "\n"),
 				})
@@ -1380,7 +1380,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 					bundleCreateFilesOptions := containers.CreateFilesOptions{
 						Container:   inspected.Id,
 						Destination: bundleDir,
-						Entries: slices.Map[string, apiv1.FileSystemEntry](files, func(file string) apiv1.FileSystemEntry {
+						Entries: slices.Map[apiv1.FileSystemEntry](files, func(file string) apiv1.FileSystemEntry {
 							return apiv1.FileSystemEntry{
 								Name:            path.Base(file),
 								Contents:        strings.Join(bundle, "\n"),
@@ -1454,7 +1454,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 		}
 
 		rcMap := r.runningContainers
-		r.runningContainers.QueueDeferredOp(container.NamespacedName(), func(containerObjectName types.NamespacedName, containerID containerID) {
+		r.runningContainers.QueueDeferredOp(container.NamespacedName(), func(containerObjectName types.NamespacedName, containerID containerID, _ *apiv1.Container) {
 			rcMap.UpdateChangingStateKey(containerObjectName, placeholderContainerID, rcd.containerID, rcd)
 		})
 		r.ScheduleReconciliation(container.NamespacedName())
@@ -1476,7 +1476,7 @@ func (r *ContainerReconciler) stopContainerFunc(container *apiv1.Container, rcd 
 		}
 
 		rcMap := r.runningContainers
-		r.runningContainers.QueueDeferredOp(container.NamespacedName(), func(containerObjectName types.NamespacedName, containerID containerID) {
+		r.runningContainers.QueueDeferredOp(container.NamespacedName(), func(containerObjectName types.NamespacedName, containerID containerID, _ *apiv1.Container) {
 			rcMap.Update(containerObjectName, containerID, rcd)
 		})
 		r.ScheduleReconciliation(container.NamespacedName())
@@ -1511,6 +1511,7 @@ func (r *ContainerReconciler) cleanupContainerResources(ctx context.Context, con
 	r.cleanupDcpContainerResources(ctx, container, log)
 	r.removeContainerNetworkConnections(ctx, container, log)
 	r.deleteContainer(ctx, container, rcd, log)
+	logger.ReleaseResourceLog(container.GetResourceId())
 }
 
 // Removes any resources that DCP is managing for the running container.
@@ -1630,7 +1631,7 @@ func (r *ContainerReconciler) handleContainerNetworkConnections(
 		return nil, additionalReconciliationNeeded
 	}
 
-	connectedNetworkNames := slices.Map[*apiv1.ContainerNetwork, string](connected, func(n *apiv1.ContainerNetwork) string {
+	connectedNetworkNames := slices.Map[string](connected, func(n *apiv1.ContainerNetwork) string {
 		return n.NamespacedName().String()
 	})
 
@@ -2067,7 +2068,7 @@ func (r *ContainerReconciler) handleHealthProbeResults() {
 			rcd.healthProbeResults[report.Probe.Name] = report.Result
 
 			rcMap := r.runningContainers
-			r.runningContainers.QueueDeferredOp(containerName, func(types.NamespacedName, containerID) {
+			r.runningContainers.QueueDeferredOp(containerName, func(types.NamespacedName, containerID, *apiv1.Container) {
 				// The run may have been deleted by the time we get here, so we do not care if Update() returns false.
 				_ = rcMap.Update(containerName, cid, rcd)
 			})

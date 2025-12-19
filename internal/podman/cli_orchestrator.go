@@ -304,7 +304,7 @@ func (pco *PodmanCliOrchestrator) RemoveVolumes(ctx context.Context, options con
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
-	removed := slices.Map[[]byte, string](nonEmpty, func(bs []byte) string { return string(bs) })
+	removed := slices.Map[string](nonEmpty, func(bs []byte) string { return string(bs) })
 
 	if len(removed) < len(options.Volumes) {
 		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all volumes were removed, expected %d but got %d", len(options.Volumes), len(removed))))
@@ -729,7 +729,7 @@ func (pco *PodmanCliOrchestrator) StartContainers(ctx context.Context, options c
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
-	started := slices.Map[[]byte, string](nonEmpty, func(bs []byte) string { return string(bs) })
+	started := slices.Map[string](nonEmpty, func(bs []byte) string { return string(bs) })
 
 	if len(started) < len(options.Containers) {
 		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all containers were started, expected %d but got %d", len(options.Containers), len(started))))
@@ -758,7 +758,7 @@ func (pco *PodmanCliOrchestrator) StopContainers(ctx context.Context, options co
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
-	stopped := slices.Map[[]byte, string](nonEmpty, func(bs []byte) string { return string(bs) })
+	stopped := slices.Map[string](nonEmpty, func(bs []byte) string { return string(bs) })
 
 	if len(stopped) < len(options.Containers) {
 		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all containers were stopped, expected %d but got %d", len(options.Containers), len(stopped))))
@@ -785,7 +785,7 @@ func (pco *PodmanCliOrchestrator) RemoveContainers(ctx context.Context, options 
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
-	removed := slices.Map[[]byte, string](nonEmpty, func(bs []byte) string { return string(bs) })
+	removed := slices.Map[string](nonEmpty, func(bs []byte) string { return string(bs) })
 
 	if len(removed) < len(options.Containers) {
 		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all containers were removed, expected %d but got %d", len(options.Containers), len(removed))))
@@ -946,7 +946,7 @@ func (pco *PodmanCliOrchestrator) RemoveNetworks(ctx context.Context, options co
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
-	removed := slices.Map[[]byte, string](nonEmpty, func(bs []byte) string { return string(bs) })
+	removed := slices.Map[string](nonEmpty, func(bs []byte) string { return string(bs) })
 
 	if len(removed) < len(options.Networks) {
 		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all networks were removed, expected %d but got %d", len(options.Networks), len(removed))))

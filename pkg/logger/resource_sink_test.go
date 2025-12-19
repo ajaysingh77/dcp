@@ -28,14 +28,12 @@ func TestResourceSink(t *testing.T) {
 	logger := New("resource-sink-log").WithResourceSink().WithName("resource-sink-log")
 	log := logger.Logger
 
-	defer ReleaseAllResourceLogs()
-
 	require.NoFileExists(t, expectedResourceFilePath)
 
 	log = log.WithValues(RESOURCE_LOG_STREAM_ID, resourceId)
 	log.Info("This is a test log entry", "Key1", "Value1")
 
-	logger.flush()
+	logger.Flush()
 
 	// Ensure that the resource log file exists
 	fileExistsErr := resiliency.RetryExponentialWithTimeout(t.Context(), 10*time.Second, func() error {
@@ -44,19 +42,22 @@ func TestResourceSink(t *testing.T) {
 	})
 	require.NoError(t, fileExistsErr)
 
-	require.FileExists(t, expectedResourceFilePath)
-
-	file, fileErr := usvc_io.OpenFile(expectedResourceFilePath, os.O_RDONLY, 0)
-	require.NoError(t, fileErr)
-	defer func() {
-		file.Close()
-		_ = os.Remove(expectedResourceFilePath)
-	}()
+	defer func() { _ = os.Remove(expectedResourceFilePath) }()
 
 	// logger.flush() does not guarantee that subsequent reads will see all the data immediately
 	require.EventuallyWithTf(t, func(c *assert.CollectT) {
+		file, fileErr := usvc_io.OpenFile(expectedResourceFilePath, os.O_RDONLY, 0)
+		require.NoError(c, fileErr)
+		if fileErr != nil {
+			return
+		}
+		defer func() { _ = file.Close() }()
+
 		contents, readErr := io.ReadAll(file)
 		require.NoError(c, readErr)
+		if readErr != nil {
+			return
+		}
 
 		require.Contains(c, string(contents), "This is a test log entry")
 		require.Contains(c, string(contents), "{\"Key1\": \"Value1\"}")
@@ -74,19 +75,17 @@ func TestResourceSinkNoResourceId(t *testing.T) {
 	logger := New("resource-sink-no-resource-id-log").WithResourceSink().WithName("resource-sink-no-resource-id-log")
 	log := logger.Logger
 
-	defer ReleaseAllResourceLogs()
-
 	require.NoFileExists(t, expectedResourceFilePath)
 
 	log = log.WithValues(RESOURCE_LOG_STREAM_ID, resourceId, "Key1", "Value1")
 	log.Info("This is a resource with an id", "Key2", "Value2")
 	log.Error(fmt.Errorf("error of some sort"), "This is an error record")
 
-	// When we reset the resource ID we should no longer write to the file
-	log = log.WithValues(RESOURCE_LOG_STREAM_ID, resourceId)
+	// When we do not use the log with resource stream ID, we should not write to the resource log file.
+	log = logger.Logger
 	log.Info("This log entry has no resource id", "Key3", "Value3")
 
-	logger.flush()
+	logger.Flush()
 
 	// Ensure that the resource log file exists
 	fileExistsErr := resiliency.RetryExponentialWithTimeout(t.Context(), 10*time.Second, func() error {
@@ -95,17 +94,22 @@ func TestResourceSinkNoResourceId(t *testing.T) {
 	})
 	require.NoError(t, fileExistsErr)
 
-	file, fileErr := usvc_io.OpenFile(expectedResourceFilePath, os.O_RDONLY, 0)
-	require.NoError(t, fileErr)
-	defer func() {
-		file.Close()
-		_ = os.Remove(expectedResourceFilePath)
-	}()
+	defer func() { _ = os.Remove(expectedResourceFilePath) }()
 
 	// logger.flush() does not guarantee that subsequent reads will see all the data immediately
 	require.EventuallyWithTf(t, func(c *assert.CollectT) {
+		file, fileErr := usvc_io.OpenFile(expectedResourceFilePath, os.O_RDONLY, 0)
+		require.NoError(c, fileErr)
+		if fileErr != nil {
+			return
+		}
+		defer func() { _ = file.Close() }()
+
 		contents, readErr := io.ReadAll(file)
 		require.NoError(c, readErr)
+		if readErr != nil {
+			return
+		}
 
 		require.Contains(c, string(contents), "info\tresource-sink-no-resource-id-log\tThis is a resource with an id\t{\"Key1\": \"Value1\", \"Key2\": \"Value2\"}")
 		require.Contains(c, string(contents), "error\tresource-sink-no-resource-id-log\tThis is an error record\t{\"Key1\": \"Value1\", \"error\": \"error of some sort\"}")

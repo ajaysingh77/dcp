@@ -45,7 +45,7 @@ func NormalizeCliErrors(errBuf *bytes.Buffer, errorMatches ...ErrorMatch) error 
 
 	lines := bytes.Split(errBuf.Bytes(), osutil.LF())
 
-	return slices.Accumulate[[]byte, error](lines, func(err error, line []byte) error {
+	return slices.Accumulate[error](lines, func(err error, line []byte) error {
 		if len(line) == 0 {
 			return err // Skip empty lines
 		}

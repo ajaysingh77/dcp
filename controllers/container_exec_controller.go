@@ -348,6 +348,7 @@ func (r *ContainerExecReconciler) releaseContainerExecResources(exec *apiv1.Cont
 	// but it is a failure induced by the Executable user), so we stop tracking the run now.
 	r.executions.Delete(exec.UID)
 	r.deleteOutputFiles(exec, log)
+	logger.ReleaseResourceLog(exec.GetResourceId())
 }
 
 func (r *ContainerExecReconciler) stopContainerExec(exec *apiv1.ContainerExec, log logr.Logger) {

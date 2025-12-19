@@ -60,7 +60,7 @@ type EndpointOwner[EndpointCreationContext any] interface {
 func SetupEndpointIndexWithManager(mgr ctrl.Manager) error {
 	return mgr.GetFieldIndexer().IndexField(context.Background(), &apiv1.Endpoint{}, commonapi.WorkloadOwnerKey, func(rawObj ctrl_client.Object) []string {
 		endpoint := rawObj.(*apiv1.Endpoint)
-		return slices.Map[metav1.OwnerReference, string](endpoint.OwnerReferences, func(ref metav1.OwnerReference) string {
+		return slices.Map[string](endpoint.OwnerReferences, func(ref metav1.OwnerReference) string {
 			return string(ref.UID)
 		})
 	})
@@ -187,7 +187,7 @@ func ensureEndpointsForWorkload[EndpointCreationContext any](
 
 		if len(createdEndpoints) > 0 {
 			svcLog.V(1).Info("New Endpoint(s) created",
-				"Endpoints", logger.FriendlyStringSlice(slices.Map[*apiv1.Endpoint, string](createdEndpoints, (*apiv1.Endpoint).String)),
+				"Endpoints", logger.FriendlyStringSlice(slices.Map[string](createdEndpoints, (*apiv1.Endpoint).String)),
 			)
 		}
 
@@ -223,9 +223,9 @@ func removeEndpointsForWorkload(ctx context.Context, r ctrl_client.Client, owner
 }
 
 func toEndpointPointers(evs []apiv1.Endpoint) []*apiv1.Endpoint {
-	return slices.Map[apiv1.Endpoint, *apiv1.Endpoint](evs, func(e apiv1.Endpoint) *apiv1.Endpoint { return &e })
+	return slices.Map[*apiv1.Endpoint](evs, func(e apiv1.Endpoint) *apiv1.Endpoint { return &e })
 }
 
 func toEndpointValues(eps []*apiv1.Endpoint) []apiv1.Endpoint {
-	return slices.Map[*apiv1.Endpoint, apiv1.Endpoint](eps, func(e *apiv1.Endpoint) apiv1.Endpoint { return *e })
+	return slices.Map[apiv1.Endpoint](eps, func(e *apiv1.Endpoint) apiv1.Endpoint { return *e })
 }

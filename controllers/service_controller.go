@@ -163,7 +163,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.Get(ctx, req.NamespacedName, &svc); err != nil {
 		if apimachinery_errors.IsNotFound(err) {
 			log.V(1).Info("The Service object does not exist yet or was deleted")
-			r.stopService(req.NamespacedName, log)
+			r.stopService(req.NamespacedName, nil, log)
 			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
 		} else {
@@ -182,7 +182,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	if svc.DeletionTimestamp != nil && !svc.DeletionTimestamp.IsZero() {
 		log.V(1).Info("Service object is being deleted")
-		r.stopService(svc.NamespacedName(), log)
+		r.stopService(svc.NamespacedName(), &svc, log)
 		change = deleteFinalizer(&svc, serviceFinalizer, log)
 		serviceCounters(ctx, &svc, -1) // Service is being deleted
 	} else {
@@ -199,12 +199,15 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	return result, err
 }
 
-func (r *ServiceReconciler) stopService(svcName types.NamespacedName, log logr.Logger) {
+func (r *ServiceReconciler) stopService(svcName types.NamespacedName, svc *apiv1.Service, log logr.Logger) {
 	serviceData, found := r.serviceInfo.LoadAndDelete(svcName)
 	if !found || len(serviceData.proxies) == 0 {
 		return
 	}
 	stopProxies(serviceData.proxies, log)
+	if svc != nil {
+		logger.ReleaseResourceLog(svc.GetResourceId())
+	}
 }
 
 func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Context, svc *apiv1.Service, log logr.Logger) objectChange {

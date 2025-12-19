@@ -7,6 +7,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 )
 
@@ -27,29 +28,29 @@ type PInMemoryObjectState[IMOS any] interface {
 	UpdateableFrom[*IMOS]
 }
 
-type DeferredMapOperation[StateKeyT comparable] func(types.NamespacedName, StateKeyT)
+type DeferredMapOperation[StateKeyT comparable, PObj commonapi.DcpModelObject] func(types.NamespacedName, StateKeyT, PObj)
 
 // ObjectStateMap is a specialized map that stores state of Kubernetes objects.
 // It is optimized for mixed use from controller reconciliation loops
 // and event handlers/worker gorooutines running outside of reconciliation loops.
 
-type ObjectStateMap[StateKeyT comparable, OS any, POS PInMemoryObjectState[OS]] struct {
+type ObjectStateMap[StateKeyT comparable, OS any, POS PInMemoryObjectState[OS], PObj commonapi.DcpModelObject] struct {
 	inner       *maps.DualKeyMap[types.NamespacedName, StateKeyT, POS]
 	lock        *sync.RWMutex
-	deferredOps *maps.DualKeyMap[types.NamespacedName, StateKeyT, []DeferredMapOperation[StateKeyT]]
+	deferredOps *maps.DualKeyMap[types.NamespacedName, StateKeyT, []DeferredMapOperation[StateKeyT, PObj]]
 }
 
-func NewObjectStateMap[StateKeyT comparable, OS any, POS PInMemoryObjectState[OS]]() *ObjectStateMap[StateKeyT, OS, POS] {
-	return &ObjectStateMap[StateKeyT, OS, POS]{
+func NewObjectStateMap[StateKeyT comparable, OS any, POS PInMemoryObjectState[OS], PObj commonapi.DcpModelObject]() *ObjectStateMap[StateKeyT, OS, POS, PObj] {
+	return &ObjectStateMap[StateKeyT, OS, POS, PObj]{
 		inner:       maps.NewDualKeyMap[types.NamespacedName, StateKeyT, POS](),
 		lock:        new(sync.RWMutex),
-		deferredOps: maps.NewDualKeyMap[types.NamespacedName, StateKeyT, []DeferredMapOperation[StateKeyT]](),
+		deferredOps: maps.NewDualKeyMap[types.NamespacedName, StateKeyT, []DeferredMapOperation[StateKeyT, PObj]](),
 	}
 }
 
 // Returns a clone of the object state for the given namespaced name.
 // If the object state is not found, the second return value will be nil.
-func (m *ObjectStateMap[StateKeyT, OS, POS]) BorrowByNamespacedName(namespaceName types.NamespacedName) (StateKeyT, POS) {
+func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) BorrowByNamespacedName(namespaceName types.NamespacedName) (StateKeyT, POS) {
 	m.lock.RLock()
 	defer m.lock.RUnlock()
 
@@ -63,7 +64,7 @@ func (m *ObjectStateMap[StateKeyT, OS, POS]) BorrowByNamespacedName(namespaceNam
 
 // Returns a clone of the object state for the given a state key.
 // If the object state is not found, the second return value will be nil.
-func (m *ObjectStateMap[StateKeyT, OS, POS]) BorrowByStateKey(stateKey StateKeyT) (types.NamespacedName, POS) {
+func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) BorrowByStateKey(stateKey StateKeyT) (types.NamespacedName, POS) {
 	m.lock.RLock()
 	defer m.lock.RUnlock()
 
@@ -77,7 +78,7 @@ func (m *ObjectStateMap[StateKeyT, OS, POS]) BorrowByStateKey(stateKey StateKeyT
 
 // Stores the object state for the given namespaced name and state key,
 // unconditionally overwriting any existing state.
-func (m *ObjectStateMap[StateKeyT, OS, POS]) Store(namespaceName types.NamespacedName, k2 StateKeyT, pos POS) {
+func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) Store(namespaceName types.NamespacedName, k2 StateKeyT, pos POS) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
@@ -87,7 +88,7 @@ func (m *ObjectStateMap[StateKeyT, OS, POS]) Store(namespaceName types.Namespace
 // Updates the object state for the given namespaced name and state key.
 // The operation fails (returning false) if the object state is not found using either key,
 // or if no changes have been made to the object (UpdateFrom() returned false).
-func (m *ObjectStateMap[StateKeyT, OS, POS]) Update(namespaceName types.NamespacedName, stateKey StateKeyT, pos POS) bool {
+func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) Update(namespaceName types.NamespacedName, stateKey StateKeyT, pos POS) bool {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
@@ -107,7 +108,7 @@ func (m *ObjectStateMap[StateKeyT, OS, POS]) Update(namespaceName types.Namespac
 
 // UpdateChangingStateKey() is like Update(), with the additional effect of changing the state key
 // the object state is stored under.
-func (m *ObjectStateMap[StateKeyT, OS, POS]) UpdateChangingStateKey(namespaceName types.NamespacedName, oldStateKey StateKeyT, newStateKey StateKeyT, pos POS) bool {
+func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) UpdateChangingStateKey(namespaceName types.NamespacedName, oldStateKey StateKeyT, newStateKey StateKeyT, pos POS) bool {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
@@ -127,7 +128,7 @@ func (m *ObjectStateMap[StateKeyT, OS, POS]) UpdateChangingStateKey(namespaceNam
 }
 
 // DeleteByNamespacedName() deletes the object state for the given namespaced name.
-func (m *ObjectStateMap[StateKeyT, OS, POS]) DeleteByNamespacedName(namespaceName types.NamespacedName) {
+func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) DeleteByNamespacedName(namespaceName types.NamespacedName) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
@@ -135,7 +136,7 @@ func (m *ObjectStateMap[StateKeyT, OS, POS]) DeleteByNamespacedName(namespaceNam
 }
 
 // DeleteByStateKey() deletes the object state for the given state key.
-func (m *ObjectStateMap[StateKeyT, OS, POS]) DeleteByStateKey(stateKey StateKeyT) {
+func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) DeleteByStateKey(stateKey StateKeyT) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
@@ -144,7 +145,7 @@ func (m *ObjectStateMap[StateKeyT, OS, POS]) DeleteByStateKey(stateKey StateKeyT
 
 // QueueDeferredOp() queues a deferred operation to be run later (by calling RunDeferredOps()).
 // The operation fails (returning false) if the object state is not found using the given key.
-func (m *ObjectStateMap[StateKeyT, OS, POS]) QueueDeferredOp(namespaceName types.NamespacedName, op DeferredMapOperation[StateKeyT]) bool {
+func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) QueueDeferredOp(namespaceName types.NamespacedName, op DeferredMapOperation[StateKeyT, PObj]) bool {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
@@ -164,7 +165,7 @@ func (m *ObjectStateMap[StateKeyT, OS, POS]) QueueDeferredOp(namespaceName types
 }
 
 // RunDeferredOps() runs all deferred operations for the given namespaced name.
-func (m *ObjectStateMap[StateKeyT, OS, POS]) RunDeferredOps(namespaceName types.NamespacedName) {
+func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) RunDeferredOps(namespaceName types.NamespacedName, obj PObj) {
 	m.lock.Lock()
 
 	stateKey, ops, found := m.deferredOps.FindByFirstKey(namespaceName)
@@ -179,12 +180,12 @@ func (m *ObjectStateMap[StateKeyT, OS, POS]) RunDeferredOps(namespaceName types.
 	}
 
 	for _, op := range ops {
-		op(namespaceName, stateKey)
+		op(namespaceName, stateKey, obj)
 	}
 }
 
 // Clear() removes all object states from the map.
-func (m *ObjectStateMap[StateKeyT, OS, POS]) Clear() {
+func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) Clear() {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
@@ -194,7 +195,7 @@ func (m *ObjectStateMap[StateKeyT, OS, POS]) Clear() {
 
 // Range() iterates over all object states in the map and calls the given function for each one.
 // Every instance presented to the function is a clone of the object state.
-func (m *ObjectStateMap[StateKeyT, OS, POS]) Range(f func(types.NamespacedName, StateKeyT, POS) bool) {
+func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) Range(f func(types.NamespacedName, StateKeyT, POS) bool) {
 	m.lock.RLock()
 	type mapEntry struct {
 		n   types.NamespacedName

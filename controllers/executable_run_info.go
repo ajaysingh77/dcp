@@ -5,7 +5,6 @@ package controllers
 import (
 	"fmt"
 	stdlib_maps "maps"
-	"strings"
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -15,9 +14,41 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/health"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/pointers"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
+
+// The startup stage for an Executable run. Non-negative values
+// indicate that the startup progressed beyond initialization stage
+// and we are using the Executable runner with index equal to the stage value
+// (0 for default runner, 1 for first fallback, etc.).
+type ExecutableStartuptStage int
+
+const (
+	StartupStageInitial              ExecutableStartuptStage = -3
+	StartupStageCertificateDataReady ExecutableStartuptStage = -2
+	StartupStageDataInitialized      ExecutableStartuptStage = -1
+	StartupStageDefaultRunner        ExecutableStartuptStage = 0
+)
+
+func (s ExecutableStartuptStage) String() string {
+	switch s {
+	case StartupStageInitial:
+		return "initial"
+	case StartupStageCertificateDataReady:
+		return "certificate data ready"
+	case StartupStageDataInitialized:
+		return "run data initialized"
+	case StartupStageDefaultRunner:
+		return "using default runner"
+	default:
+		if s > 0 {
+			return fmt.Sprintf("using fallback runner %d", int(s)-1)
+		} else {
+			return fmt.Sprintf("unknown negative stage %d", int(s)) // Should never happen
+		}
+	}
+}
 
 // Stores information about Executable run
 type ExecutableRunInfo struct {
@@ -62,6 +93,12 @@ type ExecutableRunInfo struct {
 
 	// True if Executable stop was initiated/queued.
 	stopAttemptInitiated bool
+
+	// The startup stage reached for the Executable
+	startupStage ExecutableStartuptStage
+
+	// Results of Executable startup attempts
+	startResults []*ExecutableStartResult
 }
 
 func NewRunInfo(exe *apiv1.Executable) *ExecutableRunInfo {
@@ -73,6 +110,7 @@ func NewRunInfo(exe *apiv1.Executable) *ExecutableRunInfo {
 		StartupTimestamp:   metav1.MicroTime{},
 		FinishTimestamp:    metav1.MicroTime{},
 		healthProbeResults: make(map[string]apiv1.HealthProbeResult),
+		startupStage:       StartupStageInitial,
 	}
 }
 
@@ -158,6 +196,9 @@ func (ri *ExecutableRunInfo) UpdateFrom(other *ExecutableRunInfo) bool {
 	}
 
 	if len(other.ReservedPorts) > 0 {
+		if ri.ReservedPorts == nil {
+			ri.ReservedPorts = make(map[types.NamespacedName]int32)
+		}
 		updated = maps.Insert(ri.ReservedPorts, stdlib_maps.All(other.ReservedPorts)) || updated
 	}
 
@@ -168,6 +209,23 @@ func (ri *ExecutableRunInfo) UpdateFrom(other *ExecutableRunInfo) bool {
 	if other.healthProbesEnabled != nil && !pointers.EqualValue(ri.healthProbesEnabled, other.healthProbesEnabled) {
 		pointers.SetValueFrom(&ri.healthProbesEnabled, other.healthProbesEnabled)
 		updated = true
+	}
+
+	if other.startupStage != StartupStageInitial && ri.startupStage != other.startupStage {
+		ri.startupStage = other.startupStage
+		updated = true
+	}
+
+	if len(other.startResults) >= len(ri.startResults) {
+		different := len(other.startResults) > len(ri.startResults) || slices.Any(ri.startResults, func(i int, v *ExecutableStartResult) bool {
+			return !v.Equal(other.startResults[i])
+		})
+
+		if different {
+			// ExecutableStartResult contains pointers, so clone to avoid false sharing.
+			ri.startResults = slices.Map[*ExecutableStartResult](other.startResults, (*ExecutableStartResult).Clone)
+			updated = true
+		}
 	}
 
 	return updated
@@ -198,6 +256,8 @@ func (ri *ExecutableRunInfo) Clone() *ExecutableRunInfo {
 	retval.healthProbeResults = stdlib_maps.Clone(ri.healthProbeResults)
 	pointers.SetValueFrom(&retval.healthProbesEnabled, ri.healthProbesEnabled)
 	retval.stopAttemptInitiated = ri.stopAttemptInitiated
+	retval.startupStage = ri.startupStage
+	retval.startResults = slices.Map[*ExecutableStartResult](ri.startResults, (*ExecutableStartResult).Clone)
 	return &retval
 }
 
@@ -265,7 +325,7 @@ func (ri *ExecutableRunInfo) ApplyTo(exe *apiv1.Executable, log logr.Logger) obj
 
 func (ri *ExecutableRunInfo) String() string {
 	return fmt.Sprintf(
-		"{exeState=%s, pid=%s, executionID=%s, exitCode=%s, startupTimestamp=%s, finishTimestamp=%s, stdOutFile=%s, stdErrFile=%s, healthProbeResults=%s, healthProbesEnabled=%s, stopAttemptInitiated=%t}",
+		"{exeState=%s, pid=%s, executionID=%s, exitCode=%s, startupTimestamp=%s, finishTimestamp=%s, stdOutFile=%s, stdErrFile=%s, healthProbeResults=%s, healthProbesEnabled=%s, stopAttemptInitiated=%t, startupStage=%s, startResults=%s}",
 		ri.ExeState,
 		logger.IntPtrValToString(ri.Pid),
 		logger.FriendlyString(string(ri.RunID)),
@@ -277,63 +337,17 @@ func (ri *ExecutableRunInfo) String() string {
 		ri.healthProbesFriendlyString(),
 		logger.BoolPtrValToString(ri.healthProbesEnabled),
 		ri.stopAttemptInitiated,
+		ri.startupStage.String(),
+		ri.startupResultsFriendlyString(),
 	)
-}
-
-func DiffString(r1, r2 *ExecutableRunInfo) string {
-	sb := strings.Builder{}
-	sb.WriteString("{")
-
-	if r1.ExeState != r2.ExeState {
-		sb.WriteString(fmt.Sprintf("exeState=%s->%s, ", r1.ExeState, r2.ExeState))
-	}
-
-	if !pointers.EqualValue(r1.Pid, r2.Pid) {
-		sb.WriteString(fmt.Sprintf("pid=%s->%s, ", logger.IntPtrValToString(r1.Pid), logger.IntPtrValToString(r2.Pid)))
-	}
-
-	if r1.RunID != r2.RunID {
-		sb.WriteString(fmt.Sprintf("executionID=%s->%s, ", logger.FriendlyString(string(r1.RunID)), logger.FriendlyString(string(r2.RunID))))
-	}
-
-	if !pointers.EqualValue(r1.ExitCode, r2.ExitCode) {
-		sb.WriteString(fmt.Sprintf("exitCode=%s->%s, ", logger.IntPtrValToString(r1.ExitCode), logger.IntPtrValToString(r2.ExitCode)))
-	}
-
-	if !osutil.MicroEqual(r1.StartupTimestamp, r2.StartupTimestamp) {
-		sb.WriteString(fmt.Sprintf("startupTimestamp=%s->%s, ", logger.FriendlyMetav1Timestamp(r1.StartupTimestamp), logger.FriendlyMetav1Timestamp(r2.StartupTimestamp)))
-	}
-
-	if !osutil.MicroEqual(r1.FinishTimestamp, r2.FinishTimestamp) {
-		sb.WriteString(fmt.Sprintf("finishTimestamp=%s->%s, ", logger.FriendlyMetav1Timestamp(r1.FinishTimestamp), logger.FriendlyMetav1Timestamp(r2.FinishTimestamp)))
-	}
-
-	if r1.StdOutFile != r2.StdOutFile {
-		sb.WriteString(fmt.Sprintf("stdOutFile=%s->%s, ", logger.FriendlyString(r1.StdOutFile), logger.FriendlyString(r2.StdOutFile)))
-	}
-
-	if r1.StdErrFile != r2.StdErrFile {
-		sb.WriteString(fmt.Sprintf("stdErrFile=%s->%s, ", logger.FriendlyString(r1.StdErrFile), logger.FriendlyString(r2.StdErrFile)))
-	}
-
-	if !stdlib_maps.Equal(r1.healthProbeResults, r2.healthProbeResults) {
-		sb.WriteString(fmt.Sprintf("healthProbeResults=%s->%s, ", r1.healthProbesFriendlyString(), r2.healthProbesFriendlyString()))
-	}
-
-	if !pointers.EqualValue(r1.healthProbesEnabled, r2.healthProbesEnabled) {
-		sb.WriteString(fmt.Sprintf("healthProbesEnabled=%s->%s, ", logger.BoolPtrValToString(r1.healthProbesEnabled), logger.BoolPtrValToString(r2.healthProbesEnabled)))
-	}
-
-	if r1.stopAttemptInitiated != r2.stopAttemptInitiated {
-		sb.WriteString(fmt.Sprintf("stopAttemptInitiated=%t->%t, ", r1.stopAttemptInitiated, r2.stopAttemptInitiated))
-	}
-
-	sb.WriteString("}")
-	return sb.String()
 }
 
 func (ri *ExecutableRunInfo) healthProbesFriendlyString() string {
 	return logger.FriendlyStringSlice(maps.MapToSlice[string](ri.healthProbeResults, func(v apiv1.HealthProbeResult) string { return v.String() }))
+}
+
+func (ri *ExecutableRunInfo) startupResultsFriendlyString() string {
+	return logger.FriendlyStringSlice(slices.Map[string](ri.startResults, (*ExecutableStartResult).String))
 }
 
 var _ fmt.Stringer = (*ExecutableRunInfo)(nil)

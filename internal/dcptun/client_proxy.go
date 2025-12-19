@@ -197,7 +197,7 @@ func (cp *ClientProxy) PrepareTunnel(ctx context.Context, tr *proto.TunnelReq) (
 		},
 		ServerAddress:        stdproto.String(tr.GetServerAddress()),
 		ServerPort:           stdproto.Int32(int32(tr.GetServerPort())),
-		ClientProxyAddresses: slices.Map[net.IP, string](effectiveAddresses, func(ip net.IP) string { return networking.IpToString(ip) }),
+		ClientProxyAddresses: slices.Map[string](effectiveAddresses, func(ip net.IP) string { return networking.IpToString(ip) }),
 		ClientProxyPort:      stdproto.Int32(int32(listenerAddr.Port)),
 		DataConnectionToken:  authToken,
 	}

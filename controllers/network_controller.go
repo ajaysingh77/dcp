@@ -104,7 +104,7 @@ func (rnc *runningNetworkState) UpdateFrom(other *runningNetworkState) bool {
 var _ Cloner[*runningNetworkState] = (*runningNetworkState)(nil)
 var _ UpdateableFrom[*runningNetworkState] = (*runningNetworkState)(nil)
 
-type networkStateMap = ObjectStateMap[string, runningNetworkState, *runningNetworkState]
+type networkStateMap = ObjectStateMap[string, runningNetworkState, *runningNetworkState, *apiv1.ContainerNetwork]
 
 type NetworkReconciler struct {
 	*ReconcilerBase[apiv1.ContainerNetwork, *apiv1.ContainerNetwork]
@@ -148,7 +148,7 @@ func NewNetworkReconciler(
 	r := NetworkReconciler{
 		ReconcilerBase:       base,
 		orchestrator:         orchestrator,
-		existingNetworks:     NewObjectStateMap[string, runningNetworkState](),
+		existingNetworks:     NewObjectStateMap[string, runningNetworkState, *runningNetworkState, *apiv1.ContainerNetwork](),
 		networkEvtSub:        nil,
 		networkEvtCh:         nil,
 		networkEvtWorkerStop: nil,
@@ -610,7 +610,7 @@ func (r *NetworkReconciler) updateNetworkStatus(ctx context.Context, network *ap
 		change |= statusChanged
 	}
 	// Get the list of container IDs connected to the network
-	newContainerIds := usvc_slices.Map[containers.InspectedNetworkContainer, string](cnet.Containers, func(c containers.InspectedNetworkContainer) string {
+	newContainerIds := usvc_slices.Map[string](cnet.Containers, func(c containers.InspectedNetworkContainer) string {
 		return c.Id
 	})
 	slices.Sort(newContainerIds) // Sort so we can do set comparison using slices.Equal

@@ -9,6 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
 
@@ -23,20 +24,18 @@ const (
 type ExecutableRunner interface {
 	// Runs the Executable.
 	//
-	// When the passed context is cancelled, the run should be automatically terminated.
+	// The runChangeHandler is used to notify the caller about the run's progress and completion, see RunChangeHandler for more details.
 	//
-	// The runner should not try to change the Executable in any way. Instead, the runner supplies
-	// new data about the run by modifying the provided startingRunInfo object.
-	//
-	// The runChangeHandler is used to notify the caller about the run's progress and completion,
-	// see RunChangeHandler for more details.
+	// The following contract should be observed by the ExecutableRunner implementation:
+	// -- When the passed context is cancelled, the run should be automatically terminated.
+	// -- The runner should not try to change the passed Executable in any way.
+	// -- The method should always return a result (no nil return value).
 	StartRun(
 		ctx context.Context,
 		exe *apiv1.Executable,
-		startingRunInfo *ExecutableRunInfo,
 		runChangeHandler RunChangeHandler,
 		log logr.Logger,
-	) error
+	) *ExecutableStartResult
 
 	// Stops the run with a given ID.
 	StopRun(ctx context.Context, runID RunID, log logr.Logger) error
@@ -49,6 +48,17 @@ const (
 	RunMessageLevelDebug RunMessageLevel = "debug"
 	RunMessageLevelError RunMessageLevel = "error"
 )
+
+// Note: run start outcome (success or failure) is reported via combination of ExecutableRunInfo data passed to StartRun() method
+// (synchronous run startup) or OnStartupCompleted() method of RunChangeHandler (asynchronous run startup).
+// ExecutableRunner implementation should modify ONLY the following ExectuableRunInfo fields to report run start outcome:
+//   - RunID (must be set for successful runs)
+//   - Pid (if available, for successful runs)
+//   - ExeState (to Running, FailedToStart, or Finished state)
+//   - StdOutFile and StdErrFile
+//  -- startupState.lastStartupAttemptTimestamp
+// An ExecutableRunner SHOULD NOT modify any other fields; in particular it should not set StartTimestamp or FinishTimestamp fields
+// (these are managed by the controller and are set when all applicable ExecutableRunners had a chance to start the run).
 
 type RunChangeHandler interface {
 	// Called when the main process of the run changes (is started or re-started).
@@ -65,13 +75,13 @@ type RunChangeHandler interface {
 
 	// Called when startup has been completed for a run.
 	// The name parameter contains the name of the Executable that was started (or attempted to start).
-	// The supplied runInfo object will be filled with the updated information about the run.
+	// The result parameter contains the outcome of the startup attempt.
 	//
-	// The caller must call the startWaitForRunCompletion function to receive further notifications about the run.
-	// For example, OnRunCompleted method call will be delayed till startWaitForRunCompletion is called.
+	// The caller must call the result.StartWaitForRunCompletion function to receive further notifications about the run.
+	// For example, OnRunCompleted method call will be delayed till StartWaitForRunCompletion is called.
 	//
 	// In case of synchronous startup, this method will be called before ExecutableRunner.StartRun() returns.
-	OnStartupCompleted(name types.NamespacedName, startedRunInfo *ExecutableRunInfo, startWaitForRunCompletion func())
+	OnStartupCompleted(name types.NamespacedName, result *ExecutableStartResult)
 
 	// Called when the runner needs to emit a user-targeted diagnostic message about a run.
 	OnRunMessage(runID RunID, level RunMessageLevel, message string)

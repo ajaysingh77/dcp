@@ -1234,6 +1234,11 @@ func (in *ExecutableSpec) DeepCopyInto(out *ExecutableSpec) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.FallbackExecutionTypes != nil {
+		in, out := &in.FallbackExecutionTypes, &out.FallbackExecutionTypes
+		*out = make([]ExecutionType, len(*in))
+		copy(*out, *in)
+	}
 	out.AmbientEnvironment = in.AmbientEnvironment
 	if in.HealthProbes != nil {
 		in, out := &in.HealthProbes, &out.HealthProbes

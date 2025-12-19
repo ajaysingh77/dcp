@@ -64,7 +64,7 @@ var (
 )
 
 type volumeName string
-type volumeDataMap = ObjectStateMap[volumeName, containerVolumeData, *containerVolumeData]
+type volumeDataMap = ObjectStateMap[volumeName, containerVolumeData, *containerVolumeData, *apiv1.ContainerVolume]
 
 type VolumeReconciler struct {
 	*ReconcilerBase[apiv1.ContainerVolume, *apiv1.ContainerVolume]
@@ -84,7 +84,7 @@ func NewVolumeReconciler(
 	r := VolumeReconciler{
 		ReconcilerBase: base,
 		orchestrator:   orchestrator,
-		volumeData:     NewObjectStateMap[volumeName, containerVolumeData](),
+		volumeData:     NewObjectStateMap[volumeName, containerVolumeData, *containerVolumeData, *apiv1.ContainerVolume](),
 	}
 	return &r
 }

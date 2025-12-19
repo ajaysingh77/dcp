@@ -59,10 +59,12 @@ func SetValueFrom[T any, PT *T](pp *PT, pVal PT) {
 	**pp = *pVal
 }
 
+// Returns true if the boolean pointer has value and the value is true.
 func TrueValue[T ~bool, PT *T](p PT) bool {
-	return bool(GetValueOrDefault(p, true))
+	return bool(GetValueOrDefault(p, false))
 }
 
+// Returns true if the boolean pointer has no value OR the value is false.
 func NotTrue[T ~bool, PT *T](p PT) bool {
 	if p == nil {
 		return true
@@ -70,7 +72,8 @@ func NotTrue[T ~bool, PT *T](p PT) bool {
 	return !bool(*p)
 }
 
-func Make[T ~bool, PT *T](pp *PT, val T) {
+// Sets the value of the pointer to the given value, allocating new memory if the pointer is nil.
+func Make[T any, PT *T](pp *PT, val T) {
 	if pp == nil {
 		panic("nil pointer passed as target for pointers.Make()")
 	}
@@ -80,4 +83,16 @@ func Make[T ~bool, PT *T](pp *PT, val T) {
 	}
 
 	**pp = val
+}
+
+// Creates a new pointer from the given pointer, pointing to the same value as the original pointer.
+// Returns nil if the input pointer is nil.
+func Duplicate[T any, PT *T](p PT) PT {
+	if p == nil {
+		return nil
+	}
+
+	newP := new(T)
+	*newP = *p
+	return newP
 }

@@ -309,7 +309,7 @@ func (tpd *containerNetworkTunnelProxyData) removeTunnelStatus(tunnelName string
 
 // Returns all known tunnel statuses associated with given client service namespaced name.
 func (tpd *containerNetworkTunnelProxyData) tunnelsForClientService(tunnels []apiv1.TunnelConfiguration, csName types.NamespacedName) []apiv1.TunnelStatus {
-	tunnelNames := slices.Map[apiv1.TunnelConfiguration, string](tunnels, func(tc apiv1.TunnelConfiguration) string {
+	tunnelNames := slices.Map[string](tunnels, func(tc apiv1.TunnelConfiguration) string {
 		nn := types.NamespacedName{
 			Namespace: tc.ClientServiceNamespace,
 			Name:      tc.ClientServiceName,

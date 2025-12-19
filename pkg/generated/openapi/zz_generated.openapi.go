@@ -2841,6 +2841,26 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref common.ReferenceC
 							Format:      "",
 						},
 					},
+					"fallbackExecutionTypes": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Fallback execution types in case the primary execution type is not supported or startup fails.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
 					"ambientEnvironment": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Controls behavior of environment variables inherited from the controller process.",

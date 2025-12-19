@@ -125,27 +125,27 @@ func TestMap(t *testing.T) {
 
 	// Mapping empty slice should return empty result
 	var s []string
-	result := Map[string, string](s, func(s string) string { return s })
+	result := Map[string](s, func(s string) string { return s })
 	require.Empty(t, result)
 
 	// Map with matching output type, mapping includes index
 	s = []string{"a", "b", "c"}
-	result = Map[string, string](s, func(i int, s string) string {
+	result = Map[string](s, func(i int, s string) string {
 		return strings.ToUpper(s)
 	})
 	expected := []string{"A", "B", "C"}
 	require.Equal(t, expected, result)
 
 	// Map with matching output type, mapping on value only
-	require.Equal(t, []string{"FISH"}, Map[string, string]([]string{"fish"}, strings.ToUpper))
+	require.Equal(t, []string{"FISH"}, Map[string]([]string{"fish"}, strings.ToUpper))
 
 	// Map to different type, mapping includes index
-	require.Equal(t, []int{0, 1, 2}, Map[string, int](s, func(i int, s *string) int {
+	require.Equal(t, []int{0, 1, 2}, Map[int](s, func(i int, s *string) int {
 		return i
 	}))
 
 	// Mapping to same type, mapping operates on pointer to the value
-	require.Equal(t, expected, Map[string, string](s, func(i int, s *string) string {
+	require.Equal(t, expected, Map[string](s, func(i int, s *string) string {
 		return strings.ToUpper(*s)
 	}))
 }
@@ -159,27 +159,27 @@ func TestMapConcurrent(t *testing.T) {
 		t.Run(fmt.Sprintf("concurrency=%d", c), func(t *testing.T) {
 			// Mapping empty slice should return empty result
 			var s []string
-			result := MapConcurrent[string, string](s, func(s string) string { return s }, c)
+			result := MapConcurrent[string](s, func(s string) string { return s }, c)
 			require.Empty(t, result)
 
 			// Map with matching output type, mapping includes index
 			s = []string{"a", "b", "c"}
-			result = MapConcurrent[string, string](s, func(i int, s string) string {
+			result = MapConcurrent[string](s, func(i int, s string) string {
 				return strings.ToUpper(s)
 			}, c)
 			expected := []string{"A", "B", "C"}
 			require.Equal(t, expected, result)
 
 			// Map with matching output type, mapping on value only
-			require.Equal(t, []string{"FISH"}, MapConcurrent[string, string]([]string{"fish"}, strings.ToUpper, c))
+			require.Equal(t, []string{"FISH"}, MapConcurrent[string]([]string{"fish"}, strings.ToUpper, c))
 
 			// Map to different type, mapping includes index
-			require.Equal(t, []int{0, 1, 2}, MapConcurrent[string, int](s, func(i int, s *string) int {
+			require.Equal(t, []int{0, 1, 2}, MapConcurrent[int](s, func(i int, s *string) int {
 				return i
 			}, c))
 
 			// Mapping to same type, mapping operates on pointer to the value
-			require.Equal(t, expected, MapConcurrent[string, string](s, func(i int, s *string) string {
+			require.Equal(t, expected, MapConcurrent[string](s, func(i int, s *string) string {
 				return strings.ToUpper(*s)
 			}, c))
 		})
@@ -535,7 +535,7 @@ func TestGroupBy(t *testing.T) {
 	}
 
 	sortedValues := func(m map[string][]record, id string) []string {
-		retval := Map[record, string](m[id], func(r record) string { return r.val })
+		retval := Map[string](m[id], func(r record) string { return r.val })
 		stdslices.Sort(retval)
 		return retval
 	}
@@ -586,7 +586,7 @@ func TestGroupBy(t *testing.T) {
 	result = GroupBy[[]record, string](data, func(r record) string { return r.id })
 	require.Len(t, result, 3)
 	require.EqualValues(t, []string{"a", "b", "c"}, sortedKeys(result))
-	require.EqualValues(t, []string{"alpha1", "alpha1"}, Map[record, string](result["a"], func(r record) string { return r.val }))
-	require.EqualValues(t, []string{"bravo1", "bravo2"}, Map[record, string](result["b"], func(r record) string { return r.val }))
-	require.EqualValues(t, []string{"charlie1", "charlie1"}, Map[record, string](result["c"], func(r record) string { return r.val }))
+	require.EqualValues(t, []string{"alpha1", "alpha1"}, Map[string](result["a"], func(r record) string { return r.val }))
+	require.EqualValues(t, []string{"bravo1", "bravo2"}, Map[string](result["b"], func(r record) string { return r.val }))
+	require.EqualValues(t, []string{"charlie1", "charlie1"}, Map[string](result["c"], func(r record) string { return r.val }))
 }

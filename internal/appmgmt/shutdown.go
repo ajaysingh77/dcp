@@ -214,12 +214,12 @@ func doCleanup(log logr.Logger) error {
 	notCleanedUp := slices.Select(shutdownResources, func(sr *cleanupResourceDescriptor) bool {
 		return sr.State != done || sr.CleanupError != nil
 	})
-	cleanupErrors := slices.Map[*cleanupResourceDescriptor, error](notCleanedUp, func(sr *cleanupResourceDescriptor) error {
+	cleanupErrors := slices.Map[error](notCleanedUp, func(sr *cleanupResourceDescriptor) error {
 		switch {
 		case sr.CleanupError != nil:
 			return fmt.Errorf("resource '%s' could not be cleaned up: %w", sr.GVR.String(), sr.CleanupError)
 		case len(sr.WaitingFor) > 0:
-			dependencies := slices.Map[schema.GroupVersionResource, string](sr.WaitingFor, func(gvr schema.GroupVersionResource) string {
+			dependencies := slices.Map[string](sr.WaitingFor, func(gvr schema.GroupVersionResource) string {
 				return "'" + gvr.String() + "'"
 			})
 			return fmt.Errorf("resource '%s' could not be cleaned up: still waiting for: %s", sr.GVR.String(), strings.Join(dependencies, ", "))

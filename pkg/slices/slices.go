@@ -55,7 +55,7 @@ type MapFunc[T any, R any] interface {
 	~func(int, T) R | ~func(T) R | ~func(int, *T) R | ~func(*T) R
 }
 
-func Map[T any, R any, MF MapFunc[T, R], S ~[]T](ss S, mapping MF) []R {
+func Map[R any, T any, MF MapFunc[T, R], S ~[]T](ss S, mapping MF) []R {
 	if len(ss) == 0 {
 		return nil
 	}
@@ -85,7 +85,7 @@ const MaxConcurrency = uint16(0)
 
 // MapConcurrent will call the mapping functions concurrently, up to specified concurrency level.
 // If concurrency == 0 (MaxConcurrency), every function will be called using separate goroutine.
-func MapConcurrent[T any, R any, MF MapFunc[T, R], S ~[]T](ss S, mapping MF, concurrency uint16) []R {
+func MapConcurrent[R any, T any, MF MapFunc[T, R], S ~[]T](ss S, mapping MF, concurrency uint16) []R {
 	if len(ss) == 0 {
 		return nil
 	}
@@ -148,13 +148,13 @@ type SelectFunc[T any] interface {
 }
 
 func Select[T any, SF SelectFunc[T], S ~[]T](ss S, selector SF) S {
-	return AccumulateIf[T, S](ss, selector, func(ss S, el T) S {
+	return AccumulateIf[S, T](ss, selector, func(ss S, el T) S {
 		return append(ss, el)
 	})
 }
 
 func LenIf[T any, SF SelectFunc[T], S ~[]T](ss S, selector SF) int {
-	return AccumulateIf[T, int](ss, selector, func(currentCount int, _ T) int {
+	return AccumulateIf[int, T](ss, selector, func(currentCount int, _ T) int {
 		return currentCount + 1
 	})
 }
@@ -211,11 +211,11 @@ type AccumulatorFunc[T any, R any] interface {
 }
 
 // Successively applies the accumulator function to each element of a slice, producing a single accumulated (reduced) result.
-func Accumulate[T any, R any, AF AccumulatorFunc[T, R], S ~[]T](ss S, accumulator AF) R {
-	return AccumulateIf[T, R](ss, func(_ T) bool { return true }, accumulator)
+func Accumulate[R any, T any, AF AccumulatorFunc[T, R], S ~[]T](ss S, accumulator AF) R {
+	return AccumulateIf[R, T](ss, func(_ T) bool { return true }, accumulator)
 }
 
-func AccumulateIf[T any, R any, SF SelectFunc[T], AF AccumulatorFunc[T, R], S ~[]T](ss S, selector SF, accumulator AF) R {
+func AccumulateIf[R any, T any, SF SelectFunc[T], AF AccumulatorFunc[T, R], S ~[]T](ss S, selector SF, accumulator AF) R {
 	sf := func(i int, s *T) bool {
 		switch tsf := (any)(selector).(type) {
 		case func(int, T) bool:

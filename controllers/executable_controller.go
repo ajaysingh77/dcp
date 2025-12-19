@@ -58,7 +58,7 @@ var executableStateInitializers = map[apiv1.ExecutableState]executableStateIniti
 	apiv1.ExecutableStateUnknown:       ensureExecutableFinalState,
 }
 
-type runStateMap = ObjectStateMap[RunID, ExecutableRunInfo, *ExecutableRunInfo]
+type runStateMap = ObjectStateMap[RunID, ExecutableRunInfo, *ExecutableRunInfo, *apiv1.Executable]
 
 // ExecutableReconciler reconciles a Executable object
 type ExecutableReconciler struct {
@@ -105,7 +105,7 @@ func NewExecutableReconciler(
 	r := ExecutableReconciler{
 		ReconcilerBase:    base,
 		ExecutableRunners: executableRunners,
-		runs:              NewObjectStateMap[RunID, ExecutableRunInfo](),
+		runs:              NewObjectStateMap[RunID, ExecutableRunInfo, *ExecutableRunInfo, *apiv1.Executable](),
 		hpSet:             healthProbeSet,
 		healthProbeCh:     concurrency.NewUnboundedChan[health.HealthProbeReport](lifetimeCtx),
 		stopQueue:         resiliency.NewWorkQueue(lifetimeCtx, maxParallelExecutableStops),
@@ -172,7 +172,7 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	var change objectChange
 	patch := ctrl_client.MergeFromWithOptions(exe.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
-	r.runs.RunDeferredOps(req.NamespacedName)
+	r.runs.RunDeferredOps(req.NamespacedName, &exe)
 
 	if exe.DeletionTimestamp != nil && !exe.DeletionTimestamp.IsZero() {
 		change = r.handleDeletionRequest(ctx, &exe, log)
@@ -258,13 +258,7 @@ func handleNewExecutable(
 		return statusChanged
 	}
 
-	if runInfo == nil {
-		// This is brand new Executable and we need to get it started.
-		return r.startExecutable(ctx, exe, log)
-	} else {
-		// Ensure the status matches the current state.
-		return runInfo.ApplyTo(exe, log)
-	}
+	return r.startExecutable(ctx, exe, runInfo, log)
 }
 
 func ensureExecutableRunningState(
@@ -346,171 +340,173 @@ func ensureExecutableFinalState(
 	return change
 }
 
-func (r *ExecutableReconciler) startExecutable(ctx context.Context, exe *apiv1.Executable, log logr.Logger) objectChange {
-	runner, runnerNotFoundErr := r.getExecutableRunner(exe)
-	if runnerNotFoundErr != nil {
-		log.Error(runnerNotFoundErr, "The Executable cannot be run and will be marked as failed to start")
-		r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
-		return statusChanged
+// Performs an attempt to start an Executable run.
+// Main runner is tried first (Spec.ExecutionType), and if that fails and fallback runners are allowed (Spec.FalbackExecutionTypes),
+// they are in the order specified, one at a time.
+// This function is called from the reconciliation loop.
+func (r *ExecutableReconciler) startExecutable(
+	ctx context.Context,
+	exe *apiv1.Executable,
+	ri *ExecutableRunInfo,
+	log logr.Logger,
+) objectChange {
+	if ri == nil {
+		log.V(1).Info("Starting Executable...")
+		ri = NewRunInfo(exe)
+		ri.ExeState = apiv1.ExecutableStateStarting
+		ri.RunID = getStartingRunID(exe.NamespacedName())
+		r.runs.Store(exe.NamespacedName(), ri.RunID, ri.Clone())
 	}
 
-	if exe.Spec.PemCertificates != nil {
-		certsTempFolder, certsTempFolderErr := usvc_io.CreateTempFolder(filepath.Join(exe.Name, "certs"), osutil.PermissionOnlyOwnerReadWriteTraverse)
-		if certsTempFolderErr != nil {
-			if !errors.Is(certsTempFolderErr, os.ErrExist) {
-				if exe.Spec.PemCertificates.ContinueOnError {
-					log.Info("Could not create temporary folder for processing PEM certificates, continuing...", "Error", certsTempFolderErr.Error())
-				} else {
-					log.Error(certsTempFolderErr, "Could not create temporary folder for processing PEM certificates")
-					r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
-					return statusChanged
-				}
-			}
-		} else {
-			bundle := []string{}
-			fingerprints := []string{}
-			for _, cert := range exe.Spec.PemCertificates.Certificates {
-				fingerprint, fingerprintErr := cert.OpenSSLFingerprint()
-				if fingerprintErr != nil {
-					if exe.Spec.PemCertificates.ContinueOnError {
-						log.Info("Could not compute certificate fingerprint, skipping certificate", "Thumbprint", cert.Thumbprint, "Error", fingerprintErr.Error())
-						continue
-					}
-					log.Error(fingerprintErr, "Could not compute certificate fingerprint", "Thumbprint", cert.Thumbprint)
-					r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
-					return statusChanged
-				}
-
-				certFilepath := filepath.Join(certsTempFolder, fmt.Sprintf("%s.pem", cert.Thumbprint))
-				certWriteErr := usvc_io.WriteFile(certFilepath, []byte(cert.Contents), osutil.PermissionOnlyOwnerReadWrite)
-				if certWriteErr != nil {
-					if exe.Spec.PemCertificates.ContinueOnError {
-						log.Info("Could not write certificate to temporary folder, skipping certificate...", "Thumbprint", cert.Thumbprint, "Error", certWriteErr.Error())
-						continue
-					}
-
-					log.Error(certWriteErr, "Could not write certificate to temporary folder", "Thumbprint", cert.Thumbprint)
-					r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
-					return statusChanged
-				}
-
-				collisions := 0
-				for _, existingFingerprint := range fingerprints {
-					if existingFingerprint == fingerprint {
-						collisions++
-					}
-				}
-
-				if runtime.GOOS == "windows" {
-					certWriteErr = usvc_io.WriteFile(filepath.Join(certsTempFolder, fmt.Sprintf("%s.%d", fingerprint, collisions)), []byte(cert.Contents), osutil.PermissionOnlyOwnerReadWrite)
-				} else {
-					// Create an OpenSSL style symlink for the certificate
-					certWriteErr = os.Symlink(certFilepath, filepath.Join(certsTempFolder, fmt.Sprintf("%s.%d", fingerprint, collisions)))
-				}
-
-				if certWriteErr != nil {
-					if exe.Spec.PemCertificates.ContinueOnError {
-						log.Info("Could not create fingerprint symlink for certificate, skipping certificate...", "Thumbprint", cert.Thumbprint, "Error", certWriteErr.Error())
-						continue
-					}
-
-					log.Error(certWriteErr, "Could not create fingerprint symlink for certificate", "Thumbprint", cert.Thumbprint)
-					r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
-					return statusChanged
-				} else {
-					fingerprints = append(fingerprints, fingerprint)
-				}
-
-				bundle = append(bundle, cert.Contents)
-			}
-
-			bundleWriteErr := usvc_io.WriteFile(filepath.Join(usvc_io.DcpTempDir(), exe.Name, "cert.pem"), []byte(strings.Join(bundle, "\n")), osutil.PermissionOnlyOwnerReadWrite)
-			if bundleWriteErr != nil {
-				if exe.Spec.PemCertificates.ContinueOnError {
-					log.Info("Could not write certificate bundle to temporary folder, continuing...", "Error", bundleWriteErr.Error())
-				} else {
-					log.Error(bundleWriteErr, "Could not write certificate bundle to temporary folder")
-					r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
-					return statusChanged
-				}
+	if ri.startupStage == StartupStageInitial {
+		if exe.Spec.PemCertificates != nil {
+			prepareCertErr := r.prepareCertificateFiles(exe, log)
+			if prepareCertErr != nil {
+				// Error already logged in prepareCertificateFiles()
+				r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+				return statusChanged
 			}
 		}
+		ri.startupStage = StartupStageCertificateDataReady
+		r.runs.Update(exe.NamespacedName(), ri.RunID, ri.Clone())
 	}
 
-	// Ports reserved for services that the Executable implements without specifying the desired port to use (via service-producer annotation).
-	reservedServicePorts := make(map[types.NamespacedName]int32)
+	if ri.startupStage == StartupStageCertificateDataReady {
+		// Ports reserved for services that the Executable implements without specifying the desired port to use (via service-producer annotation).
+		reservedServicePorts := make(map[types.NamespacedName]int32)
 
-	err := r.computeEffectiveEnvironment(ctx, exe, reservedServicePorts, log)
-	if templating.IsTransientTemplateError(err) {
-		log.Info("Could not compute effective environment for the Executable, retrying startup...",
-			"Cause", err.Error())
-		return r.setExecutableState(exe, apiv1.ExecutableStateStarting) | additionalReconciliationNeeded
-	} else if err != nil {
-		log.Error(err, "Could not compute effective environment for the Executable")
-		r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
-		return statusChanged
-	}
-
-	err = r.computeEffectiveInvocationArgs(ctx, exe, reservedServicePorts, log)
-	if templating.IsTransientTemplateError(err) {
-		log.Info("Could not compute effective invocation arguments for the Executable, retrying startup...",
-			"Cause", err.Error())
-		return r.setExecutableState(exe, apiv1.ExecutableStateStarting) | additionalReconciliationNeeded
-	} else if err != nil {
-		log.Error(err, "Could not compute effective invocation arguments for the Executable")
-		r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
-		return statusChanged
-	}
-
-	if len(reservedServicePorts) > 0 {
-		log.V(1).Info("Reserving service ports...",
-			"Services", maps.Keys(reservedServicePorts),
-			"Ports", maps.Values(reservedServicePorts),
-		)
-	}
-
-	log.V(1).Info("Starting Executable...")
-	run := NewRunInfo(exe)
-	run.ReservedPorts = reservedServicePorts
-	r.runs.Store(exe.NamespacedName(), getStartingRunID(exe.NamespacedName()), run.Clone())
-
-	err = runner.StartRun(ctx, exe, run, r, log)
-
-	if err != nil {
-		log.Error(err, "Failed to start Executable")
-
-		r.runs.DeleteByNamespacedName(exe.NamespacedName())
-
-		if run.ExeState != apiv1.ExecutableStateFailedToStart {
-			// The executor did not mark the Executable as failed to start, so we should retry.
-			return additionalReconciliationNeeded
-		} else {
-			// The Executable failed to start and reached the final state.
-			run.ApplyTo(exe, log)
+		err := r.computeEffectiveEnvironment(ctx, exe, reservedServicePorts, log)
+		if templating.IsTransientTemplateError(err) {
+			log.Info("Could not compute effective environment for the Executable, retrying startup...",
+				"Cause", err.Error())
+			return r.setExecutableState(exe, apiv1.ExecutableStateStarting) | additionalReconciliationNeeded
+		} else if err != nil {
+			log.Error(err, "Could not compute effective environment for the Executable")
 			r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
 			return statusChanged
 		}
+
+		err = r.computeEffectiveInvocationArgs(ctx, exe, reservedServicePorts, log)
+		if templating.IsTransientTemplateError(err) {
+			log.Info("Could not compute effective invocation arguments for the Executable, retrying startup...",
+				"Cause", err.Error())
+			return r.setExecutableState(exe, apiv1.ExecutableStateStarting) | additionalReconciliationNeeded
+		} else if err != nil {
+			log.Error(err, "Could not compute effective invocation arguments for the Executable")
+			r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+			return statusChanged
+		}
+
+		if len(reservedServicePorts) > 0 {
+			log.V(1).Info("Reserving service ports...",
+				"Services", maps.Keys(reservedServicePorts),
+				"Ports", maps.Values(reservedServicePorts),
+			)
+		}
+		ri.ReservedPorts = reservedServicePorts
+		ri.startupStage = StartupStageDataInitialized
+		r.runs.Update(exe.NamespacedName(), ri.RunID, ri.Clone())
 	}
 
-	switch run.ExeState {
-	case apiv1.ExecutableStateRunning, apiv1.ExecutableStateFailedToStart, apiv1.ExecutableStateFinished:
-		// This was a synchronous startup, OnStartupCompleted() has been called already and queued the update of the runs map.
-		// Endpoints will be created during next reconciliation loop, no need to call ensureEndpointsForWorkload() here.
-
-		r.setExecutableState(exe, run.ExeState) // Make sure health status is updated.
-
-	case apiv1.ExecutableStateStarting:
-		_ = r.runs.Update(exe.NamespacedName(), getStartingRunID(exe.NamespacedName()), run)
-
-	default:
-		// Should never happen
-		err = fmt.Errorf("unexpected Executable state after startup")
-		log.Error(err, "Invalid Executable state",
-			"ExecutableState", run.ExeState)
+	if ri.startupStage >= StartupStageDefaultRunner && len(ri.startResults) == 0 { // Should never happen
+		log.Error(errors.New("inconsistent Executable startup state"), "No startup results found despite startup stage indicating that a startup attempt was made")
 		r.setExecutableState(exe, apiv1.ExecutableStateUnknown)
+		return statusChanged
 	}
 
-	return statusChanged
+	var startResult *ExecutableStartResult = nil
+	if len(ri.startResults) > 0 {
+		startResult = ri.startResults[len(ri.startResults)-1]
+	}
+
+	if ri.startupStage >= StartupStageDefaultRunner && startResult != nil && startResult.ExeState == apiv1.ExecutableStateStarting {
+		// Run attempt in progress, just make sure the Executable status is up to date.
+		// When the attempt finishes, OnStartupCompleted() will schedule another reconciliation.
+		return ri.ApplyTo(exe, log)
+	}
+
+	// Helper function to update Executable status when the start attempt was successful.
+	handleSuccessfulStart := func(res *ExecutableStartResult) {
+		startingRunID := ri.RunID // Might be the temporary starting run ID. We need that to update the runs map.
+		res.applyTo(ri)
+		ri.ApplyTo(exe, log)
+		r.setExecutableState(exe, ri.ExeState)
+		r.runs.UpdateChangingStateKey(exe.NamespacedName(), startingRunID, res.RunID, ri.Clone())
+
+		if res.ExeState == apiv1.ExecutableStateRunning && res.StartWaitForRunCompletion != nil {
+			res.StartWaitForRunCompletion()
+		}
+	}
+
+	var unknownStartupFailureErr error = errors.New("the reason for the Executable startup failure is unknown")
+
+	// We got here either because this is the first attempt to start the Executable,
+	// or because the previous, asynchronous attempt has completed (successfully or not).
+	// So first we need to check the result of the previous startup attempt (if any).
+	if startResult.IsSuccessfullyCompleted() {
+		handleSuccessfulStart(startResult)
+		return statusChanged
+	} else if startResult != nil {
+		runErr := startResult.StartupError
+		if runErr != nil {
+			runErr = unknownStartupFailureErr
+		}
+		log.Error(runErr, "An attempt to start the Executable failed")
+		r.cleanUpFailedStartResources(ctx, exe, log)
+	}
+
+	// Try to start the Executable using available runner(s)
+	for {
+		if allRunnersAttempted(ri.startupStage, exe) {
+			log.Error(errors.New("all available Executable runners have been tried and failed"), "The Executable failed to start")
+			ri.ApplyTo(exe, log)
+			exe.Status.ExecutionID = "" // Clear the starting execution ID
+			r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+			if startResult != nil {
+				exe.Status.StartupTimestamp = startResult.CompletionTimestamp
+			} else {
+				exe.Status.StartupTimestamp = metav1.NowMicro()
+			}
+			exe.Status.FinishTimestamp = exe.Status.StartupTimestamp
+			r.runs.DeleteByNamespacedName(exe.NamespacedName())
+			return statusChanged
+		}
+
+		ri.startupStage++
+		ri.startResults = append(ri.startResults, NewExecutableStartResult())
+		r.runs.Update(exe.NamespacedName(), ri.RunID, ri.Clone())
+
+		runner, runnerNotFoundErr := r.getExecutableRunner(exe, ri.startupStage)
+		if runnerNotFoundErr != nil {
+			log.Error(runnerNotFoundErr, "The Executable runner is not available", "StartupStage", ri.startupStage)
+			continue
+		}
+
+		startResult = runner.StartRun(ctx, exe, r, log)
+		if startResult == nil {
+			// Should never happen
+			log.Error(errors.New("the Executable runner returned nil result from StartRun() method"), "An attempt to start the Executable failed")
+			r.cleanUpFailedStartResources(ctx, exe, log)
+			continue
+		}
+		if startResult.ExeState == apiv1.ExecutableStateFailedToStart {
+			runErr := startResult.StartupError
+			if runErr == nil {
+				runErr = unknownStartupFailureErr
+			}
+			log.Error(runErr, "An attempt to start the Executable failed")
+			r.cleanUpFailedStartResources(ctx, exe, log)
+			continue
+		}
+
+		if startResult.IsSuccessfullyCompleted() {
+			handleSuccessfulStart(startResult)
+			return statusChanged
+		}
+
+		// Asynchronous start in progress, wait for OnStartupCompleted() to be called
+		return additionalReconciliationNeeded
+	}
 }
 
 func (r *ExecutableReconciler) OnMainProcessChanged(runID RunID, pid process.Pid_t) {
@@ -577,7 +573,7 @@ func (r *ExecutableReconciler) processRunChangeNotification(
 	}
 
 	runMap := r.runs
-	r.runs.QueueDeferredOp(name, func(types.NamespacedName, RunID) {
+	r.runs.QueueDeferredOp(name, func(types.NamespacedName, RunID, *apiv1.Executable) {
 		// The run may have been deleted by the time we get here, so we do not care if Update() returns false.
 		_ = runMap.Update(name, runID, runInfo)
 	})
@@ -588,46 +584,63 @@ func (r *ExecutableReconciler) processRunChangeNotification(
 // Handle setting up process tracking once an Executable has transitioned from newly created or starting to a stable state such as running or finished.
 func (r *ExecutableReconciler) OnStartupCompleted(
 	exeName types.NamespacedName,
-	startedRunInfo *ExecutableRunInfo,
-	startWaitForRunCompletion func(),
+	startResult *ExecutableStartResult,
 ) {
-	log := r.Log.WithValues(
-		logger.RESOURCE_LOG_STREAM_ID, startedRunInfo.GetResourceId(),
-		"Executable", exeName.String(),
-		"RunID", startedRunInfo.RunID,
-	)
-
 	// OnStartingCompleted might be invoked asynchronously. To avoid race conditions,
 	// we always queue updates to the runs map and run them as part of reconciliation function.
+
+	if startResult == nil {
+		// Should never happen
+		r.Log.Error(
+			errors.New("nil ExecutableStartResult received in OnStartupCompleted"),
+			"Executable start result could not be processed",
+			"Executable", exeName,
+		)
+		return
+	}
+
 	runMap := r.runs
-	r.runs.QueueDeferredOp(exeName, func(types.NamespacedName, RunID) {
-		startingRunID, ri := r.runs.BorrowByNamespacedName(exeName)
+	r.runs.QueueDeferredOp(exeName, func(_ types.NamespacedName, _ RunID, exe *apiv1.Executable) {
+		log := r.Log.WithValues(
+			logger.RESOURCE_LOG_STREAM_ID, exe.GetResourceId(),
+			"Executable", exe.NamespacedName(),
+			"Outcome", startResult.ExeState,
+		)
+		_, ri := r.runs.BorrowByNamespacedName(exeName)
 		if ri == nil {
 			// Should never happen
-			log.Error(fmt.Errorf("could not find starting run data after Executable start attempt"), "No valid Executable run info could be found",
-				"NewState", startedRunInfo.ExeState,
-				"NewExitCode", startedRunInfo.ExitCode,
+			log.Error(
+				errors.New("could not find starting run data after Executable start attempt"),
+				"No valid Executable run info could be found",
 			)
 			return
 		}
 
-		log.V(1).Info("Executable completed startup",
-			"NewState", startedRunInfo.ExeState,
-			"NewExitCode", startedRunInfo.ExitCode,
-		)
-
-		ri.UpdateFrom(startedRunInfo)
-
-		// Both keys in the runs map must be unique; if the startup failed and the run ID is not available,
-		// keep the placeholder run ID derived from Executable name.
-		effectiveRunID := startingRunID
-		if startedRunInfo.RunID != UnknownRunID {
-			effectiveRunID = startedRunInfo.RunID
+		if ri.ExeState != apiv1.ExecutableStateStarting {
+			// Startup attempt completed synchronously, this will be handled by the state initializer function
+			// that is part of the reconciliation loop (startExecutable). Nothing to do here.
+			return
 		}
-		_ = runMap.UpdateChangingStateKey(exeName, startingRunID, effectiveRunID, ri)
-		if startedRunInfo.ExeState == apiv1.ExecutableStateRunning {
-			startWaitForRunCompletion()
+
+		log.V(1).Info("Executable completed startup attempt", "RunID", startResult.RunID)
+
+		// Just store the result and let the reconciliation loop handle the rest.
+		previousRunID := ri.RunID
+
+		if len(ri.startResults) == 0 {
+			// Should never happen
+			log.Error(
+				errors.New("inconsistent Executable startup state"),
+				"No startup results found despite startup stage indicating that a startup attempt was made",
+			)
+			ri.ExeState = apiv1.ExecutableStateUnknown
+		} else {
+			current := ri.startResults[len(ri.startResults)-1]
+			_ = current.UpdateFrom(startResult)
 		}
+
+		_ = runMap.UpdateChangingStateKey(exeName, previousRunID, ri.RunID, ri)
+
 	})
 
 	r.ScheduleReconciliation(exeName)
@@ -669,7 +682,7 @@ func (r *ExecutableReconciler) OnRunMessage(runID RunID, level RunMessageLevel, 
 // The passed runInfo is a copy that the method can modify
 func (r *ExecutableReconciler) stopExecutableFunc(exe *apiv1.Executable, runInfo *ExecutableRunInfo, log logr.Logger) func(context.Context) {
 	return func(stopCtx context.Context) {
-		runner, runnerNotFoundErr := r.getExecutableRunner(exe)
+		runner, runnerNotFoundErr := r.getExecutableRunner(exe, runInfo.startupStage)
 		if runnerNotFoundErr != nil {
 			// Should never happen
 			log.Error(runnerNotFoundErr, "The Executable cannot be stopped")
@@ -690,7 +703,7 @@ func (r *ExecutableReconciler) stopExecutableFunc(exe *apiv1.Executable, runInfo
 
 			runID := runInfo.RunID
 			runMap := r.runs
-			r.runs.QueueDeferredOp(exeName, func(types.NamespacedName, RunID) {
+			r.runs.QueueDeferredOp(exeName, func(types.NamespacedName, RunID, *apiv1.Executable) {
 				// The run may have been deleted by the time we get here, so we do not care if Update() returns false.
 				_ = runMap.Update(exeName, runID, runInfo)
 			})
@@ -700,10 +713,21 @@ func (r *ExecutableReconciler) stopExecutableFunc(exe *apiv1.Executable, runInfo
 	}
 }
 
-func (r *ExecutableReconciler) getExecutableRunner(exe *apiv1.Executable) (ExecutableRunner, error) {
-	executionType := exe.Spec.ExecutionType
-	if executionType == "" {
-		executionType = apiv1.ExecutionTypeProcess
+func (r *ExecutableReconciler) getExecutableRunner(exe *apiv1.Executable, startupStage ExecutableStartuptStage) (ExecutableRunner, error) {
+	var executionType apiv1.ExecutionType
+
+	if startupStage <= StartupStageDefaultRunner {
+		// Note, the runner might be necessary for stopping the run even if we haven't reached the default runner stage yet.
+		executionType = exe.Spec.ExecutionType
+		if executionType == "" {
+			executionType = apiv1.ExecutionTypeProcess
+		}
+	} else {
+		fallbackIndex := int(startupStage - 1)
+		if len(exe.Spec.FallbackExecutionTypes) <= fallbackIndex {
+			return nil, errors.New("startup progressed beyond available fallback execution types")
+		}
+		executionType = exe.Spec.FallbackExecutionTypes[fallbackIndex]
 	}
 
 	runner, found := r.ExecutableRunners[executionType]
@@ -714,11 +738,20 @@ func (r *ExecutableReconciler) getExecutableRunner(exe *apiv1.Executable) (Execu
 	return runner, nil
 }
 
+func allRunnersAttempted(currentStage ExecutableStartuptStage, exe *apiv1.Executable) bool {
+	return int(currentStage) == len(exe.Spec.FallbackExecutionTypes)
+}
+
 func (r *ExecutableReconciler) releaseExecutableResources(ctx context.Context, exe *apiv1.Executable, log logr.Logger) {
 	r.disableEndpointsAndHealthProbes(ctx, exe, nil, log)
 	r.deleteOutputFiles(exe, log)
 	r.deleteCertificateFiles(exe, log)
 	logger.ReleaseResourceLog(exe.GetResourceId())
+}
+
+func (r *ExecutableReconciler) cleanUpFailedStartResources(ctx context.Context, exe *apiv1.Executable, log logr.Logger) {
+	r.disableEndpointsAndHealthProbes(ctx, exe, nil, log)
+	r.deleteOutputFiles(exe, log)
 }
 
 func (r *ExecutableReconciler) enableEndpointsAndHealthProbes(
@@ -951,6 +984,7 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(
 	return nil
 }
 
+// Computes effective invocation arguments for the Executable run and stores them in Status.EffectiveArgs.
 func (r *ExecutableReconciler) computeEffectiveInvocationArgs(
 	ctx context.Context,
 	exe *apiv1.Executable,
@@ -973,6 +1007,91 @@ func (r *ExecutableReconciler) computeEffectiveInvocationArgs(
 	}
 
 	exe.Status.EffectiveArgs = effectiveArgs
+	return nil
+}
+
+func (r *ExecutableReconciler) prepareCertificateFiles(
+	exe *apiv1.Executable,
+	log logr.Logger,
+) error {
+	certsTempFolder, certsTempFolderErr := usvc_io.CreateTempFolder(filepath.Join(exe.Name, "certs"), osutil.PermissionOnlyOwnerReadWriteTraverse)
+	if certsTempFolderErr != nil {
+		if !errors.Is(certsTempFolderErr, os.ErrExist) {
+			if exe.Spec.PemCertificates.ContinueOnError {
+				log.Info("Could not create temporary folder for processing PEM certificates, continuing...", "Error", certsTempFolderErr.Error())
+			} else {
+				log.Error(certsTempFolderErr, "Could not create temporary folder for processing PEM certificates")
+				return certsTempFolderErr
+			}
+		}
+
+		return nil
+	}
+
+	bundle := []string{}
+	fingerprints := []string{}
+	for _, cert := range exe.Spec.PemCertificates.Certificates {
+		fingerprint, fingerprintErr := cert.OpenSSLFingerprint()
+		if fingerprintErr != nil {
+			if exe.Spec.PemCertificates.ContinueOnError {
+				log.Info("Could not compute certificate fingerprint, skipping certificate", "Thumbprint", cert.Thumbprint, "Error", fingerprintErr.Error())
+				continue
+			}
+			log.Error(fingerprintErr, "Could not compute certificate fingerprint", "Thumbprint", cert.Thumbprint)
+			return fingerprintErr
+		}
+
+		certFilepath := filepath.Join(certsTempFolder, fmt.Sprintf("%s.pem", cert.Thumbprint))
+		certWriteErr := usvc_io.WriteFile(certFilepath, []byte(cert.Contents), osutil.PermissionOnlyOwnerReadWrite)
+		if certWriteErr != nil {
+			if exe.Spec.PemCertificates.ContinueOnError {
+				log.Info("Could not write certificate to temporary folder, skipping certificate...", "Thumbprint", cert.Thumbprint, "Error", certWriteErr.Error())
+				continue
+			}
+
+			log.Error(certWriteErr, "Could not write certificate to temporary folder", "Thumbprint", cert.Thumbprint)
+			return certWriteErr
+		}
+
+		collisions := 0
+		for _, existingFingerprint := range fingerprints {
+			if existingFingerprint == fingerprint {
+				collisions++
+			}
+		}
+
+		if runtime.GOOS == "windows" {
+			certWriteErr = usvc_io.WriteFile(filepath.Join(certsTempFolder, fmt.Sprintf("%s.%d", fingerprint, collisions)), []byte(cert.Contents), osutil.PermissionOnlyOwnerReadWrite)
+		} else {
+			// Create an OpenSSL style symlink for the certificate
+			certWriteErr = os.Symlink(certFilepath, filepath.Join(certsTempFolder, fmt.Sprintf("%s.%d", fingerprint, collisions)))
+		}
+
+		if certWriteErr != nil {
+			if exe.Spec.PemCertificates.ContinueOnError {
+				log.Info("Could not create fingerprint symlink for certificate, skipping certificate...", "Thumbprint", cert.Thumbprint, "Error", certWriteErr.Error())
+				continue
+			}
+
+			log.Error(certWriteErr, "Could not create fingerprint symlink for certificate", "Thumbprint", cert.Thumbprint)
+			return certWriteErr
+		} else {
+			fingerprints = append(fingerprints, fingerprint)
+		}
+
+		bundle = append(bundle, cert.Contents)
+	}
+
+	bundleWriteErr := usvc_io.WriteFile(filepath.Join(usvc_io.DcpTempDir(), exe.Name, "cert.pem"), []byte(strings.Join(bundle, "\n")), osutil.PermissionOnlyOwnerReadWrite)
+	if bundleWriteErr != nil {
+		if exe.Spec.PemCertificates.ContinueOnError {
+			log.Info("Could not write certificate bundle to temporary folder, continuing...", "Error", bundleWriteErr.Error())
+		} else {
+			log.Error(bundleWriteErr, "Could not write certificate bundle to temporary folder")
+			return bundleWriteErr
+		}
+	}
+
 	return nil
 }
 
@@ -1014,7 +1133,7 @@ func (r *ExecutableReconciler) handleHealthProbeResults() {
 			runInfo.healthProbeResults[report.Probe.Name] = report.Result
 
 			runMap := r.runs
-			r.runs.QueueDeferredOp(exeName, func(types.NamespacedName, RunID) {
+			r.runs.QueueDeferredOp(exeName, func(types.NamespacedName, RunID, *apiv1.Executable) {
 				// The run may have been deleted by the time we get here, so we do not care if Update() returns false.
 				_ = runMap.Update(exeName, runID, runInfo)
 			})
@@ -1035,8 +1154,7 @@ func (r *ExecutableReconciler) setExecutableState(exe *apiv1.Executable, state a
 		exe.Status.State = state
 		change = statusChanged
 
-		finalState := state == apiv1.ExecutableStateFinished || state == apiv1.ExecutableStateTerminated || state == apiv1.ExecutableStateFailedToStart
-		if finalState && exe.Status.FinishTimestamp.IsZero() {
+		if state.IsTerminal() && state != apiv1.ExecutableStateUnknown && exe.Status.FinishTimestamp.IsZero() {
 			exe.Status.FinishTimestamp = metav1.NowMicro()
 		}
 	}

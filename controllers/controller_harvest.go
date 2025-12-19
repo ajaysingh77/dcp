@@ -143,7 +143,7 @@ func (rh *resourceHarvester) harvestAbandonedContainers(
 	}
 
 	// Reduce the list of running containers to the IDs of the ones that are non-persistent and don't have an active creator process.
-	containersToHarvest := usvc_slices.Accumulate[containers.ListedContainer, []string](runningContainers, func(ids []string, c containers.ListedContainer) []string {
+	containersToHarvest := usvc_slices.Accumulate[[]string](runningContainers, func(ids []string, c containers.ListedContainer) []string {
 		if !nonPersistentWithCreator(c.Labels) {
 			// This is a persistent container or missing creator labels, so skip it.
 			return ids
@@ -201,7 +201,7 @@ func (rh *resourceHarvester) harvestAbandonedNetworks(
 
 	// Reduce the list of running networks to the ones that are empty and don't have an
 	// active creator process.
-	networksWithoutCreators := usvc_slices.Accumulate[containers.ListedNetwork, []string](runningNetworks, func(ids []string, n containers.ListedNetwork) []string {
+	networksWithoutCreators := usvc_slices.Accumulate[[]string](runningNetworks, func(ids []string, n containers.ListedNetwork) []string {
 		if !withCreator(n.Labels) {
 			// This network is missing the required creator labels, so skip it.
 			return ids

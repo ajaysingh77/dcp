@@ -35,7 +35,7 @@ var (
 )
 
 func getIDs(items []ProcessTreeItem) []Pid_t {
-	return slices.Map[ProcessTreeItem, Pid_t](items, func(item ProcessTreeItem) Pid_t {
+	return slices.Map[Pid_t](items, func(item ProcessTreeItem) Pid_t {
 		return item.Pid
 	})
 }
